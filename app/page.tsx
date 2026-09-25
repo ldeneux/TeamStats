@@ -163,7 +163,6 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
   };
 
   const toggleSelectOut = (id: string) => {
-    // Si la joueuse est exclue pour 5 fautes, impossible de la décocher
     if (getFoulsCount(id) >= 5) return;
     setSelectedOutIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
@@ -278,6 +277,38 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
     }
 
     return { points, totalSecs, fouls, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists };
+  };
+
+  // Composant visuel réutilisable : 5 Carrés de Fautes (Jaunes -> 4e clignotant -> Tous rouges si 5)
+  const FoulSquares = ({ count }: { count: number }) => {
+    const isExceeded = count >= 5;
+    return (
+      <div className="flex space-x-1 items-center">
+        {[1, 2, 3, 4, 5].map(box => {
+          const isFilled = count >= box;
+          const isFourthBlinking = box === 4 && count === 4;
+
+          let colorClasses = 'bg-slate-700/80 border border-slate-600/40';
+
+          if (isExceeded) {
+            colorClasses = 'bg-rose-600 shadow-sm shadow-rose-600';
+          } else if (isFilled) {
+            if (isFourthBlinking) {
+              colorClasses = 'bg-amber-400 shadow-sm shadow-amber-400 animate-pulse';
+            } else {
+              colorClasses = 'bg-amber-400 shadow-sm shadow-amber-400';
+            }
+          }
+
+          return (
+            <div 
+              key={box} 
+              className={`w-2.5 h-2.5 rounded-sm transition ${colorClasses}`} 
+            />
+          );
+        })}
+      </div>
+    );
   };
 
   return (
@@ -412,7 +443,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
               </div>
             )}
 
-            {/* TABLERO PRINCIPAL DE SCORE ET CHRONO */}
+            {/* MARQUEUR & FAUTES ÉQUIPE EN 5 CARRÉS */}
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl space-y-4">
               <div className="flex justify-between items-center">
                 <div className="text-center w-1/3">
@@ -466,11 +497,11 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                 </div>
               </div>
 
-              {/* MODULE DES FAUTES D'ÉQUIPE SATHONAY PAR QUART-TEMPS */}
+              {/* MODULE DES FAUTES D'ÉQUIPE (5 CARRÉS UNIFIÉS) */}
               <div className="pt-3 border-t border-slate-800/80">
                 <div className="flex justify-between items-center mb-1.5">
                   <span className="text-[11px] font-extrabold text-amber-400 uppercase tracking-wider">Fautes d'équipe {game.teamHome}</span>
-                  <span className="text-[10px] text-slate-400 font-bold">Quart-temps actuel Q{game.quarter} : {getTeamFoulsForQuarter(game.quarter)} faute(s)</span>
+                  <span className="text-[10px] text-slate-400 font-bold">Q{game.quarter} : {getTeamFoulsForQuarter(game.quarter)}/5</span>
                 </div>
                 
                 <div className="grid grid-cols-4 gap-2">
@@ -482,23 +513,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                         isCurrent ? 'bg-slate-800 border-amber-500/60 shadow-md' : 'bg-slate-900/50 border-slate-800 opacity-60'
                       }`}>
                         <span className="text-[9px] font-black text-slate-400 uppercase mb-1">Q{qNum}</span>
-                        {/* Les 4 Carrés de Fautes */}
-                        <div className="flex space-x-1">
-                          {[1, 2, 3, 4].map(box => {
-                            const isFilled = fouls >= box;
-                            const isPenalty = box === 4 && fouls >= 4;
-                            return (
-                              <div 
-                                key={box} 
-                                className={`w-2.5 h-2.5 rounded-sm transition ${
-                                  isFilled 
-                                    ? isPenalty ? 'bg-rose-500 shadow-sm shadow-rose-500 animate-pulse' : 'bg-amber-400 shadow-sm shadow-amber-400' 
-                                    : 'bg-slate-700/80 border border-slate-600/40'
-                                }`} 
-                              />
-                            );
-                          })}
-                        </div>
+                        <FoulSquares count={fouls} />
                       </div>
                     );
                   })}
@@ -522,11 +537,9 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                 </div>
 
                 <div className="space-y-4">
-                  {/* SUR LE PARQUET */}
+                  {/* SUR LE PARQUET (MENU REMPLACEMENT AVEC CARRÉS) */}
                   <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <p className="text-xs text-rose-400 font-bold">1. SUR LE PARQUET — Décocher / Sélectionner la (les) sortie(s) ({selectedOutIds.length}) :</p>
-                    </div>
+                    <p className="text-xs text-rose-400 font-bold mb-2">1. SUR LE PARQUET — Décocher / Sélectionner la (les) sortie(s) ({selectedOutIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
                       {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id) || selectedOutIds.includes(p.id)).map(p => {
                         const isSelected = selectedOutIds.includes(p.id);
@@ -550,18 +563,16 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                               <input type="checkbox" checked={isSelected} readOnly disabled={isFouledOut} className="accent-rose-500" />
                               <span className="truncate">#{p.number} {p.name}</span>
                             </div>
-                            {isFouledOut && <span className="text-[9px] bg-rose-600 text-white px-1.5 py-0.5 rounded font-black uppercase">Exclue (5F)</span>}
+                            <FoulSquares count={fouls} />
                           </button>
                         );
                       })}
                     </div>
                   </div>
 
-                  {/* SUR LE BANC */}
+                  {/* SUR LE BANC (MENU REMPLACEMENT AVEC CARRÉS) */}
                   <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <p className="text-xs text-emerald-400 font-bold">2. SUR LE BANC — Cocher la (les) entrée(s) ({selectedInIds.length}) :</p>
-                    </div>
+                    <p className="text-xs text-emerald-400 font-bold mb-2">2. SUR LE BANC — Cocher la (les) entrée(s) ({selectedInIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
                       {game.roster.filter(p => !game.onCourtPlayerIds.includes(p.id) && !selectedOutIds.includes(p.id)).map(p => {
                         const fouls = getFoulsCount(p.id);
@@ -585,7 +596,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                               {!isFouledOut && <input type="checkbox" checked={isSelected} readOnly className="accent-emerald-500" />}
                               <span className="truncate">#{p.number} {p.name}</span>
                             </div>
-                            {isFouledOut && <span className="text-[9px] bg-rose-950 text-rose-500 border border-rose-900 px-1 py-0.5 rounded font-bold">Exclue</span>}
+                            <FoulSquares count={fouls} />
                           </button>
                         );
                       })}
@@ -618,6 +629,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                 </div>
               </div>
             ) : !selectedPlayerId ? (
+              /* SELECTION JOUEUSE SUR LE TERRAIN (SÉLECTION D'ACTION) AVEC CARRÉS */
               <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                   <span className="text-xs font-bold text-amber-400 uppercase">Action : {selectedAction}</span>
@@ -637,11 +649,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                           <span className="w-8 h-8 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-black text-sm">#{p.number}</span>
                           <span className="font-bold text-sm">{p.name}</span>
                         </div>
-                        <div className="flex items-center space-x-2">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${fouls >= 4 ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40' : 'bg-slate-700 text-slate-400'}`}>
-                            {fouls}/5 fautes
-                          </span>
-                        </div>
+                        <FoulSquares count={fouls} />
                       </button>
                     );
                   })}
@@ -791,8 +799,8 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                         <td className="py-3 px-2 text-center font-black text-amber-400 text-sm">
                           {st.points}
                         </td>
-                        <td className={`py-3 px-2 text-center font-bold ${st.fouls >= 5 ? 'text-rose-500 font-black' : st.fouls >= 4 ? 'text-amber-400' : 'text-slate-300'}`}>
-                          {st.fouls}/5
+                        <td className="py-3 px-2 text-center flex justify-center">
+                          <FoulSquares count={st.fouls} />
                         </td>
                         <td className="py-3 px-2 text-center">
                           {st.ftMade}/{st.ftAttempted}
