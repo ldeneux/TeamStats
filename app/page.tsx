@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { GameState, Player, GameEvent } from '../types/basketball';
 
 const DEFAULT_PLAYERS: Player[] = [
+<<<<<<< HEAD
   { id: '1', number: 4, name: 'LAURA' },
   { id: '2', number: 5, name: 'CANDICE' },
   { id: '3', number: 6, name: 'ANNABELLE' },
@@ -14,6 +15,18 @@ const DEFAULT_PLAYERS: Player[] = [
   { id: '8', number: 18, name: 'ALIYA' },
   { id: '9', number: 21, name: 'LINA' },
   { id: '10', number: 23, name: 'ALICIA' },
+=======
+  { id: '1', number: 4, name: 'MAYRA' },
+  { id: '2', number: 5, name: 'CANDICE' },
+  { id: '3', number: 6, name: 'ANNABELLE' },
+  { id: '4', number: 7, name: 'L. DUBOIS' },
+  { id: '5', number: 9, name: 'C. BERNARD' },
+  { id: '6', number: 10, name: 'E. THOMAS' },
+  { id: '7', number: 12, name: 'M. ROBERT' },
+  { id: '8', number: 14, name: 'A. RICHARD' },
+  { id: '9', number: 15, name: 'J. PETIT' },
+  { id: '10', number: 18, name: 'M. DURAND' },
+>>>>>>> 1d3e53e (v1.5 teamstats)
 ];
 
 
@@ -83,6 +96,22 @@ export default function App() {
 
     setSelectedAction(null);
     setSelectedPlayerId(null);
+  };
+
+  const deleteEvent = (eventId: string) => {
+    const eventToDelete = game.events.find(ev => ev.id === eventId);
+    if (!eventToDelete) return;
+
+    let pointsToRemove = 0;
+    if (eventToDelete.actionType === 'TIR 3PTS') pointsToRemove = 3;
+    else if (eventToDelete.actionType === 'TIR 2PTS') pointsToRemove = 2;
+    else if (eventToDelete.actionType === 'LANCER FRANC') pointsToRemove = 1;
+
+    setGame(prev => ({
+      ...prev,
+      scoreHome: Math.max(0, prev.scoreHome - pointsToRemove),
+      events: prev.events.filter(ev => ev.id !== eventId)
+    }));
   };
 
   return (
@@ -301,12 +330,22 @@ export default function App() {
                 {game.events.map(ev => {
                   const player = game.roster.find(p => p.id === ev.playerId);
                   return (
-                    <div key={ev.id} className="flex justify-between items-center p-3 bg-slate-800/70 border border-slate-700/50 rounded-xl text-xs">
-                      <div>
-                        <span className="font-mono text-amber-400 font-bold mr-2">[{ev.clockTime}]</span>
+                    <div key={ev.id} className="flex justify-between items-center p-3 bg-slate-800/70 border border-slate-700/50 rounded-xl text-xs hover:border-slate-600 transition">
+                      <div className="flex items-center space-x-2">
+                        <span className="font-mono text-amber-400 font-bold">[{ev.clockTime}]</span>
                         <span className="font-bold text-white">#{player?.number} {player?.name}</span>
                       </div>
-                      <span className="bg-slate-700 text-slate-200 px-2 py-0.5 rounded font-semibold">{ev.actionType}</span>
+                      
+                      <div className="flex items-center space-x-3">
+                        <span className="bg-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-semibold">{ev.actionType}</span>
+                        <button 
+                          onClick={() => deleteEvent(ev.id)}
+                          title="Supprimer cette ligne"
+                          className="text-slate-400 hover:text-rose-400 hover:bg-rose-500/20 px-2 py-1 rounded-lg transition font-bold"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
