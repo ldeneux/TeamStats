@@ -73,7 +73,10 @@ export default function App() {
     return game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE')).length;
   };
 
-  // Vérifie s'il reste au moins une joueuse valide sur le banc (pas exclue pour 5 fautes)
+  const getTeamFoulsForQuarter = (q: number) => {
+    return game.events.filter(e => e.quarter === q && e.actionType.includes('FAUTE')).length;
+  };
+
   const availableBenchPlayers = game.roster.filter(
     p => !game.onCourtPlayerIds.includes(p.id) && getFoulsCount(p.id) < 5
   );
@@ -124,19 +127,18 @@ export default function App() {
 
     if (alertFoul) {
       const p = game.roster.find(r => r.id === playerId);
-      // Ouvre automatiquement le panneau de remplacement si des remplaçantes sont dispos
       const benchAvailable = game.roster.filter(
         item => item.id !== playerId && !game.onCourtPlayerIds.includes(item.id) && getFoulsCount(item.id) < 5
       );
 
       if (benchAvailable.length > 0) {
-        setSelectedOutIds([playerId]); // On pré-sélectionne la joueuse sortie pour 5 fautes
+        setSelectedOutIds([playerId]);
         setIsSubbing(true);
         alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !
-Elle a été exclue du terrain. Sélectionnez une remplaçante.`);
+Elle est définitivement exclue. Choisissez sa remplaçante.`);
       } else {
         alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !
-Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue à ${updatedOnCourt.length}.`);
+Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.length}.`);
       }
     }
   };
@@ -161,6 +163,8 @@ Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue 
   };
 
   const toggleSelectOut = (id: string) => {
+    // Si la joueuse est exclue pour 5 fautes, impossible de la décocher
+    if (getFoulsCount(id) >= 5) return;
     setSelectedOutIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
 
@@ -395,7 +399,6 @@ Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue 
 
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
-            {/* Affiche l'alerte de remplacement UNIQUEMENT si le banc contient encore des joueuses valides */}
             {game.onCourtPlayerIds.length < 5 && availableBenchPlayers.length > 0 && (
               <div className="bg-rose-900/90 border border-rose-500 text-white p-3.5 rounded-2xl text-xs font-bold flex justify-between items-center animate-pulse">
                 <span>⚠️ Il manque {5 - game.onCourtPlayerIds.length} joueuse(s) sur le terrain.</span>
@@ -403,61 +406,102 @@ Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue 
               </div>
             )}
 
-            {/* Information visuelle si l'équipe joue en sous-effectif subi (ex: 4 vs 5 sans banc) */}
             {game.onCourtPlayerIds.length < 5 && availableBenchPlayers.length === 0 && (
               <div className="bg-amber-950/80 border border-amber-500/50 text-amber-200 p-2.5 rounded-2xl text-xs font-semibold text-center">
                 ⚠️ Équipe en sous-effectif ({game.onCourtPlayerIds.length} joueuses sur le terrain - banc épuisé).
               </div>
             )}
 
-            <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl flex justify-between items-center">
-              <div className="text-center w-1/3">
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
-                <p className="text-4xl font-black text-amber-400 mt-1">{game.scoreHome}</p>
-              </div>
-
-              <div className="text-center w-1/3 border-x border-slate-800 px-2">
-                <div className="flex items-center justify-center space-x-2">
-                  <button 
-                    onClick={() => setGame(prev => ({ ...prev, quarter: Math.max(1, prev.quarter - 1) }))}
-                    className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
-                  >
-                    -
-                  </button>
-                  <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-1 rounded-full uppercase">
-                    Q{game.quarter}
-                  </span>
-                  <button 
-                    onClick={() => setGame(prev => ({ ...prev, quarter: Math.min(4, prev.quarter + 1) }))}
-                    className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
-                  >
-                    +
-                  </button>
+            {/* TABLERO PRINCIPAL DE SCORE ET CHRONO */}
+            <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl space-y-4">
+              <div className="flex justify-between items-center">
+                <div className="text-center w-1/3">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
+                  <p className="text-4xl font-black text-amber-400 mt-1">{game.scoreHome}</p>
                 </div>
 
-                <p className="text-3xl font-mono font-bold mt-2 tracking-tight text-white">{formatTime(game.clockSeconds)}</p>
-                <div className="flex justify-center space-x-1 mt-2">
-                  <button 
-                    onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})}
-                    className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}
-                  >
-                    {game.isClockRunning ? 'PAUSE' : 'START'}
-                  </button>
-                  <button 
-                    onClick={() => setGame({...game, clockSeconds: 600, isClockRunning: false})}
-                    className="text-[10px] font-extrabold px-2 py-1 bg-slate-800 text-slate-400 rounded-lg hover:text-white"
-                  >
-                    RESET
-                  </button>
+                <div className="text-center w-1/3 border-x border-slate-800 px-2">
+                  <div className="flex items-center justify-center space-x-2">
+                    <button 
+                      onClick={() => setGame(prev => ({ ...prev, quarter: Math.max(1, prev.quarter - 1) }))}
+                      className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
+                    >
+                      -
+                    </button>
+                    <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-1 rounded-full uppercase">
+                      Q{game.quarter}
+                    </span>
+                    <button 
+                      onClick={() => setGame(prev => ({ ...prev, quarter: Math.min(4, prev.quarter + 1) }))}
+                      className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <p className="text-3xl font-mono font-bold mt-2 tracking-tight text-white">{formatTime(game.clockSeconds)}</p>
+                  <div className="flex justify-center space-x-1 mt-2">
+                    <button 
+                      onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})}
+                      className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}
+                    >
+                      {game.isClockRunning ? 'PAUSE' : 'START'}
+                    </button>
+                    <button 
+                      onClick={() => setGame({...game, clockSeconds: 600, isClockRunning: false})}
+                      className="text-[10px] font-extrabold px-2 py-1 bg-slate-800 text-slate-400 rounded-lg hover:text-white"
+                    >
+                      RESET
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-center w-1/3">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamAway}</p>
+                  <p className="text-4xl font-black text-slate-300 mt-1">{game.scoreAway}</p>
+                  <div className="flex justify-center space-x-1 mt-1">
+                    <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-500 font-bold px-1.5 bg-slate-800 rounded">-</button>
+                    <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-300 font-bold px-1.5 bg-slate-800 rounded">+</button>
+                  </div>
                 </div>
               </div>
 
-              <div className="text-center w-1/3">
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamAway}</p>
-                <p className="text-4xl font-black text-slate-300 mt-1">{game.scoreAway}</p>
-                <div className="flex justify-center space-x-1 mt-1">
-                  <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-500 font-bold px-1.5 bg-slate-800 rounded">-</button>
-                  <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-300 font-bold px-1.5 bg-slate-800 rounded">+</button>
+              {/* MODULE DES FAUTES D'ÉQUIPE SATHONAY PAR QUART-TEMPS */}
+              <div className="pt-3 border-t border-slate-800/80">
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-[11px] font-extrabold text-amber-400 uppercase tracking-wider">Fautes d'équipe {game.teamHome}</span>
+                  <span className="text-[10px] text-slate-400 font-bold">Quart-temps actuel Q{game.quarter} : {getTeamFoulsForQuarter(game.quarter)} faute(s)</span>
+                </div>
+                
+                <div className="grid grid-cols-4 gap-2">
+                  {[1, 2, 3, 4].map(qNum => {
+                    const fouls = getTeamFoulsForQuarter(qNum);
+                    const isCurrent = game.quarter === qNum;
+                    return (
+                      <div key={qNum} className={`p-2 rounded-xl border flex flex-col items-center justify-center transition ${
+                        isCurrent ? 'bg-slate-800 border-amber-500/60 shadow-md' : 'bg-slate-900/50 border-slate-800 opacity-60'
+                      }`}>
+                        <span className="text-[9px] font-black text-slate-400 uppercase mb-1">Q{qNum}</span>
+                        {/* Les 4 Carrés de Fautes */}
+                        <div className="flex space-x-1">
+                          {[1, 2, 3, 4].map(box => {
+                            const isFilled = fouls >= box;
+                            const isPenalty = box === 4 && fouls >= 4;
+                            return (
+                              <div 
+                                key={box} 
+                                className={`w-2.5 h-2.5 rounded-sm transition ${
+                                  isFilled 
+                                    ? isPenalty ? 'bg-rose-500 shadow-sm shadow-rose-500 animate-pulse' : 'bg-amber-400 shadow-sm shadow-amber-400' 
+                                    : 'bg-slate-700/80 border border-slate-600/40'
+                                }`} 
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -478,30 +522,46 @@ Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue 
                 </div>
 
                 <div className="space-y-4">
+                  {/* SUR LE PARQUET */}
                   <div>
-                    <p className="text-xs text-rose-400 font-bold mb-2">1. Joueuse(s) sortante(s) ({selectedOutIds.length}) :</p>
+                    <div className="flex justify-between items-center mb-2">
+                      <p className="text-xs text-rose-400 font-bold">1. SUR LE PARQUET — Décocher / Sélectionner la (les) sortie(s) ({selectedOutIds.length}) :</p>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
-                      {/* On liste l'ensemble des joueuses du roster hors terrain (y compris celles qui viennent d'être exclues) */}
                       {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id) || selectedOutIds.includes(p.id)).map(p => {
                         const isSelected = selectedOutIds.includes(p.id);
+                        const fouls = getFoulsCount(p.id);
+                        const isFouledOut = fouls >= 5;
+
                         return (
                           <button
                             key={p.id}
+                            disabled={isFouledOut}
                             onClick={() => toggleSelectOut(p.id)}
-                            className={`flex items-center space-x-2 p-2.5 rounded-xl border text-left text-xs transition ${
-                              isSelected ? 'bg-rose-500/20 border-rose-500 text-white font-bold' : 'bg-slate-800 border-slate-700/60 text-slate-400'
+                            className={`flex items-center justify-between p-2.5 rounded-xl border text-left text-xs transition ${
+                              isFouledOut 
+                                ? 'bg-rose-950/80 border-rose-600 text-rose-200 cursor-not-allowed font-bold'
+                                : isSelected 
+                                  ? 'bg-rose-500/20 border-rose-500 text-white font-bold' 
+                                  : 'bg-slate-800 border-slate-700/60 text-slate-400'
                             }`}
                           >
-                            <input type="checkbox" checked={isSelected} readOnly className="accent-rose-500" />
-                            <span>#{p.number} {p.name}</span>
+                            <div className="flex items-center space-x-2 truncate">
+                              <input type="checkbox" checked={isSelected} readOnly disabled={isFouledOut} className="accent-rose-500" />
+                              <span className="truncate">#{p.number} {p.name}</span>
+                            </div>
+                            {isFouledOut && <span className="text-[9px] bg-rose-600 text-white px-1.5 py-0.5 rounded font-black uppercase">Exclue (5F)</span>}
                           </button>
                         );
                       })}
                     </div>
                   </div>
 
+                  {/* SUR LE BANC */}
                   <div>
-                    <p className="text-xs text-emerald-400 font-bold mb-2">2. Cocher joueuse(s) qui ENTRE(NT) ({selectedInIds.length}) :</p>
+                    <div className="flex justify-between items-center mb-2">
+                      <p className="text-xs text-emerald-400 font-bold">2. SUR LE BANC — Cocher la (les) entrée(s) ({selectedInIds.length}) :</p>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       {game.roster.filter(p => !game.onCourtPlayerIds.includes(p.id) && !selectedOutIds.includes(p.id)).map(p => {
                         const fouls = getFoulsCount(p.id);
@@ -515,17 +575,17 @@ Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue 
                             onClick={() => toggleSelectIn(p.id)}
                             className={`flex items-center justify-between p-2.5 rounded-xl border text-left text-xs transition ${
                               isFouledOut 
-                                ? 'bg-rose-950/40 border-rose-900/50 text-rose-500/50 cursor-not-allowed'
+                                ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed'
                                 : isSelected 
                                   ? 'bg-emerald-500/20 border-emerald-500 text-white font-bold' 
                                   : 'bg-slate-800 border-slate-700/60 text-slate-400'
                             }`}
                           >
-                            <div className="flex items-center space-x-2">
+                            <div className="flex items-center space-x-2 truncate">
                               {!isFouledOut && <input type="checkbox" checked={isSelected} readOnly className="accent-emerald-500" />}
-                              <span>#{p.number} {p.name}</span>
+                              <span className="truncate">#{p.number} {p.name}</span>
                             </div>
-                            {isFouledOut && <span className="text-[10px] bg-rose-900/80 text-rose-200 px-1.5 py-0.5 rounded font-black">5 FAUTES (EXCLUE)</span>}
+                            {isFouledOut && <span className="text-[9px] bg-rose-950 text-rose-500 border border-rose-900 px-1 py-0.5 rounded font-bold">Exclue</span>}
                           </button>
                         );
                       })}
@@ -563,7 +623,7 @@ Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue 
                   <span className="text-xs font-bold text-amber-400 uppercase">Action : {selectedAction}</span>
                   <button onClick={() => setSelectedAction(null)} className="text-xs text-rose-400 font-bold">ANNULER</button>
                 </div>
-                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider text-center">2. Sélectionner la joueuse</h3>
+                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider text-center">2. Sélectionner la joueuse sur le parquet</h3>
                 <div className="space-y-2">
                   {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
                     const fouls = getFoulsCount(p.id);
