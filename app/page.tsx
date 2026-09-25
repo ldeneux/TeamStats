@@ -1,154 +1,326 @@
 'use client';
 
-import React, { useState } from 'react';
-import { GameState, ActionType, GameEvent, Player } from '../types/basketball';
+import React, { useState, useEffect } from 'react';
+import { GameState, Player, GameEvent } from '../types/basketball';
 
-const MOCK_ROSTER: Player[] = [
+const DEFAULT_PLAYERS: Player[] = [
   { id: '1', number: 4, name: 'S. MARTIN' },
   { id: '2', number: 7, name: 'L. DUBOIS' },
   { id: '3', number: 9, name: 'C. BERNARD' },
   { id: '4', number: 10, name: 'E. THOMAS' },
   { id: '5', number: 12, name: 'M. ROBERT' },
   { id: '6', number: 14, name: 'A. RICHARD' },
-  { id: '7', number: 15, name: 'JULIE P.' },
+  { id: '7', number: 15, name: 'J. PETIT' },
+  { id: '8', number: 18, name: 'M. DURAND' },
+  { id: '9', number: 21, name: 'C. MOREAU' },
+  { id: '10', number: 23, name: 'E. LEROY' },
 ];
 
-export default function MatchTracker() {
-  const [game, setGame] = useState<GameState | null>(null);
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [selectedAction, setSelectedAction] = useState<ActionType | null>(null);
+export default function App() {
+  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'LOGS'>('INIT');
+  
+  const [game, setGame] = useState<GameState>({
+    teamHome: 'SATHONAY',
+    teamAway: 'ASVEL U18',
+    matchDate: new Date().toISOString().split('T')[0],
+    quarter: 1,
+    clockSeconds: 600,
+    isClockRunning: false,
+    scoreHome: 0,
+    scoreAway: 0,
+    roster: DEFAULT_PLAYERS,
+    onCourtPlayerIds: ['1', '2', '3', '4', '5'],
+    events: []
+  });
+
+  const [selectedAction, setSelectedAction] = useState<string | null>(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
-  const [url, setUrl] = useState('');
 
-  if (!game) {
-    return (
-      <div className="max-w-xl mx-auto p-4 space-y-6 pt-10">
-        <h1 className="text-2xl font-black text-center uppercase tracking-wide">Sathonay Basket — Import Match</h1>
-        <div className="bg-white p-6 rounded-2xl shadow space-y-4 border">
-          <div>
-            <label className="block text-sm font-bold mb-1">URL FFBB du match</label>
-            <input 
-              type="url" 
-              placeholder="https://.../match/200000014737720"
-              className="w-full border p-3 rounded-xl bg-gray-50"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-          </div>
-          <div className="bg-blue-50 p-3 rounded-xl text-xs space-y-1 text-blue-900 font-medium">
-            <p>✔ Équipe Sathonay reconnue</p>
-            <p>✔ Adversaire : ASVEL Féminin U18</p>
-            <p>✔ Gymnase de Sathonay — Samedi 15:30</p>
-          </div>
-          <button 
-            onClick={() => setGame({
-              id: '1',
-              opponentName: 'ASVEL U18',
-              matchDate: '15/10/2026',
-              location: 'Sathonay',
-              quarter: 1,
-              clockSeconds: 600,
-              isClockRunning: false,
-              scoreSathonay: 0,
-              scoreOpponentByQuarter: { 1: 0, 2: 0, 3: 0, 4: 0 },
-              roster: MOCK_ROSTER,
-              onCourtPlayerIds: ['1', '2', '3', '4', '5'],
-              benchPlayerIds: ['6', '7'],
-              events: []
-            })}
-            className="w-full bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-lg hover:bg-green-700 transition"
-          >
-            LANCER LE MATCH
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Décompte chrono
+  useEffect(() => {
+    let timer: any;
+    if (game.isClockRunning && game.clockSeconds > 0) {
+      timer = setInterval(() => {
+        setGame(prev => ({ ...prev, clockSeconds: prev.clockSeconds - 1 }));
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [game.isClockRunning, game.clockSeconds]);
 
-  const handleAction = (act: ActionType) => {
-    setSelectedAction(act);
-    setStep(2);
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handlePlayer = (pId: string) => {
-    setSelectedPlayerId(pId);
-    if (['INTERCEPTION', 'CONTRE', 'BALLE_PERDUE', 'PASSE_DECISIVE'].includes(selectedAction!)) {
-      setStep(1);
+  const toggleStarter = (id: string) => {
+    if (game.onCourtPlayerIds.includes(id)) {
+      if (game.onCourtPlayerIds.length > 1) {
+        setGame({ ...game, onCourtPlayerIds: game.onCourtPlayerIds.filter(i => i !== id) });
+      }
     } else {
-      setStep(3);
+      if (game.onCourtPlayerIds.length < 5) {
+        setGame({ ...game, onCourtPlayerIds: [...game.onCourtPlayerIds, id] });
+      }
     }
   };
 
-  const onCourtPlayers = game.roster.filter(p => game.onCourtPlayerIds.includes(p.id));
+  const recordEvent = (action: string, playerId: string, points = 0) => {
+    const newEvent: GameEvent = {
+      id: Date.now().toString(),
+      timestamp: new Date().toLocaleTimeString(),
+      quarter: game.quarter,
+      clockTime: formatTime(game.clockSeconds),
+      actionType: action,
+      playerId: playerId
+    };
+
+    setGame(prev => ({
+      ...prev,
+      scoreHome: prev.scoreHome + points,
+      events: [newEvent, ...prev.events]
+    }));
+
+    setSelectedAction(null);
+    setSelectedPlayerId(null);
+  };
 
   return (
-    <div className="max-w-md mx-auto p-3 space-y-4 min-h-screen">
-      {/* ÉCRAN 1 — TERRAIN */}
-      {step === 1 && (
-        <div className="space-y-4">
-          <div className="bg-gray-900 text-white p-4 rounded-2xl flex justify-between items-center shadow-lg">
-            <div className="text-center">
-              <p className="text-xs text-gray-400 font-bold">SATHONAY</p>
-              <p className="text-4xl font-black">{game.scoreSathonay}</p>
-            </div>
-            <div className="text-center">
-              <span className="bg-blue-600 text-xs px-2 py-0.5 rounded font-black">Q{game.quarter}</span>
-              <p className="text-2xl font-mono font-bold mt-1">10:00</p>
-            </div>
-            <div className="text-center">
-              <p className="text-xs text-gray-400 font-bold">{game.opponentName}</p>
-              <p className="text-4xl font-black">0</p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <button className="py-3 font-black bg-amber-500 text-white rounded-xl shadow">PAUSE CHRONO</button>
-            <button className="py-3 font-black bg-purple-600 text-white rounded-xl shadow">CHANGEMENT</button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <button onClick={() => handleAction('TIR_2PTS')} className="p-5 bg-blue-600 text-white text-xl font-black rounded-2xl shadow">TIR 2PTS</button>
-            <button onClick={() => handleAction('TIR_3PTS')} className="p-5 bg-indigo-600 text-white text-xl font-black rounded-2xl shadow">TIR 3PTS</button>
-            <button onClick={() => handleAction('LANCER_FRANC')} className="p-5 bg-teal-600 text-white text-xl font-black rounded-2xl shadow">LANCER FRANC</button>
-            <button onClick={() => handleAction('REBOND')} className="p-5 bg-orange-600 text-white text-xl font-black rounded-2xl shadow">REBOND</button>
-            <button onClick={() => handleAction('FAUTE')} className="p-5 bg-red-600 text-white text-xl font-black rounded-2xl shadow">FAUTE</button>
-            <button onClick={() => handleAction('PASSE_DECISIVE')} className="p-5 bg-gray-700 text-white text-xl font-black rounded-2xl shadow">PASSE DEC.</button>
-          </div>
+    <div className="max-w-2xl mx-auto min-h-screen pb-12">
+      {/* MENU SUPÉRIEUR */}
+      <header className="bg-slate-900/90 backdrop-blur-md text-white sticky top-0 z-50 border-b border-slate-700/50 shadow-lg">
+        <div className="flex justify-between items-center px-4 py-3">
+          <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
+          <nav className="flex space-x-1 bg-slate-800 p-1 rounded-xl text-xs font-semibold">
+            <button 
+              onClick={() => setActiveTab('INIT')}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'INIT' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}
+            >
+              Configuration
+            </button>
+            <button 
+              onClick={() => setActiveTab('MATCH')}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'MATCH' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}
+            >
+              Direct
+            </button>
+            <button 
+              onClick={() => setActiveTab('LOGS')}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'LOGS' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}
+            >
+              Historique
+            </button>
+          </nav>
         </div>
-      )}
+      </header>
 
-      {/* ÉCRAN 2 — JOUEUSE */}
-      {step === 2 && (
-        <div className="space-y-4">
-          <div className="flex justify-between items-center bg-white p-3 rounded-xl shadow-sm">
-            <span className="font-bold text-gray-500 uppercase">{selectedAction}</span>
-            <button onClick={() => setStep(1)} className="text-red-600 font-bold px-3 py-1 bg-red-50 rounded-lg">ANNULER</button>
-          </div>
-          <h2 className="text-lg font-black text-center">QUI A FAIT L'ACTION ?</h2>
-          <div className="space-y-2">
-            {onCourtPlayers.map(p => (
-              <button key={p.id} onClick={() => handlePlayer(p.id)} className="w-full flex items-center space-x-4 p-4 bg-white rounded-2xl shadow border">
-                <span className="w-12 h-12 flex items-center justify-center bg-blue-600 text-white rounded-xl text-2xl font-black">#{p.number}</span>
-                <span className="text-xl font-bold">{p.name}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      <main className="p-4">
+        {/* ONGLET 1 : CONFIGURATION */}
+        {activeTab === 'INIT' && (
+          <div className="bg-slate-900/85 backdrop-blur text-white p-6 rounded-3xl space-y-6 shadow-2xl border border-white/10">
+            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Initialisation de la rencontre</h2>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile</label>
+                <input 
+                  type="text" 
+                  value={game.teamHome} 
+                  onChange={e => setGame({...game, teamHome: e.target.value})}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Adverse</label>
+                <input 
+                  type="text" 
+                  value={game.teamAway} 
+                  onChange={e => setGame({...game, teamAway: e.target.value})}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
 
-      {/* ÉCRAN 3 — DÉTAIL */}
-      {step === 3 && (
-        <div className="space-y-4">
-          <div className="bg-white p-4 rounded-xl shadow text-center">
-            <h2 className="text-2xl font-black">{selectedAction}</h2>
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <label className="text-xs font-semibold text-slate-400">Composition : 10 Joueuses (Cliquer pour sélectionner le 5 majeur)</label>
+                <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-bold">
+                  {game.onCourtPlayerIds.length}/5 Titulaires
+                </span>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-2">
+                {game.roster.map(p => {
+                  const isStarter = game.onCourtPlayerIds.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => toggleStarter(p.id)}
+                      className={`flex items-center space-x-3 p-3 rounded-xl border text-left transition ${
+                        isStarter 
+                          ? 'bg-amber-600/30 border-amber-500 text-white font-bold' 
+                          : 'bg-slate-800/60 border-slate-700/60 text-slate-400'
+                      }`}
+                    >
+                      <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black ${isStarter ? 'bg-amber-500 text-slate-950' : 'bg-slate-700 text-slate-300'}`}>
+                        #{p.number}
+                      </span>
+                      <span className="text-sm truncate">{p.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <button 
+              onClick={() => setActiveTab('MATCH')}
+              disabled={game.onCourtPlayerIds.length !== 5}
+              className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl shadow-lg transition"
+            >
+              Valider & Passer au terrain
+            </button>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <button onClick={() => { setGame({...game, scoreSathonay: game.scoreSathonay + 2}); setStep(1); }} className="p-8 bg-green-600 text-white font-black text-2xl rounded-2xl shadow">RÉUSSI</button>
-            <button onClick={() => setStep(1)} className="p-8 bg-red-600 text-white font-black text-2xl rounded-2xl shadow">MANQUÉ</button>
+        )}
+
+        {/* ONGLET 2 : DIRECT / TERRAIN */}
+        {activeTab === 'MATCH' && (
+          <div className="space-y-4">
+            {/* SCOREBOARD & CHRONO */}
+            <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl flex justify-between items-center">
+              <div className="text-center w-1/3">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
+                <p className="text-4xl font-black text-amber-400 mt-1">{game.scoreHome}</p>
+              </div>
+
+              <div className="text-center w-1/3 border-x border-slate-800 px-2">
+                <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-1 rounded-full uppercase">
+                  Quart-temps {game.quarter}
+                </span>
+                <p className="text-3xl font-mono font-bold mt-2 tracking-tight text-white">{formatTime(game.clockSeconds)}</p>
+                <div className="flex justify-center space-x-1 mt-2">
+                  <button 
+                    onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})}
+                    className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}
+                  >
+                    {game.isClockRunning ? 'PAUSE' : 'START'}
+                  </button>
+                  <button 
+                    onClick={() => setGame({...game, clockSeconds: 600, isClockRunning: false})}
+                    className="text-[10px] font-extrabold px-2 py-1 bg-slate-800 text-slate-400 rounded-lg hover:text-white"
+                  >
+                    RESET
+                  </button>
+                </div>
+              </div>
+
+              <div className="text-center w-1/3">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamAway}</p>
+                <p className="text-4xl font-black text-slate-300 mt-1">{game.scoreAway}</p>
+                <div className="flex justify-center space-x-1 mt-1">
+                  <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-500 font-bold px-1.5 bg-slate-800 rounded">-</button>
+                  <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-300 font-bold px-1.5 bg-slate-800 rounded">+</button>
+                </div>
+              </div>
+            </div>
+
+            {/* SELECTION ACTION OU JOUEUSE */}
+            {!selectedAction ? (
+              <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
+                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider text-center">1. Choisir l'action</h3>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button onClick={() => setSelectedAction('TIR 2PTS')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">TIR 2PTS</button>
+                  <button onClick={() => setSelectedAction('TIR 3PTS')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">TIR 3PTS</button>
+                  <button onClick={() => setSelectedAction('LANCER FRANC')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">LANCER FRANC</button>
+                  <button onClick={() => setSelectedAction('REBOND')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">REBOND</button>
+                  <button onClick={() => setSelectedAction('FAUTE')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">FAUTE</button>
+                  <button onClick={() => setSelectedAction('PASSE DÉCISIVE')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">PASSE DEC.</button>
+                </div>
+              </div>
+            ) : !selectedPlayerId ? (
+              <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
+                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                  <span className="text-xs font-bold text-amber-400 uppercase">Action : {selectedAction}</span>
+                  <button onClick={() => setSelectedAction(null)} className="text-xs text-rose-400 font-bold">ANNULER</button>
+                </div>
+                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider text-center">2. Sélectionner la joueuse sur le terrain</h3>
+                <div className="space-y-2">
+                  {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => (
+                    <button 
+                      key={p.id} 
+                      onClick={() => setSelectedPlayerId(p.id)} 
+                      className="w-full flex items-center justify-between p-3.5 bg-slate-800 border border-slate-700/80 rounded-2xl text-white hover:bg-slate-700 transition"
+                    >
+                      <span className="w-8 h-8 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-black text-sm">#{p.number}</span>
+                      <span className="font-bold text-sm">{p.name}</span>
+                      <span className="text-xs text-slate-500 font-medium">Sur le terrain</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-5 rounded-3xl shadow-xl space-y-4 text-center">
+                <h3 className="text-sm font-bold text-amber-400 uppercase">3. Résultat de l'action</h3>
+                <p className="text-xs text-slate-300">
+                  {selectedAction} par <strong className="text-white">#{game.roster.find(p => p.id === selectedPlayerId)?.number} {game.roster.find(p => p.id === selectedPlayerId)?.name}</strong>
+                </p>
+
+                {selectedAction?.includes('TIR') || selectedAction === 'LANCER FRANC' ? (
+                  <div className="grid grid-cols-2 gap-3 pt-2">
+                    <button 
+                      onClick={() => recordEvent(selectedAction, selectedPlayerId, selectedAction === 'TIR 3PTS' ? 3 : selectedAction === 'TIR 2PTS' ? 2 : 1)}
+                      className="p-5 bg-emerald-700 hover:bg-emerald-600 text-white font-black rounded-2xl shadow-lg text-lg"
+                    >
+                      RÉUSSI
+                    </button>
+                    <button 
+                      onClick={() => recordEvent(selectedAction + ' (Manqué)', selectedPlayerId, 0)}
+                      className="p-5 bg-rose-700 hover:bg-rose-600 text-white font-black rounded-2xl shadow-lg text-lg"
+                    >
+                      MANQUÉ
+                    </button>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={() => recordEvent(selectedAction, selectedPlayerId, 0)}
+                    className="w-full p-4 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-2xl shadow-lg"
+                  >
+                    VALIDER L'ACTION
+                  </button>
+                )}
+
+                <button onClick={() => { setSelectedAction(null); setSelectedPlayerId(null); }} className="text-xs text-slate-400 font-semibold underline block mx-auto">
+                  Annuler et revenir
+                </button>
+              </div>
+            )}
           </div>
-          <button onClick={() => setStep(1)} className="w-full py-4 bg-gray-300 font-bold rounded-xl">ANNULER</button>
-        </div>
-      )}
+        )}
+
+        {/* ONGLET 3 : HISTORIQUE */}
+        {activeTab === 'LOGS' && (
+          <div className="bg-slate-900/85 backdrop-blur text-white p-5 rounded-3xl space-y-4 shadow-2xl border border-white/10">
+            <h2 className="text-lg font-bold border-b border-slate-800 pb-3 text-amber-400">Historique du match</h2>
+            {game.events.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-6">Aucune action enregistrée pour le moment.</p>
+            ) : (
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+                {game.events.map(ev => {
+                  const player = game.roster.find(p => p.id === ev.playerId);
+                  return (
+                    <div key={ev.id} className="flex justify-between items-center p-3 bg-slate-800/70 border border-slate-700/50 rounded-xl text-xs">
+                      <div>
+                        <span className="font-mono text-amber-400 font-bold mr-2">[{ev.clockTime}]</span>
+                        <span className="font-bold text-white">#{player?.number} {player?.name}</span>
+                      </div>
+                      <span className="bg-slate-700 text-slate-200 px-2 py-0.5 rounded font-semibold">{ev.actionType}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
     </div>
   );
 }
