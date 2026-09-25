@@ -34,7 +34,6 @@ export default function App() {
     events: []
   });
 
-  // Suivi du temps de jeu par joueuse et par quart-temps
   const [playingTime, setPlayingTime] = useState<{ [playerId: string]: { [quarter: number]: number } }>({});
 
   const [selectedAction, setSelectedAction] = useState<string | null>(null);
@@ -45,7 +44,6 @@ export default function App() {
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
   const [selectedInIds, setSelectedInIds] = useState<string[]>([]);
 
-  // Horloge de jeu + comptage du temps de jeu
   useEffect(() => {
     let timer: any;
     if (game.isClockRunning && game.clockSeconds > 0) {
@@ -71,6 +69,10 @@ export default function App() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const getFoulsCount = (playerId: string) => {
+    return game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE')).length;
+  };
+
   const toggleStarter = (id: string) => {
     if (game.onCourtPlayerIds.includes(id)) {
       if (game.onCourtPlayerIds.length > 1) {
@@ -93,15 +95,33 @@ export default function App() {
       playerId: playerId
     };
 
+    let updatedOnCourt = [...game.onCourtPlayerIds];
+    let alertFoul = false;
+
+    if (action.includes('FAUTE')) {
+      const currentFouls = getFoulsCount(playerId) + 1;
+      if (currentFouls >= 5) {
+        updatedOnCourt = updatedOnCourt.filter(id => id !== playerId);
+        alertFoul = true;
+      }
+    }
+
     setGame(prev => ({
       ...prev,
       scoreHome: prev.scoreHome + points,
+      onCourtPlayerIds: updatedOnCourt,
       events: [newEvent, ...prev.events]
     }));
 
     setSelectedAction(null);
     setSelectedPlayerId(null);
     setFtAttempts([null, null, null]);
+
+    if (alertFoul) {
+      const p = game.roster.find(r => r.id === playerId);
+      alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !
+La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
+    }
   };
 
   const handleFreeThrowsSubmit = () => {
@@ -172,8 +192,9 @@ export default function App() {
     if (eventToDelete.actionType.includes('TIR 3PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 3;
     else if (eventToDelete.actionType.includes('TIR 2PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 2;
     else if (eventToDelete.actionType.includes('LANCERS FRANCS')) {
-      const match = eventToDelete.actionType.match(/((d+)/d+/);
-      if (match) pointsToRemove = parseInt(match[1], 10);
+      const match = eventToDelete.actionType.match(/\\((\\d+)\\ me/);
+      const matchLF = eventToDelete.actionType.match(/\\((\\d+)\\/(\\d+)\\)/);
+      if (matchLF) pointsToRemove = parseInt(matchLF[1], 10);
     }
 
     setGame(prev => ({
@@ -183,7 +204,6 @@ export default function App() {
     }));
   };
 
-  // Calculateur de statistiques par joueuse et par quart-temps
   const getPlayerStats = (playerId: string, quarterFilter: number | 'ALL') => {
     const eventsToAnalyze = game.events.filter(e => {
       const matchPlayer = e.playerId === playerId;
@@ -191,7 +211,7 @@ export default function App() {
       return matchPlayer && matchQuarter;
     });
 
-    let fouls = 0, ftMade = 0, ftAttempted = 0, pts2Made = 0, pts2Att = 0, pts3Made = 0, pts3Att = 0;
+    let points = 0, fouls = 0, ftMade = 0, ftAttempted = 0, pts2Made = 0, pts2Att = 0, pts3Made = 0, pts3Att = 0;
     let rebOff = 0, rebDef = 0, assists = 0;
 
     eventsToAnalyze.forEach(ev => {
@@ -203,22 +223,29 @@ export default function App() {
       
       if (act.includes('TIR 2PTS')) {
         pts2Att++;
-        if (!act.includes('Manqué')) pts2Made++;
+        if (!act.includes('Manqué')) {
+          pts2Made++;
+          points += 2;
+        }
       }
       if (act.includes('TIR 3PTS')) {
         pts3Att++;
-        if (!act.includes('Manqué')) pts3Made++;
+        if (!act.includes('Manqué')) {
+          pts3Made++;
+          points += 3;
+        }
       }
       if (act.includes('LANCERS FRANCS')) {
-        const match = act.match(/((d+)/(d+))/);
+        const match = act.match(/\\((\\d+)\\/(\\d+)\\)/);
         if (match) {
-          ftMade += parseInt(match[1], 10);
+          const made = parseInt(match[1], 10);
+          ftMade += made;
           ftAttempted += parseInt(match[2], 10);
+          points += made;
         }
       }
     });
 
-    // Calcul du temps joué (en secondes)
     let totalSecs = 0;
     if (playingTime[playerId]) {
       if (quarterFilter === 'ALL') {
@@ -228,7 +255,7 @@ export default function App() {
       }
     }
 
-    return { totalSecs, fouls, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists };
+    return { points, totalSecs, fouls, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists };
   };
 
   return (
@@ -237,7 +264,6 @@ export default function App() {
         <div className="flex justify-between items-center px-4 py-3">
           <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
           
-          {/* Menu en icônes à droite */}
           <nav className="flex space-x-1.5 bg-slate-800 p-1.5 rounded-2xl text-base font-semibold border border-slate-700/60">
             <button 
               onClick={() => setActiveTab('INIT')}
@@ -283,7 +309,6 @@ export default function App() {
       </header>
 
       <main className="p-4">
-        {/* ONGLET INIT */}
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-6 rounded-3xl space-y-6 shadow-2xl border border-white/10">
             <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Initialisation de la rencontre</h2>
@@ -350,10 +375,15 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET MATCH / DIRECT */}
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
-            {/* Table d'affichage des scores + Sélecteur de QT (-/+) */}
+            {game.onCourtPlayerIds.length < 5 && (
+              <div className="bg-rose-900/90 border border-rose-500 text-white p-3.5 rounded-2xl text-xs font-bold flex justify-between items-center animate-pulse">
+                <span>⚠️ Il manque {5 - game.onCourtPlayerIds.length} joueuse(s) sur le terrain (suite à une 5ᵉ faute).</span>
+                <button onClick={() => setIsSubbing(true)} className="bg-white text-rose-950 px-2.5 py-1 rounded-xl uppercase font-black text-[10px]">Faire entrer</button>
+              </div>
+            )}
+
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl flex justify-between items-center">
               <div className="text-center w-1/3">
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
@@ -361,7 +391,6 @@ export default function App() {
               </div>
 
               <div className="text-center w-1/3 border-x border-slate-800 px-2">
-                {/* Contrôle +/- du quart-temps */}
                 <div className="flex items-center justify-center space-x-2">
                   <button 
                     onClick={() => setGame(prev => ({ ...prev, quarter: Math.max(1, prev.quarter - 1) }))}
@@ -407,7 +436,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Remplacement Multiple */}
             {!isSubbing ? (
               <button 
                 onClick={() => setIsSubbing(true)}
@@ -444,30 +472,39 @@ export default function App() {
                     </div>
                   </div>
 
-                  {selectedOutIds.length > 0 && (
-                    <div>
-                      <p className="text-xs text-emerald-400 font-bold mb-2">2. Cocher {selectedOutIds.length} joueuse(s) qui ENTRE(NT) ({selectedInIds.length}/{selectedOutIds.length}) :</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {game.roster.filter(p => !game.onCourtPlayerIds.includes(p.id)).map(p => {
-                          const isSelected = selectedInIds.includes(p.id);
-                          return (
-                            <button
-                              key={p.id}
-                              onClick={() => toggleSelectIn(p.id)}
-                              className={`flex items-center space-x-2 p-2.5 rounded-xl border text-left text-xs transition ${
-                                isSelected ? 'bg-emerald-500/20 border-emerald-500 text-white font-bold' : 'bg-slate-800 border-slate-700/60 text-slate-400'
-                              }`}
-                            >
-                              <input type="checkbox" checked={isSelected} readOnly className="accent-emerald-500" />
-                              <span>#{p.number} {p.name}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
+                  <div>
+                    <p className="text-xs text-emerald-400 font-bold mb-2">2. Cocher joueuse(s) qui ENTRE(NT) ({selectedInIds.length}) :</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {game.roster.filter(p => !game.onCourtPlayerIds.includes(p.id)).map(p => {
+                        const fouls = getFoulsCount(p.id);
+                        const isFouledOut = fouls >= 5;
+                        const isSelected = selectedInIds.includes(p.id);
 
-                  {selectedOutIds.length > 0 && selectedOutIds.length === selectedInIds.length && (
+                        return (
+                          <button
+                            key={p.id}
+                            disabled={isFouledOut}
+                            onClick={() => toggleSelectIn(p.id)}
+                            className={`flex items-center justify-between p-2.5 rounded-xl border text-left text-xs transition ${
+                              isFouledOut 
+                                ? 'bg-rose-950/40 border-rose-900/50 text-rose-500/50 cursor-not-allowed'
+                                : isSelected 
+                                  ? 'bg-emerald-500/20 border-emerald-500 text-white font-bold' 
+                                  : 'bg-slate-800 border-slate-700/60 text-slate-400'
+                            }`}
+                          >
+                            <div className="flex items-center space-x-2">
+                              {!isFouledOut && <input type="checkbox" checked={isSelected} readOnly className="accent-emerald-500" />}
+                              <span>#{p.number} {p.name}</span>
+                            </div>
+                            {isFouledOut && <span className="text-[10px] bg-rose-900/80 text-rose-200 px-1.5 py-0.5 rounded font-black">5 FAUTES (EXCLUE)</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {selectedInIds.length > 0 && (
                     <button 
                       onClick={validateSubstitutions}
                       className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl shadow-lg transition"
@@ -479,7 +516,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Grille d'actions directes */}
             {!selectedAction ? (
               <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
                 <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider text-center">1. Choisir l'action</h3>
@@ -501,17 +537,26 @@ export default function App() {
                 </div>
                 <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider text-center">2. Sélectionner la joueuse</h3>
                 <div className="space-y-2">
-                  {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => (
-                    <button 
-                      key={p.id} 
-                      onClick={() => setSelectedPlayerId(p.id)} 
-                      className="w-full flex items-center justify-between p-3.5 bg-slate-800 border border-slate-700/80 rounded-2xl text-white hover:bg-slate-700 transition"
-                    >
-                      <span className="w-8 h-8 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-black text-sm">#{p.number}</span>
-                      <span className="font-bold text-sm">{p.name}</span>
-                      <span className="text-xs text-slate-500 font-medium">Sur le terrain</span>
-                    </button>
-                  ))}
+                  {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
+                    const fouls = getFoulsCount(p.id);
+                    return (
+                      <button 
+                        key={p.id} 
+                        onClick={() => setSelectedPlayerId(p.id)} 
+                        className="w-full flex items-center justify-between p-3.5 bg-slate-800 border border-slate-700/80 rounded-2xl text-white hover:bg-slate-700 transition"
+                      >
+                        <div className="flex items-center space-x-3">
+                          <span className="w-8 h-8 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-black text-sm">#{p.number}</span>
+                          <span className="font-bold text-sm">{p.name}</span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${fouls >= 4 ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40' : 'bg-slate-700 text-slate-400'}`}>
+                            {fouls}/5 fautes
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ) : selectedAction === 'LANCERS FRANCS' ? (
@@ -606,13 +651,11 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET STATISTIQUES (📊) */}
         {activeTab === 'STATS' && (
           <div className="bg-slate-900/90 backdrop-blur text-white p-5 rounded-3xl space-y-5 shadow-2xl border border-white/10">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h2 className="text-lg font-bold text-amber-400">Statistiques des Joueuses</h2>
               
-              {/* Filtre quart-temps */}
               <div className="flex space-x-1 bg-slate-800 p-1 rounded-xl text-xs font-bold border border-slate-700">
                 {(['ALL', 1, 2, 3, 4] as const).map(q => (
                   <button
@@ -629,11 +672,12 @@ export default function App() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse min-w-[600px]">
+              <table className="w-full text-left text-xs border-collapse min-w-[650px]">
                 <thead>
                   <tr className="border-b border-slate-700 text-slate-400 uppercase text-[10px] tracking-wider">
                     <th className="py-2.5 px-2">Joueuse</th>
                     <th className="py-2.5 px-2 text-center">Temps</th>
+                    <th className="py-2.5 px-2 text-center font-bold text-amber-400">PTS</th>
                     <th className="py-2.5 px-2 text-center">Fautes</th>
                     <th className="py-2.5 px-2 text-center">LF</th>
                     <th className="py-2.5 px-2 text-center">2PTS</th>
@@ -645,16 +689,22 @@ export default function App() {
                 <tbody className="divide-y divide-slate-800/60">
                   {game.roster.map(player => {
                     const st = getPlayerStats(player.id, selectedQuarterFilter);
+                    const isFouledOut = st.fouls >= 5;
+
                     return (
-                      <tr key={player.id} className="hover:bg-slate-800/40 transition">
-                        <td className="py-3 px-2 font-bold text-slate-200">
-                          #{player.number} {player.name}
+                      <tr key={player.id} className={`hover:bg-slate-800/40 transition ${isFouledOut ? 'bg-rose-950/20' : ''}`}>
+                        <td className="py-3 px-2 font-bold text-slate-200 flex items-center justify-between">
+                          <span>#{player.number} {player.name}</span>
+                          {isFouledOut && <span className="text-[9px] bg-rose-900 text-rose-300 font-bold px-1.5 py-0.5 rounded ml-2">EXCLUE</span>}
                         </td>
                         <td className="py-3 px-2 text-center font-mono text-amber-300">
                           {formatTime(st.totalSecs)}
                         </td>
-                        <td className="py-3 px-2 text-center font-bold text-rose-400">
-                          {st.fouls}
+                        <td className="py-3 px-2 text-center font-black text-amber-400 text-sm">
+                          {st.points}
+                        </td>
+                        <td className={`py-3 px-2 text-center font-bold ${st.fouls >= 5 ? 'text-rose-500 font-black' : st.fouls >= 4 ? 'text-amber-400' : 'text-slate-300'}`}>
+                          {st.fouls}/5
                         </td>
                         <td className="py-3 px-2 text-center">
                           {st.ftMade}/{st.ftAttempted}
@@ -680,7 +730,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET HISTORIQUE (🕒) */}
         {activeTab === 'LOGS' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-5 rounded-3xl space-y-4 shadow-2xl border border-white/10">
             <h2 className="text-lg font-bold border-b border-slate-800 pb-3 text-amber-400">Historique du match</h2>
