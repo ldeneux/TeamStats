@@ -34,7 +34,6 @@ export default function App() {
     events: []
   });
 
-  // Suivi du temps de jeu par joueuse et par quart-temps
   const [playingTime, setPlayingTime] = useState<{ [playerId: string]: { [quarter: number]: number } }>({});
 
   const [selectedAction, setSelectedAction] = useState<string | null>(null);
@@ -45,7 +44,6 @@ export default function App() {
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
   const [selectedInIds, setSelectedInIds] = useState<string[]>([]);
 
-  // Horloge de jeu + comptage du temps de jeu
   useEffect(() => {
     let timer: any;
     if (game.isClockRunning && game.clockSeconds > 0) {
@@ -172,7 +170,7 @@ export default function App() {
     if (eventToDelete.actionType.includes('TIR 3PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 3;
     else if (eventToDelete.actionType.includes('TIR 2PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 2;
     else if (eventToDelete.actionType.includes('LANCERS FRANCS')) {
-      const match = eventToDelete.actionType.match(/((d+)/d+/);
+      const match = eventToDelete.actionType.match(/\((\d+)\/(\d+)\)/);
       if (match) pointsToRemove = parseInt(match[1], 10);
     }
 
@@ -183,7 +181,6 @@ export default function App() {
     }));
   };
 
-  // Calculateur de statistiques par joueuse et par quart-temps
   const getPlayerStats = (playerId: string, quarterFilter: number | 'ALL') => {
     const eventsToAnalyze = game.events.filter(e => {
       const matchPlayer = e.playerId === playerId;
@@ -210,7 +207,7 @@ export default function App() {
         if (!act.includes('Manqué')) pts3Made++;
       }
       if (act.includes('LANCERS FRANCS')) {
-        const match = act.match(/((d+)/(d+))/);
+        const match = act.match(/\((\d+)\/(\d+)\)/);
         if (match) {
           ftMade += parseInt(match[1], 10);
           ftAttempted += parseInt(match[2], 10);
@@ -218,7 +215,6 @@ export default function App() {
       }
     });
 
-    // Calcul du temps joué (en secondes)
     let totalSecs = 0;
     if (playingTime[playerId]) {
       if (quarterFilter === 'ALL') {
@@ -237,7 +233,6 @@ export default function App() {
         <div className="flex justify-between items-center px-4 py-3">
           <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
           
-          {/* Menu en icônes à droite */}
           <nav className="flex space-x-1.5 bg-slate-800 p-1.5 rounded-2xl text-base font-semibold border border-slate-700/60">
             <button 
               onClick={() => setActiveTab('INIT')}
@@ -283,7 +278,6 @@ export default function App() {
       </header>
 
       <main className="p-4">
-        {/* ONGLET INIT */}
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-6 rounded-3xl space-y-6 shadow-2xl border border-white/10">
             <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Initialisation de la rencontre</h2>
@@ -350,10 +344,8 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET MATCH / DIRECT */}
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
-            {/* Table d'affichage des scores + Sélecteur de QT (-/+) */}
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl flex justify-between items-center">
               <div className="text-center w-1/3">
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
@@ -361,7 +353,6 @@ export default function App() {
               </div>
 
               <div className="text-center w-1/3 border-x border-slate-800 px-2">
-                {/* Contrôle +/- du quart-temps */}
                 <div className="flex items-center justify-center space-x-2">
                   <button 
                     onClick={() => setGame(prev => ({ ...prev, quarter: Math.max(1, prev.quarter - 1) }))}
@@ -407,7 +398,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Remplacement Multiple */}
             {!isSubbing ? (
               <button 
                 onClick={() => setIsSubbing(true)}
@@ -479,7 +469,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Grille d'actions directes */}
             {!selectedAction ? (
               <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
                 <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider text-center">1. Choisir l'action</h3>
@@ -606,13 +595,11 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET STATISTIQUES (📊) */}
         {activeTab === 'STATS' && (
           <div className="bg-slate-900/90 backdrop-blur text-white p-5 rounded-3xl space-y-5 shadow-2xl border border-white/10">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h2 className="text-lg font-bold text-amber-400">Statistiques des Joueuses</h2>
               
-              {/* Filtre quart-temps */}
               <div className="flex space-x-1 bg-slate-800 p-1 rounded-xl text-xs font-bold border border-slate-700">
                 {(['ALL', 1, 2, 3, 4] as const).map(q => (
                   <button
@@ -680,7 +667,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET HISTORIQUE (🕒) */}
         {activeTab === 'LOGS' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-5 rounded-3xl space-y-4 shadow-2xl border border-white/10">
             <h2 className="text-lg font-bold border-b border-slate-800 pb-3 text-amber-400">Historique du match</h2>
