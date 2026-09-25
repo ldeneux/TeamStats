@@ -318,3 +318,19 @@ export default function App() {
     </div>
   );
 }
+const deleteEvent = (eventId: string) => {
+  const eventToDelete = game.events.find(ev => ev.id === eventId);
+  if (!eventToDelete) return;
+
+  // Calcul des points à retirer si l'action supprimée était un panier réussi
+  let pointsToRemove = 0;
+  if (eventToDelete.actionType === 'TIR 3PTS') pointsToRemove = 3;
+  else if (eventToDelete.actionType === 'TIR 2PTS') pointsToRemove = 2;
+  else if (eventToDelete.actionType === 'LANCER FRANC') pointsToRemove = 1;
+
+  setGame(prev => ({
+    ...prev,
+    scoreHome: Math.max(0, prev.scoreHome - pointsToRemove),
+    events: prev.events.filter(ev => ev.id !== eventId)
+  }));
+};
