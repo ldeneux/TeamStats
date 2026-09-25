@@ -73,6 +73,11 @@ export default function App() {
     return game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE')).length;
   };
 
+  // Vérifie s'il reste au moins une joueuse valide sur le banc (pas exclue pour 5 fautes)
+  const availableBenchPlayers = game.roster.filter(
+    p => !game.onCourtPlayerIds.includes(p.id) && getFoulsCount(p.id) < 5
+  );
+
   const toggleStarter = (id: string) => {
     if (game.onCourtPlayerIds.includes(id)) {
       if (game.onCourtPlayerIds.length > 1) {
@@ -119,8 +124,20 @@ export default function App() {
 
     if (alertFoul) {
       const p = game.roster.find(r => r.id === playerId);
-      alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !
-La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
+      // Ouvre automatiquement le panneau de remplacement si des remplaçantes sont dispos
+      const benchAvailable = game.roster.filter(
+        item => item.id !== playerId && !game.onCourtPlayerIds.includes(item.id) && getFoulsCount(item.id) < 5
+      );
+
+      if (benchAvailable.length > 0) {
+        setSelectedOutIds([playerId]); // On pré-sélectionne la joueuse sortie pour 5 fautes
+        setIsSubbing(true);
+        alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !
+Elle a été exclue du terrain. Sélectionnez une remplaçante.`);
+      } else {
+        alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !
+Elle est exclue. Aucun changement possible (banc vide/exclu), le match continue à ${updatedOnCourt.length}.`);
+      }
     }
   };
 
@@ -378,10 +395,18 @@ La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
 
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
-            {game.onCourtPlayerIds.length < 5 && (
+            {/* Affiche l'alerte de remplacement UNIQUEMENT si le banc contient encore des joueuses valides */}
+            {game.onCourtPlayerIds.length < 5 && availableBenchPlayers.length > 0 && (
               <div className="bg-rose-900/90 border border-rose-500 text-white p-3.5 rounded-2xl text-xs font-bold flex justify-between items-center animate-pulse">
-                <span>⚠️ Il manque {5 - game.onCourtPlayerIds.length} joueuse(s) sur le terrain (suite à une 5ᵉ faute).</span>
+                <span>⚠️ Il manque {5 - game.onCourtPlayerIds.length} joueuse(s) sur le terrain.</span>
                 <button onClick={() => setIsSubbing(true)} className="bg-white text-rose-950 px-2.5 py-1 rounded-xl uppercase font-black text-[10px]">Faire entrer</button>
+              </div>
+            )}
+
+            {/* Information visuelle si l'équipe joue en sous-effectif subi (ex: 4 vs 5 sans banc) */}
+            {game.onCourtPlayerIds.length < 5 && availableBenchPlayers.length === 0 && (
+              <div className="bg-amber-950/80 border border-amber-500/50 text-amber-200 p-2.5 rounded-2xl text-xs font-semibold text-center">
+                ⚠️ Équipe en sous-effectif ({game.onCourtPlayerIds.length} joueuses sur le terrain - banc épuisé).
               </div>
             )}
 
@@ -440,7 +465,8 @@ La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
             {!isSubbing ? (
               <button 
                 onClick={() => setIsSubbing(true)}
-                className="w-full bg-indigo-600/80 hover:bg-indigo-600 border border-indigo-400/30 text-white font-bold py-3 rounded-2xl shadow-md transition flex items-center justify-center space-x-2"
+                disabled={availableBenchPlayers.length === 0}
+                className="w-full bg-indigo-600/80 hover:bg-indigo-600 disabled:opacity-40 border border-indigo-400/30 text-white font-bold py-3 rounded-2xl shadow-md transition flex items-center justify-center space-x-2"
               >
                 <span>🔄 Faire un ou plusieurs changements</span>
               </button>
@@ -453,9 +479,10 @@ La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
 
                 <div className="space-y-4">
                   <div>
-                    <p className="text-xs text-rose-400 font-bold mb-2">1. Cocher la / les joueuse(s) qui SORTE(NT) ({selectedOutIds.length}) :</p>
+                    <p className="text-xs text-rose-400 font-bold mb-2">1. Joueuse(s) sortante(s) ({selectedOutIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
-                      {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
+                      {/* On liste l'ensemble des joueuses du roster hors terrain (y compris celles qui viennent d'être exclues) */}
+                      {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id) || selectedOutIds.includes(p.id)).map(p => {
                         const isSelected = selectedOutIds.includes(p.id);
                         return (
                           <button
@@ -476,7 +503,7 @@ La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
                   <div>
                     <p className="text-xs text-emerald-400 font-bold mb-2">2. Cocher joueuse(s) qui ENTRE(NT) ({selectedInIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
-                      {game.roster.filter(p => !game.onCourtPlayerIds.includes(p.id)).map(p => {
+                      {game.roster.filter(p => !game.onCourtPlayerIds.includes(p.id) && !selectedOutIds.includes(p.id)).map(p => {
                         const fouls = getFoulsCount(p.id);
                         const isFouledOut = fouls >= 5;
                         const isSelected = selectedInIds.includes(p.id);
@@ -505,7 +532,7 @@ La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
                     </div>
                   </div>
 
-                  {selectedInIds.length > 0 && (
+                  {selectedInIds.length > 0 && selectedOutIds.length === selectedInIds.length && (
                     <button 
                       onClick={validateSubstitutions}
                       className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl shadow-lg transition"
