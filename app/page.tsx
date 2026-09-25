@@ -36,7 +36,6 @@ export default function App() {
   const [selectedAction, setSelectedAction] = useState<string | null>(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
 
-  // Décompte chrono
   useEffect(() => {
     let timer: any;
     if (game.isClockRunning && game.clockSeconds > 0) {
@@ -87,7 +86,6 @@ export default function App() {
 
   return (
     <div className="max-w-2xl mx-auto min-h-screen pb-12">
-      {/* MENU SUPÉRIEUR */}
       <header className="bg-slate-900/90 backdrop-blur-md text-white sticky top-0 z-50 border-b border-slate-700/50 shadow-lg">
         <div className="flex justify-between items-center px-4 py-3">
           <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
@@ -115,7 +113,6 @@ export default function App() {
       </header>
 
       <main className="p-4">
-        {/* ONGLET 1 : CONFIGURATION */}
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-6 rounded-3xl space-y-6 shadow-2xl border border-white/10">
             <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Initialisation de la rencontre</h2>
@@ -143,7 +140,7 @@ export default function App() {
 
             <div>
               <div className="flex justify-between items-center mb-2">
-                <label className="text-xs font-semibold text-slate-400">Composition : 10 Joueuses (Cliquer pour sélectionner le 5 majeur)</label>
+                <label className="text-xs font-semibold text-slate-400">Composition : 10 Joueuses (Sélectionnez 5 titulaires)</label>
                 <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-bold">
                   {game.onCourtPlayerIds.length}/5 Titulaires
                 </span>
@@ -182,10 +179,8 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET 2 : DIRECT / TERRAIN */}
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
-            {/* SCOREBOARD & CHRONO */}
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl flex justify-between items-center">
               <div className="text-center w-1/3">
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
@@ -223,7 +218,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* SELECTION ACTION OU JOUEUSE */}
             {!selectedAction ? (
               <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
                 <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider text-center">1. Choisir l'action</h3>
@@ -296,7 +290,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ONGLET 3 : HISTORIQUE */}
         {activeTab === 'LOGS' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-5 rounded-3xl space-y-4 shadow-2xl border border-white/10">
             <h2 className="text-lg font-bold border-b border-slate-800 pb-3 text-amber-400">Historique du match</h2>
