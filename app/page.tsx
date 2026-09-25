@@ -17,8 +17,9 @@ const DEFAULT_PLAYERS: Player[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'LOGS'>('INIT');
-  
+  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS'>('MATCH');
+  const [selectedQuarterFilter, setSelectedQuarterFilter] = useState<number | 'ALL'>('ALL');
+
   const [game, setGame] = useState<GameState>({
     teamHome: 'SATHONAY',
     teamAway: 'ASVEL U18',
@@ -33,26 +34,36 @@ export default function App() {
     events: []
   });
 
+  // Suivi du temps de jeu par joueuse et par quart-temps
+  const [playingTime, setPlayingTime] = useState<{ [playerId: string]: { [quarter: number]: number } }>({});
+
   const [selectedAction, setSelectedAction] = useState<string | null>(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
-  
-  // État pour les lancers francs (3 essais)
   const [ftAttempts, setFtAttempts] = useState<[boolean | null, boolean | null, boolean | null]>([null, null, null]);
 
-  // États pour la gestion du remplacement multiple
   const [isSubbing, setIsSubbing] = useState(false);
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
   const [selectedInIds, setSelectedInIds] = useState<string[]>([]);
 
+  // Horloge de jeu + comptage du temps de jeu
   useEffect(() => {
     let timer: any;
     if (game.isClockRunning && game.clockSeconds > 0) {
       timer = setInterval(() => {
         setGame(prev => ({ ...prev, clockSeconds: prev.clockSeconds - 1 }));
+
+        setPlayingTime(prev => {
+          const updated = { ...prev };
+          game.onCourtPlayerIds.forEach(id => {
+            if (!updated[id]) updated[id] = {};
+            updated[id][game.quarter] = (updated[id][game.quarter] || 0) + 1;
+          });
+          return updated;
+        });
       }, 1000);
     }
     return () => clearInterval(timer);
-  }, [game.isClockRunning, game.clockSeconds]);
+  }, [game.isClockRunning, game.clockSeconds, game.onCourtPlayerIds, game.quarter]);
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -95,7 +106,6 @@ export default function App() {
 
   const handleFreeThrowsSubmit = () => {
     if (!selectedPlayerId) return;
-
     let points = 0;
     const details: string[] = [];
 
@@ -109,26 +119,19 @@ export default function App() {
     });
 
     if (details.length === 0) return;
-
-    const actionText = `LANCERS FRANCS (${points}/${details.length} réussi${points > 1 ? 's' : ''})`;
+    const actionText = `LANCERS FRANCS (${points}/${details.length})`;
     recordEvent(actionText, selectedPlayerId, points);
   };
 
   const toggleSelectOut = (id: string) => {
-    if (selectedOutIds.includes(id)) {
-      setSelectedOutIds(selectedOutIds.filter(i => i !== id));
-    } else {
-      setSelectedOutIds([...selectedOutIds, id]);
-    }
+    setSelectedOutIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
 
   const toggleSelectIn = (id: string) => {
     if (selectedInIds.includes(id)) {
       setSelectedInIds(selectedInIds.filter(i => i !== id));
-    } else {
-      if (selectedInIds.length < selectedOutIds.length) {
-        setSelectedInIds([...selectedInIds, id]);
-      }
+    } else if (selectedInIds.length < selectedOutIds.length) {
+      setSelectedInIds([...selectedInIds, id]);
     }
   };
 
@@ -143,7 +146,7 @@ export default function App() {
       timestamp: new Date().toLocaleTimeString(),
       quarter: game.quarter,
       clockTime: formatTime(game.clockSeconds),
-      actionType: `REMPLACEMENT (${selectedOutIds.length}j) - Sortie: ${pOutNames} / Entrée: ${pInNames}`,
+      actionType: `REMPLACEMENT (${selectedOutIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
       playerId: selectedInIds[0]
     };
 
@@ -166,8 +169,8 @@ export default function App() {
     if (!eventToDelete) return;
 
     let pointsToRemove = 0;
-    if (eventToDelete.actionType.includes('TIR 3PTS')) pointsToRemove = 3;
-    else if (eventToDelete.actionType.includes('TIR 2PTS')) pointsToRemove = 2;
+    if (eventToDelete.actionType.includes('TIR 3PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 3;
+    else if (eventToDelete.actionType.includes('TIR 2PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 2;
     else if (eventToDelete.actionType.includes('LANCERS FRANCS')) {
       const match = eventToDelete.actionType.match(/((d+)/d+/);
       if (match) pointsToRemove = parseInt(match[1], 10);
@@ -180,35 +183,107 @@ export default function App() {
     }));
   };
 
+  // Calculateur de statistiques par joueuse et par quart-temps
+  const getPlayerStats = (playerId: string, quarterFilter: number | 'ALL') => {
+    const eventsToAnalyze = game.events.filter(e => {
+      const matchPlayer = e.playerId === playerId;
+      const matchQuarter = quarterFilter === 'ALL' ? true : e.quarter === quarterFilter;
+      return matchPlayer && matchQuarter;
+    });
+
+    let fouls = 0, ftMade = 0, ftAttempted = 0, pts2Made = 0, pts2Att = 0, pts3Made = 0, pts3Att = 0;
+    let rebOff = 0, rebDef = 0, assists = 0;
+
+    eventsToAnalyze.forEach(ev => {
+      const act = ev.actionType;
+      if (act.includes('FAUTE')) fouls++;
+      if (act.includes('PASSE DÉCISIVE')) assists++;
+      if (act.includes('REBOND OFFENSIF')) rebOff++;
+      if (act.includes('REBOND DÉFENSIF')) rebDef++;
+      
+      if (act.includes('TIR 2PTS')) {
+        pts2Att++;
+        if (!act.includes('Manqué')) pts2Made++;
+      }
+      if (act.includes('TIR 3PTS')) {
+        pts3Att++;
+        if (!act.includes('Manqué')) pts3Made++;
+      }
+      if (act.includes('LANCERS FRANCS')) {
+        const match = act.match(/((d+)/(d+))/);
+        if (match) {
+          ftMade += parseInt(match[1], 10);
+          ftAttempted += parseInt(match[2], 10);
+        }
+      }
+    });
+
+    // Calcul du temps joué (en secondes)
+    let totalSecs = 0;
+    if (playingTime[playerId]) {
+      if (quarterFilter === 'ALL') {
+        totalSecs = Object.values(playingTime[playerId]).reduce((a, b) => a + b, 0);
+      } else {
+        totalSecs = playingTime[playerId][quarterFilter] || 0;
+      }
+    }
+
+    return { totalSecs, fouls, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists };
+  };
+
   return (
-    <div className="max-w-2xl mx-auto min-h-screen pb-12">
+    <div className="max-w-3xl mx-auto min-h-screen pb-12">
       <header className="bg-slate-900/90 backdrop-blur-md text-white sticky top-0 z-50 border-b border-slate-700/50 shadow-lg">
         <div className="flex justify-between items-center px-4 py-3">
           <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
-          <nav className="flex space-x-1 bg-slate-800 p-1 rounded-xl text-xs font-semibold">
+          
+          {/* Menu en icônes à droite */}
+          <nav className="flex space-x-1.5 bg-slate-800 p-1.5 rounded-2xl text-base font-semibold border border-slate-700/60">
             <button 
               onClick={() => setActiveTab('INIT')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'INIT' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}
+              title="Configuration"
+              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+                activeTab === 'INIT' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+              }`}
             >
-              Configuration
+              ⚙️
             </button>
+
             <button 
               onClick={() => setActiveTab('MATCH')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'MATCH' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}
+              title="Direct"
+              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+                activeTab === 'MATCH' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-400 hover:text-white hover:bg-slate-700/50'
+              }`}
             >
-              Direct
+              🏀
             </button>
+
+            <button 
+              onClick={() => setActiveTab('STATS')}
+              title="Statistiques"
+              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+                activeTab === 'STATS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+              }`}
+            >
+              📊
+            </button>
+
             <button 
               onClick={() => setActiveTab('LOGS')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'LOGS' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}
+              title="Historique"
+              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+                activeTab === 'LOGS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+              }`}
             >
-              Historique
+              🕒
             </button>
           </nav>
         </div>
       </header>
 
       <main className="p-4">
+        {/* ONGLET INIT */}
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-6 rounded-3xl space-y-6 shadow-2xl border border-white/10">
             <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Initialisation de la rencontre</h2>
@@ -236,7 +311,7 @@ export default function App() {
 
             <div>
               <div className="flex justify-between items-center mb-2">
-                <label className="text-xs font-semibold text-slate-400">Composition : 10 Joueuses (Sélectionnez 5 titulaires)</label>
+                <label className="text-xs font-semibold text-slate-400">Composition : 10 Joueuses (5 titulaires)</label>
                 <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-bold">
                   {game.onCourtPlayerIds.length}/5 Titulaires
                 </span>
@@ -275,9 +350,10 @@ export default function App() {
           </div>
         )}
 
+        {/* ONGLET MATCH / DIRECT */}
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
-            {/* Table d'affichage des scores */}
+            {/* Table d'affichage des scores + Sélecteur de QT (-/+) */}
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl flex justify-between items-center">
               <div className="text-center w-1/3">
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
@@ -285,9 +361,25 @@ export default function App() {
               </div>
 
               <div className="text-center w-1/3 border-x border-slate-800 px-2">
-                <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-1 rounded-full uppercase">
-                  Quart-temps {game.quarter}
-                </span>
+                {/* Contrôle +/- du quart-temps */}
+                <div className="flex items-center justify-center space-x-2">
+                  <button 
+                    onClick={() => setGame(prev => ({ ...prev, quarter: Math.max(1, prev.quarter - 1) }))}
+                    className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
+                  >
+                    -
+                  </button>
+                  <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-1 rounded-full uppercase">
+                    Q{game.quarter}
+                  </span>
+                  <button 
+                    onClick={() => setGame(prev => ({ ...prev, quarter: Math.min(4, prev.quarter + 1) }))}
+                    className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
+                  >
+                    +
+                  </button>
+                </div>
+
                 <p className="text-3xl font-mono font-bold mt-2 tracking-tight text-white">{formatTime(game.clockSeconds)}</p>
                 <div className="flex justify-center space-x-1 mt-2">
                   <button 
@@ -332,7 +424,7 @@ export default function App() {
 
                 <div className="space-y-4">
                   <div>
-                    <p className="text-xs text-rose-400 font-bold mb-2">1. Cocher la / les joueuse(s) qui SORTE(NT) du terrain ({selectedOutIds.length}) :</p>
+                    <p className="text-xs text-rose-400 font-bold mb-2">1. Cocher la / les joueuse(s) qui SORTE(NT) ({selectedOutIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
                       {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
                         const isSelected = selectedOutIds.includes(p.id);
@@ -387,17 +479,18 @@ export default function App() {
               </div>
             )}
 
-            {/* Formulaire classique d'enregistrement des actions */}
+            {/* Grille d'actions directes */}
             {!selectedAction ? (
               <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
                 <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider text-center">1. Choisir l'action</h3>
                 <div className="grid grid-cols-2 gap-2.5">
-                  <button onClick={() => setSelectedAction('TIR 2PTS')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">TIR 2PTS</button>
-                  <button onClick={() => setSelectedAction('TIR 3PTS')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">TIR 3PTS</button>
-                  <button onClick={() => setSelectedAction('LANCERS FRANCS')} className="p-4 bg-amber-600/30 hover:bg-amber-600/40 text-amber-300 font-bold text-sm rounded-2xl border border-amber-500/50 shadow">LANCER FRANC</button>
-                  <button onClick={() => setSelectedAction('REBOND')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">REBOND</button>
-                  <button onClick={() => setSelectedAction('FAUTE')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">FAUTE</button>
-                  <button onClick={() => setSelectedAction('PASSE DÉCISIVE')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">PASSE DEC.</button>
+                  <button onClick={() => setSelectedAction('TIR 2PTS')} className="p-3.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">TIR 2PTS</button>
+                  <button onClick={() => setSelectedAction('TIR 3PTS')} className="p-3.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">TIR 3PTS</button>
+                  <button onClick={() => setSelectedAction('LANCERS FRANCS')} className="p-3.5 bg-amber-600/30 hover:bg-amber-600/40 text-amber-300 font-bold text-sm rounded-2xl border border-amber-500/50 shadow">LANCER FRANC</button>
+                  <button onClick={() => setSelectedAction('PASSE DÉCISIVE')} className="p-3.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm rounded-2xl border border-slate-700/80 shadow">PASSE DEC.</button>
+                  <button onClick={() => setSelectedAction('REBOND OFFENSIF')} className="p-3.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-2xl border border-slate-700/80 shadow">REBOND OFF.</button>
+                  <button onClick={() => setSelectedAction('REBOND DÉFENSIF')} className="p-3.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-2xl border border-slate-700/80 shadow">REBOND DEF.</button>
+                  <button onClick={() => setSelectedAction('FAUTE')} className="p-3.5 bg-rose-900/40 hover:bg-rose-900/60 text-rose-300 font-bold text-sm rounded-2xl border border-rose-700/50 shadow col-span-2">FAUTE</button>
                 </div>
               </div>
             ) : !selectedPlayerId ? (
@@ -406,7 +499,7 @@ export default function App() {
                   <span className="text-xs font-bold text-amber-400 uppercase">Action : {selectedAction}</span>
                   <button onClick={() => setSelectedAction(null)} className="text-xs text-rose-400 font-bold">ANNULER</button>
                 </div>
-                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider text-center">2. Sélectionner la joueuse sur le terrain</h3>
+                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider text-center">2. Sélectionner la joueuse</h3>
                 <div className="space-y-2">
                   {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => (
                     <button 
@@ -422,7 +515,6 @@ export default function App() {
                 </div>
               </div>
             ) : selectedAction === 'LANCERS FRANCS' ? (
-              /* Interface Spécifique aux Lancers Francs (3 Lignes) */
               <div className="bg-slate-900/90 backdrop-blur-md border border-amber-500/30 p-5 rounded-3xl shadow-xl space-y-4 text-center">
                 <h3 className="text-sm font-bold text-amber-400 uppercase">Saisie des Lancers Francs</h3>
                 <p className="text-xs text-slate-300">
@@ -472,13 +564,12 @@ export default function App() {
                 </button>
 
                 <button onClick={() => { setSelectedAction(null); setSelectedPlayerId(null); setFtAttempts([null, null, null]); }} className="text-xs text-slate-400 font-semibold underline block mx-auto">
-                  Annuler et revenir
+                  Annuler
                 </button>
               </div>
             ) : (
-              /* Interface Tirs Classiques */
               <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-5 rounded-3xl shadow-xl space-y-4 text-center">
-                <h3 className="text-sm font-bold text-amber-400 uppercase">3. Résultat de l'action</h3>
+                <h3 className="text-sm font-bold text-amber-400 uppercase">3. Résultat</h3>
                 <p className="text-xs text-slate-300">
                   {selectedAction} par <strong className="text-white">#{game.roster.find(p => p.id === selectedPlayerId)?.number} {game.roster.find(p => p.id === selectedPlayerId)?.name}</strong>
                 </p>
@@ -508,13 +599,88 @@ export default function App() {
                 )}
 
                 <button onClick={() => { setSelectedAction(null); setSelectedPlayerId(null); }} className="text-xs text-slate-400 font-semibold underline block mx-auto">
-                  Annuler et revenir
+                  Annuler
                 </button>
               </div>
             )}
           </div>
         )}
 
+        {/* ONGLET STATISTIQUES (📊) */}
+        {activeTab === 'STATS' && (
+          <div className="bg-slate-900/90 backdrop-blur text-white p-5 rounded-3xl space-y-5 shadow-2xl border border-white/10">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h2 className="text-lg font-bold text-amber-400">Statistiques des Joueuses</h2>
+              
+              {/* Filtre quart-temps */}
+              <div className="flex space-x-1 bg-slate-800 p-1 rounded-xl text-xs font-bold border border-slate-700">
+                {(['ALL', 1, 2, 3, 4] as const).map(q => (
+                  <button
+                    key={q}
+                    onClick={() => setSelectedQuarterFilter(q)}
+                    className={`px-2.5 py-1 rounded-lg transition ${
+                      selectedQuarterFilter === q ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {q === 'ALL' ? 'Total' : `Q${q}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse min-w-[600px]">
+                <thead>
+                  <tr className="border-b border-slate-700 text-slate-400 uppercase text-[10px] tracking-wider">
+                    <th className="py-2.5 px-2">Joueuse</th>
+                    <th className="py-2.5 px-2 text-center">Temps</th>
+                    <th className="py-2.5 px-2 text-center">Fautes</th>
+                    <th className="py-2.5 px-2 text-center">LF</th>
+                    <th className="py-2.5 px-2 text-center">2PTS</th>
+                    <th className="py-2.5 px-2 text-center">3PTS</th>
+                    <th className="py-2.5 px-2 text-center">Reb. Off/Def</th>
+                    <th className="py-2.5 px-2 text-center">Passe D.</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {game.roster.map(player => {
+                    const st = getPlayerStats(player.id, selectedQuarterFilter);
+                    return (
+                      <tr key={player.id} className="hover:bg-slate-800/40 transition">
+                        <td className="py-3 px-2 font-bold text-slate-200">
+                          #{player.number} {player.name}
+                        </td>
+                        <td className="py-3 px-2 text-center font-mono text-amber-300">
+                          {formatTime(st.totalSecs)}
+                        </td>
+                        <td className="py-3 px-2 text-center font-bold text-rose-400">
+                          {st.fouls}
+                        </td>
+                        <td className="py-3 px-2 text-center">
+                          {st.ftMade}/{st.ftAttempted}
+                        </td>
+                        <td className="py-3 px-2 text-center">
+                          {st.pts2Made}/{st.pts2Att}
+                        </td>
+                        <td className="py-3 px-2 text-center">
+                          {st.pts3Made}/{st.pts3Att}
+                        </td>
+                        <td className="py-3 px-2 text-center text-slate-300">
+                          <span className="text-emerald-400">{st.rebOff}</span> / <span className="text-blue-400">{st.rebDef}</span>
+                        </td>
+                        <td className="py-3 px-2 text-center font-bold text-amber-400">
+                          {st.assists}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ONGLET HISTORIQUE (🕒) */}
         {activeTab === 'LOGS' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-5 rounded-3xl space-y-4 shadow-2xl border border-white/10">
             <h2 className="text-lg font-bold border-b border-slate-800 pb-3 text-amber-400">Historique du match</h2>
@@ -527,7 +693,7 @@ export default function App() {
                   return (
                     <div key={ev.id} className="flex justify-between items-center p-3 bg-slate-800/70 border border-slate-700/50 rounded-xl text-xs hover:border-slate-600 transition">
                       <div className="flex items-center space-x-2">
-                        <span className="font-mono text-amber-400 font-bold">[{ev.clockTime}]</span>
+                        <span className="font-mono text-amber-400 font-bold">Q{ev.quarter} [{ev.clockTime}]</span>
                         <span className="font-bold text-white">#{player?.number} {player?.name}</span>
                       </div>
                       
