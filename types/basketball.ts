@@ -1,4 +1,29 @@
 export type ActionType = 'TIR_2PTS' | 'TIR_3PTS' | 'LANCER_FRANC' | 'REBOND' | 'FAUTE' | 'INTERCEPTION' | 'CONTRE' | 'BALLE_PERDUE' | 'PASSE_DECISIVE';
+
 export interface Player { id: string; number: number; name: string; }
-export interface GameEvent { id: string; timestamp: string; quarter: number; clockTime: string; actionType: ActionType; playerId: string; details?: any; }
-export interface GameState { id: string; opponentName: string; matchDate: string; location: string; quarter: number; clockSeconds: number; isClockRunning: boolean; scoreSathonay: number; scoreOpponentByQuarter: { [quarter: number]: number }; onCourtPlayerIds: string[]; benchPlayerIds: string[]; roster: Player[]; events: GameEvent[]; }
+
+export interface GameEvent {
+  id: string;
+  timestamp: string;
+  quarter: number;
+  clockTime: string;
+  actionType: ActionType;
+  playerId: string;
+  details?: any;
+}
+
+export interface GameState {
+  id: string;
+  opponentName: string;
+  matchDate: string;
+  location: string;
+  quarter: number;
+  clockSeconds: number;
+  isClockRunning: boolean;
+  scoreSathonay: number;
+  scoreOpponentByQuarter: { [quarter: number]: number };
+  onCourtPlayerIds: string[];
+  benchPlayerIds: string[];
+  roster: Player[];
+  events: GameEvent[];
+}
