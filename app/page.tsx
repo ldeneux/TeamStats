@@ -4,17 +4,18 @@ import React, { useState, useEffect } from 'react';
 import { GameState, Player, GameEvent } from '../types/basketball';
 
 const DEFAULT_PLAYERS: Player[] = [
-  { id: '1', number: 4, name: 'S. MARTIN' },
-  { id: '2', number: 7, name: 'L. DUBOIS' },
-  { id: '3', number: 9, name: 'C. BERNARD' },
-  { id: '4', number: 10, name: 'E. THOMAS' },
-  { id: '5', number: 12, name: 'M. ROBERT' },
-  { id: '6', number: 14, name: 'A. RICHARD' },
-  { id: '7', number: 15, name: 'J. PETIT' },
-  { id: '8', number: 18, name: 'M. DURAND' },
-  { id: '9', number: 21, name: 'C. MOREAU' },
-  { id: '10', number: 23, name: 'E. LEROY' },
+  { id: '1', number: 4, name: 'LAURA' },
+  { id: '2', number: 5, name: 'CANDICE' },
+  { id: '3', number: 6, name: 'ANNABELLE' },
+  { id: '4', number: 10, name: 'MAYRA' },
+  { id: '5', number: 13, name: 'HANAE' },
+  { id: '6', number: 7, name: 'CHLOE' },
+  { id: '7', number: 15, name: 'HINDE' },
+  { id: '8', number: 18, name: 'ALIYA' },
+  { id: '9', number: 21, name: 'LINA' },
+  { id: '10', number: 23, name: 'ALICIA' },
 ];
+
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'LOGS'>('INIT');
