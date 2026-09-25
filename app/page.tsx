@@ -192,8 +192,8 @@ La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
     if (eventToDelete.actionType.includes('TIR 3PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 3;
     else if (eventToDelete.actionType.includes('TIR 2PTS') && !eventToDelete.actionType.includes('Manqué')) pointsToRemove = 2;
     else if (eventToDelete.actionType.includes('LANCERS FRANCS')) {
-      const match = eventToDelete.actionType.match(/\\((\\d+)\\ me/);
-      const matchLF = eventToDelete.actionType.match(/\\((\\d+)\\/(\\d+)\\)/);
+      const regexLF = new RegExp('\\((\\d+)/(\\d+)\\)');
+      const matchLF = eventToDelete.actionType.match(regexLF);
       if (matchLF) pointsToRemove = parseInt(matchLF[1], 10);
     }
 
@@ -236,7 +236,8 @@ La joueuse a été sortie du terrain et ne peut plus re-rentrer.`);
         }
       }
       if (act.includes('LANCERS FRANCS')) {
-        const match = act.match(/\\((\\d+)\\/(\\d+)\\)/);
+        const regexLF = new RegExp('\\((\\d+)/(\\d+)\\)');
+        const match = act.match(regexLF);
         if (match) {
           const made = parseInt(match[1], 10);
           ftMade += made;
