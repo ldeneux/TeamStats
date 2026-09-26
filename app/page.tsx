@@ -90,6 +90,23 @@ export default function App() {
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
   const [selectedInIds, setSelectedInIds] = useState<string[]>([]);
 
+  const [matchType, setMatchType] = useState<'OFFICIEL' | 'AMICAL'>('OFFICIEL');
+  const [isLookingUpFfbb, setIsLookingUpFfbb] = useState(false);
+  const [ffbbLookupStatus, setFfbbLookupStatus] = useState<'idle' | 'found' | 'notfound'>('idle');
+  const [showFfbbPicker, setShowFfbbPicker] = useState(false);
+  const [existingMatches, setExistingMatches] = useState<any[]>([]);
+  const [isLoadingExistingMatches, setIsLoadingExistingMatches] = useState(false);
+  const [currentMatchDbId, setCurrentMatchDbId] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  const OUR_TEAM_NAME = 'OLYMPIC SATHONAY';
+
+  useEffect(() => {
+    if (matchType === 'OFFICIEL') {
+      setMatchConfig(prev => ({ ...prev, teamHome: OUR_TEAM_NAME }));
+    }
+  }, [matchType]);
+
   // CHARGEMENT DEPUIS SUPABASE (stats_teams + stats_players)
   const fetchTeamsFromSupabase = async () => {
     setIsLoadingTeams(true);
@@ -122,6 +139,203 @@ export default function App() {
   useEffect(() => {
     fetchTeamsFromSupabase();
   }, []);
+
+  // RECHERCHE DES INFOS D'UN MATCH OFFICIEL VIA L'ID FFBB
+  const fetchFfbbMatchInfo = async (ffbbId: string) => {
+    if (!ffbbId.trim()) { setFfbbLookupStatus('idle'); return; }
+    setIsLookingUpFfbb(true);
+    try {
+      const { data, error } = await supabase
+        .from('basketball_matches')
+        .select('opponent, home_away, match_date, division_label')
+        .eq('ffbb_rencontre_id', ffbbId.trim())
+        .maybeSingle();
+
+      if (error || !data) {
+        setFfbbLookupStatus('notfound');
+      } else {
+        setMatchConfig(prev => ({
+          ...prev,
+          teamHome: OUR_TEAM_NAME,
+          teamAway: data.opponent || prev.teamAway,
+          matchDate: data.match_date || prev.matchDate
+        }));
+        setFfbbLookupStatus('found');
+      }
+    } catch (err) {
+      setFfbbLookupStatus('notfound');
+    } finally {
+      setIsLookingUpFfbb(false);
+    }
+  };
+
+  // OUVRIR LE SÉLECTEUR DES MATCHS DÉJÀ ENREGISTRÉS (stats_matches)
+  const openFfbbPicker = async () => {
+    setShowFfbbPicker(true);
+    setIsLoadingExistingMatches(true);
+    try {
+      const { data, error } = await supabase
+        .from('stats_matches')
+        .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer')
+        .order('match_date', { ascending: false })
+        .limit(30);
+      if (!error && data) setExistingMatches(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoadingExistingMatches(false);
+    }
+  };
+
+  // CHARGER UN MATCH EXISTANT (infos + statistiques) DEPUIS SUPABASE
+  const handleSelectExistingMatch = async (matchRow: any) => {
+    try {
+      const { data: eventsData } = await supabase
+        .from('stats_match_events')
+        .select('*')
+        .eq('match_id', matchRow.id)
+        .order('created_at', { ascending: true });
+
+      const { data: statsData } = await supabase
+        .from('stats_player_game_stats')
+        .select('*')
+        .eq('match_id', matchRow.id);
+
+      const loadedRoster: Player[] = (statsData || []).map((s: any) => ({
+        id: s.player_id,
+        number: s.player_number || 0,
+        name: s.player_name || '?'
+      }));
+
+      const loadedEvents: GameEvent[] = (eventsData || []).map((e: any) => ({
+        id: e.id,
+        timestamp: e.timestamp_str || '',
+        period: e.period,
+        clockTime: e.clock_time,
+        actionType: e.action_type,
+        playerId: e.player_id
+      })).reverse();
+
+      // Le détail par période n'est pas conservé en base : le temps de jeu total
+      // rechargé est placé dans un compteur unique (période 0) pour rester visible en cumul "TOUT".
+      const newPlayingTime: { [playerId: string]: { [period: number]: number } } = {};
+      (statsData || []).forEach((s: any) => {
+        newPlayingTime[s.player_id] = { 0: s.playing_time_seconds || 0 };
+      });
+
+      const newConfig: GameConfig = {
+        teamHome: matchRow.team_home,
+        teamAway: matchRow.team_away,
+        matchDate: matchRow.match_date || new Date().toISOString().split('T')[0],
+        periodCount: matchRow.period_count || 4,
+        periodMinutes: matchRow.period_minutes || 10,
+        ffbbMatchId: matchRow.ffbb_match_id || ''
+      };
+
+      setMatchConfig(newConfig);
+      setPlayingTime(newPlayingTime);
+      setCurrentMatchDbId(matchRow.id);
+      setMatchType(String(matchRow.ffbb_match_id || '').startsWith('AMICAL-') ? 'AMICAL' : 'OFFICIEL');
+
+      setGame({
+        config: newConfig,
+        period: parseInt(String(matchRow.current_period || 'Q1').replace(/\D/g, ''), 10) || 1,
+        clockSeconds: matchRow.current_timer ?? matchRow.period_minutes * 60,
+        isClockRunning: false,
+        scoreHome: matchRow.score_home || 0,
+        scoreAway: matchRow.score_away || 0,
+        matchRoster: loadedRoster,
+        onCourtPlayerIds: loadedRoster.slice(0, 5).map(p => p.id),
+        events: loadedEvents
+      });
+
+      setShowFfbbPicker(false);
+      setActiveTab('MATCH');
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // ENREGISTRER LE MATCH EN COURS (infos + statistiques) DANS SUPABASE
+  const handleSaveMatch = async () => {
+    setSaveStatus('saving');
+    try {
+      let ffbbId = matchConfig.ffbbMatchId.trim();
+      if (!ffbbId) {
+        ffbbId = `AMICAL-${Date.now()}`;
+        setMatchConfig(prev => ({ ...prev, ffbbMatchId: ffbbId }));
+      }
+
+      const { data: savedMatch, error: matchErr } = await supabase
+        .from('stats_matches')
+        .upsert({
+          ffbb_match_id: ffbbId,
+          team_home: game.config.teamHome,
+          team_away: game.config.teamAway,
+          score_home: game.scoreHome,
+          score_away: game.scoreAway,
+          period_count: game.config.periodCount,
+          period_minutes: game.config.periodMinutes,
+          current_period: getPeriodLabel(game.period, game.config.periodCount),
+          current_timer: game.clockSeconds
+        }, { onConflict: 'ffbb_match_id' })
+        .select()
+        .single();
+
+      if (matchErr || !savedMatch) throw matchErr;
+      const matchId = savedMatch.id;
+      setCurrentMatchDbId(matchId);
+
+      await supabase.from('stats_match_events').delete().eq('match_id', matchId);
+      if (game.events.length > 0) {
+        await supabase.from('stats_match_events').insert(
+          game.events.map(ev => ({
+            match_id: matchId,
+            period: ev.period,
+            clock_time: ev.clockTime,
+            timestamp_str: ev.timestamp,
+            player_id: ev.playerId,
+            action_type: ev.actionType
+          }))
+        );
+      }
+
+      await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId);
+      if (game.matchRoster.length > 0) {
+        await supabase.from('stats_player_game_stats').insert(
+          game.matchRoster.map(p => {
+            const st = getPlayerStats(p.id, 'ALL');
+            return {
+              match_id: matchId,
+              player_id: p.id,
+              player_number: p.number,
+              player_name: p.name,
+              points: st.points,
+              pts2_made: st.pts2Made,
+              pts2_att: st.pts2Att,
+              pts3_made: st.pts3Made,
+              pts3_att: st.pts3Att,
+              ft_made: st.ftMade,
+              ft_att: st.ftAttempted,
+              reb_off: st.rebOff,
+              reb_def: st.rebDef,
+              assists: st.assists,
+              fouls: st.fouls,
+              fouls_drawn: st.foulsDrawn,
+              playing_time_seconds: st.totalSecs
+            };
+          })
+        );
+      }
+
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2500);
+    } catch (err) {
+      console.error(err);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    }
+  };
 
   // SAUVEGARDE / MODIFICATION DANS SUPABASE
   const handleSaveTeamToSupabase = async () => {
