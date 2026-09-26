@@ -279,11 +279,13 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
     return { points, totalSecs, fouls, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists };
   };
 
-  // Composant visuel réutilisable : 5 Carrés de Fautes (Jaunes -> 4e clignotant -> Tous rouges si 5)
-  const FoulSquares = ({ count }: { count: number }) => {
+  // 5 Carrés de Fautes (avec taille ajustable via size="small")
+  const FoulSquares = ({ count, size = 'normal' }: { count: number; size?: 'normal' | 'small' }) => {
     const isExceeded = count >= 5;
+    const boxSizeClass = size === 'small' ? 'w-2 h-2' : 'w-2.5 h-2.5';
+    
     return (
-      <div className="flex space-x-1 items-center">
+      <div className="flex space-x-0.5 items-center">
         {[1, 2, 3, 4, 5].map(box => {
           const isFilled = count >= box;
           const isFourthBlinking = box === 4 && count === 4;
@@ -303,7 +305,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
           return (
             <div 
               key={box} 
-              className={`w-2.5 h-2.5 rounded-sm transition ${colorClasses}`} 
+              className={`${boxSizeClass} rounded-sm transition ${colorClasses}`} 
             />
           );
         })}
@@ -312,16 +314,25 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
   };
 
   return (
-    <div className="max-w-3xl mx-auto min-h-screen pb-12">
-      <header className="bg-slate-900/90 backdrop-blur-md text-white sticky top-0 z-50 border-b border-slate-700/50 shadow-lg">
-        <div className="flex justify-between items-center px-4 py-3">
-          <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
+    <div className="max-w-3xl mx-auto min-h-screen pb-12 pt-4 px-2">
+      {/* BANDEAU SUPERIEUR ALIGNE ET LOGO ROND */}
+      <header className="bg-slate-900/90 backdrop-blur-md text-white rounded-2xl border border-slate-700/50 shadow-lg mb-4">
+        <div className="flex justify-between items-center px-4 py-2.5">
+          <div className="flex items-center space-x-2.5">
+            <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center p-0.5 shadow-md">
+              <svg className="w-7 h-7 text-slate-900" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="12" r="10" fill="#1e293b" />
+                <path d="M12 2a10 10 0 0 0-10 10h20a10 10 0 0 0-10-10z" fill="#f59e0b" />
+              </svg>
+            </div>
+            <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
+          </div>
           
-          <nav className="flex space-x-1.5 bg-slate-800 p-1.5 rounded-2xl text-base font-semibold border border-slate-700/60">
+          <nav className="flex space-x-1.5 bg-slate-800 p-1 rounded-xl text-base font-semibold border border-slate-700/60">
             <button 
               onClick={() => setActiveTab('INIT')}
               title="Configuration"
-              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+              className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
                 activeTab === 'INIT' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
               }`}
             >
@@ -331,7 +342,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
             <button 
               onClick={() => setActiveTab('MATCH')}
               title="Direct"
-              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+              className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
                 activeTab === 'MATCH' ? 'bg-blue-600 text-white shadow-md' : 'text-blue-400 hover:text-white hover:bg-slate-700/50'
               }`}
             >
@@ -341,7 +352,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
             <button 
               onClick={() => setActiveTab('STATS')}
               title="Statistiques"
-              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+              className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
                 activeTab === 'STATS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
               }`}
             >
@@ -351,7 +362,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
             <button 
               onClick={() => setActiveTab('LOGS')}
               title="Historique"
-              className={`w-10 h-10 flex items-center justify-center rounded-xl transition ${
+              className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
                 activeTab === 'LOGS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
               }`}
             >
@@ -361,7 +372,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
         </div>
       </header>
 
-      <main className="p-4">
+      <main>
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/85 backdrop-blur text-white p-6 rounded-3xl space-y-6 shadow-2xl border border-white/10">
             <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Initialisation de la rencontre</h2>
@@ -437,41 +448,42 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
               </div>
             )}
 
-            {game.onCourtPlayerIds.length < 5 && availableBenchPlayers.length === 0 && (
-              <div className="bg-amber-950/80 border border-amber-500/50 text-amber-200 p-2.5 rounded-2xl text-xs font-semibold text-center">
-                ⚠️ Équipe en sous-effectif ({game.onCourtPlayerIds.length} joueuses sur le terrain - banc épuisé).
-              </div>
-            )}
-
-            {/* MARQUEUR & FAUTES ÉQUIPE EN 5 CARRÉS */}
+            {/* SCOREBOARD ALIGNÉ */}
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl space-y-4">
-              <div className="flex justify-between items-center">
-                <div className="text-center w-1/3">
+              <div className="grid grid-cols-3 items-center text-center">
+                
+                {/* BLOC DOMICILE */}
+                <div className="flex flex-col items-center justify-center">
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamHome}</p>
-                  <p className="text-4xl font-black text-amber-400 mt-1">{game.scoreHome}</p>
+                  <p className="text-4xl font-black text-amber-400 my-1">{game.scoreHome}</p>
+                  <div className="flex justify-center space-x-1">
+                    <button onClick={() => setGame({...game, scoreHome: Math.max(0, game.scoreHome - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700">-</button>
+                    <button onClick={() => setGame({...game, scoreHome: game.scoreHome + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700">+</button>
+                  </div>
                 </div>
 
-                <div className="text-center w-1/3 border-x border-slate-800 px-2">
+                {/* BLOC CHRONO ET QUART-TEMPS */}
+                <div className="flex flex-col items-center justify-center border-x border-slate-800 px-2">
                   <div className="flex items-center justify-center space-x-2">
                     <button 
                       onClick={() => setGame(prev => ({ ...prev, quarter: Math.max(1, prev.quarter - 1) }))}
-                      className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
+                      className="w-5 h-5 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
                     >
                       -
                     </button>
-                    <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-1 rounded-full uppercase">
+                    <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
                       Q{game.quarter}
                     </span>
                     <button 
                       onClick={() => setGame(prev => ({ ...prev, quarter: Math.min(4, prev.quarter + 1) }))}
-                      className="w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
+                      className="w-5 h-5 rounded-full bg-slate-800 hover:bg-slate-700 text-amber-400 font-black text-xs border border-amber-500/30 flex items-center justify-center"
                     >
                       +
                     </button>
                   </div>
 
-                  <p className="text-3xl font-mono font-bold mt-2 tracking-tight text-white">{formatTime(game.clockSeconds)}</p>
-                  <div className="flex justify-center space-x-1 mt-2">
+                  <p className="text-3xl font-mono font-bold my-1 tracking-tight text-white">{formatTime(game.clockSeconds)}</p>
+                  <div className="flex justify-center space-x-1">
                     <button 
                       onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})}
                       className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}
@@ -487,36 +499,44 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                   </div>
                 </div>
 
-                <div className="text-center w-1/3">
+                {/* BLOC EXTERIEUR */}
+                <div className="flex flex-col items-center justify-center">
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.teamAway}</p>
-                  <p className="text-4xl font-black text-slate-300 mt-1">{game.scoreAway}</p>
-                  <div className="flex justify-center space-x-1 mt-1">
-                    <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-500 font-bold px-1.5 bg-slate-800 rounded">-</button>
-                    <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-300 font-bold px-1.5 bg-slate-800 rounded">+</button>
+                  <p className="text-4xl font-black text-slate-300 my-1">{game.scoreAway}</p>
+                  <div className="flex justify-center space-x-1">
+                    <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700">-</button>
+                    <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700">+</button>
                   </div>
                 </div>
               </div>
 
-              {/* MODULE DES FAUTES D'ÉQUIPE (5 CARRÉS UNIFIÉS) */}
+              {/* MODULE COMBINÉ : FAUTES ÉQUIPE (Q EN COURS) ET 5 JOUEUSES SUR LE TERRAIN */}
               <div className="pt-3 border-t border-slate-800/80">
-                <div className="flex justify-between items-center mb-1.5">
-                  <span className="text-[11px] font-extrabold text-amber-400 uppercase tracking-wider">Fautes d'équipe {game.teamHome}</span>
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-[11px] font-extrabold text-amber-400 uppercase tracking-wider">FAUTES D'ÉQUIPE</span>
                   <span className="text-[10px] text-slate-400 font-bold">Q{game.quarter} : {getTeamFoulsForQuarter(game.quarter)}/5</span>
                 </div>
                 
-                <div className="grid grid-cols-4 gap-2">
-                  {[1, 2, 3, 4].map(qNum => {
-                    const fouls = getTeamFoulsForQuarter(qNum);
-                    const isCurrent = game.quarter === qNum;
-                    return (
-                      <div key={qNum} className={`p-2 rounded-xl border flex flex-col items-center justify-center transition ${
-                        isCurrent ? 'bg-slate-800 border-amber-500/60 shadow-md' : 'bg-slate-900/50 border-slate-800 opacity-60'
-                      }`}>
-                        <span className="text-[9px] font-black text-slate-400 uppercase mb-1">Q{qNum}</span>
-                        <FoulSquares count={fouls} />
-                      </div>
-                    );
-                  })}
+                <div className="grid grid-cols-12 gap-2 items-center">
+                  {/* FAUTES ÉQUIPE QUART-TEMPS EN COURS */}
+                  <div className="col-span-3 p-2 bg-slate-800 border border-amber-500/50 rounded-xl flex flex-col items-center justify-center h-full">
+                    <span className="text-[9px] font-black text-amber-400 uppercase mb-1">Q{game.quarter} (En cours)</span>
+                    <FoulSquares count={getTeamFoulsForQuarter(game.quarter)} />
+                  </div>
+
+                  {/* 5 JOUEUSES SUR LE TERRAIN AVEC LEURS FAUTES */}
+                  <div className="col-span-9 grid grid-cols-5 gap-1">
+                    {game.roster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
+                      const fouls = getFoulsCount(p.id);
+                      return (
+                        <div key={p.id} className="bg-slate-800/80 border border-slate-700/80 p-1 rounded-xl flex flex-col items-center justify-center text-center">
+                          <span className="text-[10px] font-black text-white truncate w-full">#{p.number}</span>
+                          <span className="text-[8px] text-slate-300 font-bold truncate w-full mb-1">{p.name}</span>
+                          <FoulSquares count={fouls} size="small" />
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
@@ -537,7 +557,6 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                 </div>
 
                 <div className="space-y-4">
-                  {/* SUR LE PARQUET (MENU REMPLACEMENT AVEC CARRÉS) */}
                   <div>
                     <p className="text-xs text-rose-400 font-bold mb-2">1. SUR LE PARQUET — Décocher / Sélectionner la (les) sortie(s) ({selectedOutIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
@@ -563,14 +582,13 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                               <input type="checkbox" checked={isSelected} readOnly disabled={isFouledOut} className="accent-rose-500" />
                               <span className="truncate">#{p.number} {p.name}</span>
                             </div>
-                            <FoulSquares count={fouls} />
+                            <FoulSquares count={fouls} size="small" />
                           </button>
                         );
                       })}
                     </div>
                   </div>
 
-                  {/* SUR LE BANC (MENU REMPLACEMENT AVEC CARRÉS) */}
                   <div>
                     <p className="text-xs text-emerald-400 font-bold mb-2">2. SUR LE BANC — Cocher la (les) entrée(s) ({selectedInIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
@@ -596,7 +614,7 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                               {!isFouledOut && <input type="checkbox" checked={isSelected} readOnly className="accent-emerald-500" />}
                               <span className="truncate">#{p.number} {p.name}</span>
                             </div>
-                            <FoulSquares count={fouls} />
+                            <FoulSquares count={fouls} size="small" />
                           </button>
                         );
                       })}
@@ -629,7 +647,6 @@ Elle est exclue. Banc vide ou épuisé : le match continue à ${updatedOnCourt.l
                 </div>
               </div>
             ) : !selectedPlayerId ? (
-              /* SELECTION JOUEUSE SUR LE TERRAIN (SÉLECTION D'ACTION) AVEC CARRÉS */
               <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                   <span className="text-xs font-bold text-amber-400 uppercase">Action : {selectedAction}</span>
