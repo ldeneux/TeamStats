@@ -1,0 +1,1 @@
+# Sathonay Basket App\n\nLancer le projet :\n```bash\nnpm install\nnpm run dev\n```
