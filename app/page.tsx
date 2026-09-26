@@ -150,14 +150,12 @@ export default function App() {
 
       // AJOUT / MODIFICATION DES JOUEURS
       for (const player of editingRoster) {
-        // Si l'ID est un UUID valide de Supabase (longueur > 20) -> UPDATE
         if (player.id.length > 20) {
           await supabase
             .from('stats_players')
             .update({ name: player.name, number: player.number })
             .eq('id', player.id);
         } else {
-          // Nouveau joueur généré localement -> INSERT
           await supabase
             .from('stats_players')
             .insert({
@@ -209,12 +207,10 @@ export default function App() {
     return game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE') && !e.actionType.includes('SUBIE')).length;
   };
 
-  // Fautes commises par notre équipe pendant la période
   const getTeamFoulsForPeriod = (pNum: number) => {
     return game.events.filter(e => e.period === pNum && e.actionType.includes('FAUTE') && !e.actionType.includes('SUBIE')).length;
   };
 
-  // Fautes commises par l'équipe adverse pendant la période (= Fautes SUBIES par notre équipe)
   const getOpponentFoulsForPeriod = (pNum: number) => {
     return game.events.filter(e => e.period === pNum && e.actionType.includes('FAUTE SUBIE')).length;
   };
@@ -612,7 +608,6 @@ export default function App() {
                     <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
                     <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
                   </div>
-                  <!-- Incrémentation basée sur les Fautes Subies par notre équipe -->
                   <div className="flex flex-col items-center">
                     <FoulSquares count={getOpponentFoulsForPeriod(game.period)} />
                   </div>
