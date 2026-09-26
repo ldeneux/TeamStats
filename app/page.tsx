@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-// Configuration Supabase
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://votre-projet.supabase.co';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'votre-cle-anon';
 
@@ -16,6 +15,7 @@ export interface SavedTeam { id: string; name: string; roster: Player[]; }
 export interface GameEvent { id: string; timestamp: string; period: number; clockTime: string; actionType: string; playerId: string; details?: any; }
 
 export interface GameConfig {
+  ffbbMatchId: string;
   teamHome: string;
   teamAway: string;
   matchDate: string;
@@ -35,37 +35,35 @@ export interface GameState {
   events: GameEvent[];
 }
 
-const DEFAULT_PLAYERS: Player[] = [
-  { id: '1', number: 4, name: 'MAYRA' },
-  { id: '2', number: 5, name: 'CANDICE' },
-  { id: '3', number: 6, name: 'ANNABELLE' },
-  { id: '4', number: 7, name: 'L. DUBOIS' },
-  { id: '5', number: 9, name: 'C. BERNARD' },
-];
-
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS'>('MATCH');
+  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS' | 'SAVE'>('INIT');
   const [selectedPeriodFilter, setSelectedPeriodFilter] = useState<number | 'ALL'>('ALL');
 
   const [savedTeams, setSavedTeams] = useState<SavedTeam[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [newTeamName, setNewTeamName] = useState('');
-  const [editingRoster, setEditingRoster] = useState<Player[]>(DEFAULT_PLAYERS);
+  
+  // Roster de l'équipe sélectionnée (vide au démarrage)
+  const [editingRoster, setEditingRoster] = useState<Player[]>([]);
+  
+  // Dictionnaire des numéros temporaires attribués spécifiquement pour CE match { playerId: jerseyNumber }
+  const [customMatchNumbers, setCustomMatchNumbers] = useState<{ [playerId: string]: number }>({});
+  
   const [newPlayerNumber, setNewPlayerNumber] = useState<number | ''>('');
   const [newPlayerName, setNewPlayerName] = useState('');
   const [isLoadingTeams, setIsLoadingTeams] = useState(false);
+  const [isSavingMatch, setIsSavingMatch] = useState(false);
 
   const [matchConfig, setMatchConfig] = useState<GameConfig>({
-    teamHome: 'SATHONAY',
-    teamAway: 'ASVEL U18',
+    ffbbMatchId: '',
+    teamHome: 'SATHONAY U15F',
+    teamAway: 'ADVERSAIRE',
     matchDate: new Date().toISOString().split('T')[0],
     periodCount: 4,
     periodMinutes: 10
   });
 
-  const [selectedMatchPlayerIds, setSelectedMatchPlayerIds] = useState<string[]>(
-    DEFAULT_PLAYERS.map(p => p.id)
-  );
+  const [selectedMatchPlayerIds, setSelectedMatchPlayerIds] = useState<string[]>([]);
 
   const [game, setGame] = useState<GameState>({
     config: matchConfig,
@@ -74,8 +72,8 @@ export default function App() {
     isClockRunning: false,
     scoreHome: 0,
     scoreAway: 0,
-    matchRoster: DEFAULT_PLAYERS,
-    onCourtPlayerIds: DEFAULT_PLAYERS.map(p => p.id),
+    matchRoster: [],
+    onCourtPlayerIds: [],
     events: []
   });
 
@@ -87,7 +85,6 @@ export default function App() {
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
   const [selectedInIds, setSelectedInIds] = useState<string[]>([]);
 
-  // CHARGEMENT DEPUIS SUPABASE (stats_teams + stats_players)
   const fetchTeamsFromSupabase = async () => {
     setIsLoadingTeams(true);
     try {
@@ -120,7 +117,6 @@ export default function App() {
     fetchTeamsFromSupabase();
   }, []);
 
-  // SAUVEGARDE / MODIFICATION DANS SUPABASE
   const handleSaveTeamToSupabase = async () => {
     if (!newTeamName.trim()) {
       alert("Veuillez saisir un nom d'équipe.");
@@ -131,13 +127,11 @@ export default function App() {
       let targetTeamId = selectedTeamId;
 
       if (targetTeamId) {
-        // UPDATE ÉQUIPE
         await supabase
           .from('stats_teams')
           .update({ name: newTeamName.trim() })
           .eq('id', targetTeamId);
       } else {
-        // INSERT NOUVELLE ÉQUIPE
         const { data: createdTeam, error: teamErr } = await supabase
           .from('stats_teams')
           .insert({ name: newTeamName.trim() })
@@ -148,7 +142,6 @@ export default function App() {
         targetTeamId = createdTeam.id;
       }
 
-      // AJOUT / MODIFICATION DES JOUEURS
       for (const player of editingRoster) {
         if (player.id.length > 20) {
           await supabase
@@ -166,12 +159,96 @@ export default function App() {
         }
       }
 
-      alert("Équipe et joueuses enregistrées dans Supabase !");
+      alert("Équipe et joueuses enregistrées dans la BDD !");
       setNewTeamName('');
       setSelectedTeamId('');
       fetchTeamsFromSupabase();
     } catch (err: any) {
       alert("Erreur lors de la sauvegarde : " + err.message);
+    }
+  };
+
+  const handleSaveFullMatchToSupabase = async () => {
+    if (!game.config.ffbbMatchId.trim()) {
+      alert("Veuillez renseigner un ID FFBB MATCH dans la configuration.");
+      setActiveTab('INIT');
+      return;
+    }
+
+    setIsSavingMatch(true);
+
+    try {
+      const { data: matchData, error: matchErr } = await supabase
+        .from('stats_matches')
+        .insert({
+          ffbb_match_id: game.config.ffbbMatchId.trim(),
+          match_date: game.config.matchDate,
+          team_home: game.config.teamHome,
+          team_away: game.config.teamAway,
+          score_home: game.scoreHome,
+          score_away: game.scoreAway,
+          period_count: game.config.periodCount,
+          period_minutes: game.config.periodMinutes
+        })
+        .select()
+        .single();
+
+      if (matchErr || !matchData) throw matchErr;
+
+      const createdMatchId = matchData.id;
+
+      if (game.events.length > 0) {
+        const eventsPayload = game.events.map(ev => ({
+          match_id: createdMatchId,
+          period: ev.period,
+          clock_time: ev.clockTime,
+          timestamp_str: ev.timestamp,
+          player_id: ev.playerId,
+          action_type: ev.actionType
+        }));
+
+        const { error: eventsErr } = await supabase
+          .from('stats_match_events')
+          .insert(eventsPayload);
+
+        if (eventsErr) throw eventsErr;
+      }
+
+      const statsPayload = game.matchRoster.map(p => {
+        const st = getPlayerStats(p.id, 'ALL');
+        return {
+          match_id: createdMatchId,
+          player_id: p.id,
+          player_number: p.number, // Numéro spécifique retenu pour le match
+          player_name: p.name,
+          points: st.points,
+          pts2_made: st.pts2Made,
+          pts2_att: st.pts2Att,
+          pts3_made: st.pts3Made,
+          pts3_att: st.pts3Att,
+          ft_made: st.ftMade,
+          ft_att: st.ftAttempted,
+          reb_off: st.rebOff,
+          reb_def: st.rebDef,
+          assists: st.assists,
+          fouls: st.fouls,
+          fouls_drawn: st.foulsDrawn,
+          playing_time_seconds: st.totalSecs
+        };
+      });
+
+      const { error: statsErr } = await supabase
+        .from('stats_player_game_stats')
+        .insert(statsPayload);
+
+      if (statsErr) throw statsErr;
+
+      alert(`Match ${game.config.ffbbMatchId} sauvegardé dans Supabase !`);
+      setActiveTab('MATCH');
+    } catch (err: any) {
+      alert("Erreur lors de la sauvegarde : " + err.message);
+    } finally {
+      setIsSavingMatch(false);
     }
   };
 
@@ -254,7 +331,7 @@ export default function App() {
       const p = game.matchRoster.find(r => r.id === playerId);
       setSelectedOutIds([playerId]);
       setIsSubbing(true);
-      alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !\nJoueuse exclue. Veuillez effectuer le remplacement.`);
+      alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !\nJoueuse exclue. Veuillez procéder à la substitution.`);
     }
   };
 
@@ -395,8 +472,12 @@ export default function App() {
 
   const handleLoadTeamFromSelect = (teamId: string) => {
     setSelectedTeamId(teamId);
+    setSelectedMatchPlayerIds([]);
+    setCustomMatchNumbers({});
+    
     if (!teamId) {
       setNewTeamName('');
+      setEditingRoster([]);
       return;
     }
     const team = savedTeams.find(t => t.id === teamId);
@@ -404,8 +485,15 @@ export default function App() {
       setNewTeamName(team.name);
       setMatchConfig(prev => ({ ...prev, teamHome: team.name }));
       setEditingRoster(team.roster);
-      setSelectedMatchPlayerIds(team.roster.slice(0, 10).map(p => p.id));
     }
+  };
+
+  const handleCustomNumberChange = (pId: string, val: string) => {
+    const num = parseInt(val, 10);
+    setCustomMatchNumbers(prev => ({
+      ...prev,
+      [pId]: isNaN(num) ? 0 : num
+    }));
   };
 
   const handleToggleMatchPlayer = (pId: string) => {
@@ -413,7 +501,7 @@ export default function App() {
       setSelectedMatchPlayerIds(selectedMatchPlayerIds.filter(id => id !== pId));
     } else {
       if (selectedMatchPlayerIds.length >= 10) {
-        alert("Vous ne pouvez pas sélectionner plus de 10 joueuses sur la feuille de match !");
+        alert("Feuille de match limitée à 10 joueuses au maximum !");
         return;
       }
       setSelectedMatchPlayerIds([...selectedMatchPlayerIds, pId]);
@@ -421,12 +509,23 @@ export default function App() {
   };
 
   const handleApplyMatchConfig = () => {
+    if (!matchConfig.ffbbMatchId.trim()) {
+      alert("Veuillez remplir le champ ID FFBB MATCH.");
+      return;
+    }
     if (selectedMatchPlayerIds.length === 0) {
-      alert("Veuillez sélectionner au moins 5 joueuses pour le match.");
+      alert("Sélectionnez au moins une joueuse pour démarrer le match.");
       return;
     }
 
-    const matchRoster = editingRoster.filter(p => selectedMatchPlayerIds.includes(p.id));
+    // Reconstruction du roster du match avec les numéros ajustés pour le match
+    const matchRoster: Player[] = editingRoster
+      .filter(p => selectedMatchPlayerIds.includes(p.id))
+      .map(p => ({
+        ...p,
+        number: customMatchNumbers[p.id] !== undefined ? customMatchNumbers[p.id] : p.number
+      }));
+
     const onCourt = matchRoster.slice(0, 5).map(p => p.id);
 
     setGame({
@@ -484,6 +583,7 @@ export default function App() {
             <button onClick={() => setActiveTab('MATCH')} title="Direct" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'MATCH' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🏀</button>
             <button onClick={() => setActiveTab('STATS')} title="Statistiques" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'STATS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>📊</button>
             <button onClick={() => setActiveTab('LOGS')} title="Historique" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'LOGS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🕒</button>
+            <button onClick={() => setActiveTab('SAVE')} title="Sauvegarder le Match" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'SAVE' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>💾</button>
           </nav>
         </div>
       </header>
@@ -491,40 +591,47 @@ export default function App() {
       <main>
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
-            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Configuration & BDD Supabase</h2>
+            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Configuration & Sélection de l'Équipe</h2>
             
-            <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile</label>
-                <input type="text" value={matchConfig.teamHome} onChange={e => setMatchConfig({...matchConfig, teamHome: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Adverse</label>
-                <input type="text" value={matchConfig.teamAway} onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                <label className="block text-xs font-semibold text-amber-400 mb-1 uppercase tracking-wider">ID FFBB MATCH *</label>
+                <input type="text" placeholder="ex: FFBB-2026-U15F-1029" value={matchConfig.ffbbMatchId} onChange={e => setMatchConfig({...matchConfig, ffbbMatchId: e.target.value})} className="w-full bg-slate-800 border border-amber-500/50 rounded-xl p-2.5 text-sm font-bold text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500" />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Nombre de périodes</label>
-                <input type="number" min="1" max="12" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Durée période (minutes)</label>
-                <input type="number" min="1" max="20" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile</label>
+                  <input type="text" value={matchConfig.teamHome} onChange={e => setMatchConfig({...matchConfig, teamHome: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Adverse</label>
+                  <input type="text" value={matchConfig.teamAway} onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Périodes</label>
+                  <input type="number" min="1" max="12" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Durée période (min)</label>
+                  <input type="number" min="1" max="20" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                </div>
               </div>
             </div>
 
             <div className="border-t border-slate-800 pt-4 space-y-4">
               <div className="flex justify-between items-center">
-                <h3 className="text-sm font-bold text-amber-400">Équipes & Joueuses (Supabase)</h3>
+                <h3 className="text-sm font-bold text-amber-400">Équipes Supabase</h3>
                 <button onClick={fetchTeamsFromSupabase} disabled={isLoadingTeams} className="text-xs text-slate-400 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-slate-700">
                   {isLoadingTeams ? 'Chargement...' : '🔄 Rafraîchir'}
                 </button>
               </div>
               
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Charger une équipe Supabase pour édition</label>
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Sélectionner une équipe existante</label>
                 <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
-                  <option value="">-- Créer une nouvelle équipe --</option>
+                  <option value="">-- Choisir une équipe dans Supabase --</option>
                   {savedTeams.map(t => (
                     <option key={t.id} value={t.id}>{t.name} ({t.roster.length} joueuses)</option>
                   ))}
@@ -532,44 +639,69 @@ export default function App() {
               </div>
 
               <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 space-y-3">
-                <p className="text-xs font-bold text-slate-300">Ajouter / Modifier une joueuse dans l'effectif actuel</p>
+                <p className="text-xs font-bold text-slate-300">Créer / Modifier l'effectif global de l'équipe</p>
                 <div className="flex space-x-2">
                   <input type="number" placeholder="N°" value={newPlayerNumber} onChange={e => setNewPlayerNumber(e.target.value ? parseInt(e.target.value) : '')} className="w-20 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-center text-white" />
                   <input type="text" placeholder="Nom de la joueuse" value={newPlayerName} onChange={e => setNewPlayerName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-white" />
                   <button onClick={handleAddPlayerToEditing} className="bg-blue-600 hover:bg-blue-500 font-bold px-4 py-2 rounded-xl text-xs">Ajouter</button>
                 </div>
-              </div>
 
-              <div className="flex space-x-2 items-center">
-                <input type="text" placeholder="Nom de l'équipe (ex: U15F)" value={newTeamName} onChange={e => setNewTeamName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white" />
-                <button onClick={handleSaveTeamToSupabase} className="bg-emerald-600 hover:bg-emerald-500 font-bold px-4 py-2.5 rounded-xl text-xs">
-                  {selectedTeamId ? 'Mettre à jour sur Supabase' : 'Enregistrer sur Supabase'}
-                </button>
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <p className="text-xs font-bold text-slate-300">Sélectionner les 10 joueuses pour le match :</p>
-                  <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
-                  {editingRoster.map(p => {
-                    const isSelected = selectedMatchPlayerIds.includes(p.id);
-                    return (
-                      <button key={p.id} onClick={() => handleToggleMatchPlayer(p.id)} className={`flex items-center justify-between p-2 rounded-xl border text-xs font-bold transition ${isSelected ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-                        <span>#{p.number} {p.name}</span>
-                        <span className="text-sm">{isSelected ? '✓' : '+'}</span>
-                      </button>
-                    );
-                  })}
+                <div className="flex space-x-2 items-center pt-2">
+                  <input type="text" placeholder="Nom de l'équipe" value={newTeamName} onChange={e => setNewTeamName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white" />
+                  <button onClick={handleSaveTeamToSupabase} className="bg-emerald-600 hover:bg-emerald-500 font-bold px-4 py-2.5 rounded-xl text-xs">
+                    {selectedTeamId ? 'Mettre à jour BDD' : 'Enregistrer BDD'}
+                  </button>
                 </div>
               </div>
+
+              {editingRoster.length > 0 ? (
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <p className="text-xs font-bold text-slate-300">Sélection et numéros pour ce match :</p>
+                    <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
+                  </div>
+
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {editingRoster.map(p => {
+                      const isSelected = selectedMatchPlayerIds.includes(p.id);
+                      const currentMatchNumber = customMatchNumbers[p.id] !== undefined ? customMatchNumbers[p.id] : p.number;
+
+                      return (
+                        <div key={p.id} className={`flex items-center justify-between p-2 rounded-xl border transition ${isSelected ? 'bg-amber-500/10 border-amber-500/60' : 'bg-slate-800/60 border-slate-700/60'}`}>
+                          <div className="flex items-center space-x-3">
+                            <button onClick={() => handleToggleMatchPlayer(p.id)} className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs ${isSelected ? 'bg-amber-500 text-slate-950' : 'bg-slate-700 text-slate-400'}`}>
+                              {isSelected ? '✓' : '+'}
+                            </button>
+                            <span className="text-xs font-bold text-white">{p.name}</span>
+                            <span className="text-[10px] text-slate-400">(N° BDD: {p.number})</span>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <label className="text-[10px] text-slate-400 font-semibold">N° Match :</label>
+                            <input
+                              type="number"
+                              value={currentMatchNumber}
+                              onChange={e => handleCustomNumberChange(p.id, e.target.value)}
+                              className="w-14 bg-slate-900 border border-slate-700 rounded-lg p-1 text-center font-black text-xs text-amber-400 focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 bg-slate-800/40 rounded-2xl border border-dashed border-slate-700 text-center">
+                  <p className="text-xs text-slate-400">Aucune joueuse chargée. Sélectionnez une équipe ci-dessus ou ajoutez des joueuses.</p>
+                </div>
+              )}
             </div>
 
-            <button onClick={handleApplyMatchConfig} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3.5 rounded-xl shadow-lg transition">Démarrer / Mettre à jour le match</button>
+            <button onClick={handleApplyMatchConfig} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3.5 rounded-xl shadow-lg transition">Démarrer le match</button>
           </div>
         )}
 
+        {/* --- ONGARTS INCHANGÉS : MATCH, STATS, LOGS, SAVE --- */}
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
@@ -581,9 +713,7 @@ export default function App() {
                     <button onClick={() => setGame({...game, scoreHome: Math.max(0, game.scoreHome - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
                     <button onClick={() => setGame({...game, scoreHome: game.scoreHome + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
                   </div>
-                  <div className="flex flex-col items-center">
-                    <FoulSquares count={getTeamFoulsForPeriod(game.period)} />
-                  </div>
+                  <FoulSquares count={getTeamFoulsForPeriod(game.period)} />
                 </div>
 
                 <div className="border-x border-slate-800 px-2">
@@ -608,9 +738,7 @@ export default function App() {
                     <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
                     <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
                   </div>
-                  <div className="flex flex-col items-center">
-                    <FoulSquares count={getOpponentFoulsForPeriod(game.period)} />
-                  </div>
+                  <FoulSquares count={getOpponentFoulsForPeriod(game.period)} />
                 </div>
               </div>
             </div>
@@ -625,7 +753,7 @@ export default function App() {
                     <button
                       key={p.id}
                       onClick={() => setSelectedPlayerId(isSelected ? null : p.id)}
-                      className={`flex flex-col items-center p-2 rounded-2xl border transition ${isSelected ? 'bg-amber-500 text-slate-950 border-amber-300 ring-2 ring-amber-400 shadow-lg scale-105' : 'bg-slate-800/90 text-white border-slate-700/80 hover:bg-slate-700/80'}`}
+                      className={`flex flex-col items-center p-2 rounded-2xl border transition ${isSelected ? 'bg-amber-500 text-slate-950 border-amber-300 ring-2 ring-amber-400 scale-105' : 'bg-slate-800/90 text-white border-slate-700/80 hover:bg-slate-700/80'}`}
                     >
                       <span className="text-lg font-black">#{p.number}</span>
                       <span className="text-[10px] font-bold truncate max-w-full">{p.name}</span>
@@ -639,7 +767,7 @@ export default function App() {
             </div>
 
             {selectedPlayer && (
-              <div className="bg-slate-900/95 backdrop-blur-md border-2 border-amber-500 p-4 rounded-3xl shadow-2xl text-white space-y-4 animate-fade-in">
+              <div className="bg-slate-900/95 backdrop-blur-md border-2 border-amber-500 p-4 rounded-3xl shadow-2xl text-white space-y-4">
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                   <div className="flex items-center space-x-2">
                     <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{selectedPlayer.number}</span>
@@ -650,17 +778,17 @@ export default function App() {
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-slate-800/60 p-2.5 rounded-2xl border border-slate-700/60 space-y-2">
-                    <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir à 2 Points</span>
+                    <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir 2 Points</span>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button onClick={() => recordEvent('TIR 2PTS RÉUSSI', selectedPlayer.id, 2)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+2)</button>
+                      <button onClick={() => recordEvent('TIR 2PTS RÉUSSI', selectedPlayer.id, 2)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs">🟢 Réussi (+2)</button>
                       <button onClick={() => recordEvent('TIR 2PTS Manqué', selectedPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
                     </div>
                   </div>
 
                   <div className="bg-slate-800/60 p-2.5 rounded-2xl border border-slate-700/60 space-y-2">
-                    <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir à 3 Points</span>
+                    <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir 3 Points</span>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button onClick={() => recordEvent('TIR 3PTS RÉUSSI', selectedPlayer.id, 3)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+3)</button>
+                      <button onClick={() => recordEvent('TIR 3PTS RÉUSSI', selectedPlayer.id, 3)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs">🟢 Réussi (+3)</button>
                       <button onClick={() => recordEvent('TIR 3PTS Manqué', selectedPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
                     </div>
                   </div>
@@ -705,10 +833,10 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-4 gap-2 border-t border-slate-800 pt-2">
-                  <button onClick={() => recordEvent('FAUTE SUBIE', selectedPlayer.id)} className="bg-blue-950/60 hover:bg-blue-900 border border-blue-800/80 text-blue-200 text-xs font-bold py-2 rounded-xl">🛡️ Faute Subie</button>
-                  <button onClick={() => recordEvent('FAUTE PERSONNELLE', selectedPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Perso</button>
-                  <button onClick={() => recordEvent('FAUTE TECHNIQUE', selectedPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Tech.</button>
-                  <button onClick={() => recordEvent('FAUTE DISQUALIFIANTE', selectedPlayer.id)} className="bg-rose-900 hover:bg-rose-800 text-white text-xs font-bold py-2 rounded-xl">🟥 Disqual.</button>
+                  <button onClick={() => recordEvent('FAUTE SUBIE', selectedPlayer.id)} className="bg-blue-950/60 border border-blue-800/80 text-blue-200 text-xs font-bold py-2 rounded-xl">🛡️ Faute Subie</button>
+                  <button onClick={() => recordEvent('FAUTE PERSONNELLE', selectedPlayer.id)} className="bg-rose-950/60 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Perso</button>
+                  <button onClick={() => recordEvent('FAUTE TECHNIQUE', selectedPlayer.id)} className="bg-rose-950/60 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Tech.</button>
+                  <button onClick={() => recordEvent('FAUTE DISQUALIFIANTE', selectedPlayer.id)} className="bg-rose-900 text-white text-xs font-bold py-2 rounded-xl">🟥 Disqual.</button>
                 </div>
               </div>
             )}
@@ -718,7 +846,7 @@ export default function App() {
                 <span>🔄 Effectuer un ou plusieurs changements</span>
               </button>
             ) : (
-              <div className="bg-slate-900/95 backdrop-blur-md border border-indigo-500/50 p-4 rounded-3xl shadow-xl space-y-4 text-white">
+              <div className="bg-slate-900/95 border border-indigo-500/50 p-4 rounded-3xl shadow-xl space-y-4 text-white">
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                   <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Changements de joueuses</h3>
                   <button onClick={() => { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }} className="text-xs text-rose-400 font-bold">ANNULER</button>
@@ -848,12 +976,45 @@ export default function App() {
                         <span className="font-bold text-white">{player ? `#${player.number} ${player.name}` : 'Équipe'}</span>
                         <span className="text-slate-300">{ev.actionType}</span>
                       </div>
-                      <button onClick={() => deleteEvent(ev.id)} className="text-rose-400 hover:text-rose-300 font-bold px-2 py-1 bg-rose-950/50 rounded-lg">Supprimer</button>
+                      <button onClick={() => deleteEvent(ev.id)} className="text-rose-400 font-bold px-2 py-1 bg-rose-950/50 rounded-lg">Supprimer</button>
                     </div>
                   );
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {activeTab === 'SAVE' && (
+          <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
+            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-emerald-400">💾 Sauvegarder le Match sur Supabase</h2>
+            
+            <div className="bg-slate-800/60 p-4 rounded-2xl border border-slate-700 space-y-3 text-xs">
+              <div className="flex justify-between items-center border-b border-slate-700/50 pb-2">
+                <span className="text-slate-400">ID FFBB MATCH :</span>
+                <span className="font-black text-amber-400 text-sm">{game.config.ffbbMatchId || 'NON DÉFINI ⚠️'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Score Final :</span>
+                <span className="font-bold text-white">{game.config.teamHome} ({game.scoreHome}) - ({game.scoreAway}) {game.config.teamAway}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Actions enregistrées :</span>
+                <span className="font-bold text-slate-200">{game.events.length}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Joueuses retenues :</span>
+                <span className="font-bold text-slate-200">{game.matchRoster.length} joueuses</span>
+              </div>
+            </div>
+
+            <button
+              onClick={handleSaveFullMatchToSupabase}
+              disabled={isSavingMatch || !game.config.ffbbMatchId.trim()}
+              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-4 rounded-2xl shadow-xl transition text-sm flex items-center justify-center space-x-2"
+            >
+              <span>{isSavingMatch ? 'Enregistrement en cours...' : '💾 Enregistrer définitivement le match'}</span>
+            </button>
           </div>
         )}
       </main>
