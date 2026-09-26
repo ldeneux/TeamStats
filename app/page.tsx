@@ -21,6 +21,7 @@ export interface GameConfig {
   matchDate: string;
   periodCount: number;
   periodMinutes: number;
+  ffbbMatchId: string;
 }
 
 export interface GameState {
@@ -60,12 +61,14 @@ export default function App() {
     teamAway: 'ASVEL U18',
     matchDate: new Date().toISOString().split('T')[0],
     periodCount: 4,
-    periodMinutes: 10
+    periodMinutes: 10,
+    ffbbMatchId: ''
   });
 
   const [selectedMatchPlayerIds, setSelectedMatchPlayerIds] = useState<string[]>(
     DEFAULT_PLAYERS.map(p => p.id)
   );
+  const [matchNumbers, setMatchNumbers] = useState<{ [playerId: string]: number }>({});
 
   const [game, setGame] = useState<GameState>({
     config: matchConfig,
@@ -260,10 +263,8 @@ export default function App() {
     setFtAttempts([null, null, null]);
 
     if (alertFoul) {
-      const p = game.matchRoster.find(r => r.id === playerId);
       setSelectedOutIds([playerId]);
       setIsSubbing(true);
-      alert(`⚠️ 5 FAUTES POUR #${p?.number} ${p?.name} !\nJoueuse exclue. Veuillez effectuer le remplacement.`);
     }
   };
 
@@ -302,26 +303,32 @@ export default function App() {
   const validateSubstitutions = () => {
     if (selectedOutIds.length !== selectedInIds.length || selectedOutIds.length === 0) return;
 
-    const pOutNames = selectedOutIds.map(id => "#" + game.matchRoster.find(p => p.id === id)?.number).join(', ');
-    const pInNames = selectedInIds.map(id => "#" + game.matchRoster.find(p => p.id === id)?.number).join(', ');
+    const matchNotStarted = game.period === 1 && game.clockSeconds === game.config.periodMinutes * 60 && game.events.length === 0;
 
-    const subEvent: GameEvent = {
-      id: Date.now().toString(),
-      timestamp: new Date().toLocaleTimeString(),
-      period: game.period,
-      clockTime: formatTime(game.clockSeconds),
-      actionType: `REMPLACEMENT (${selectedOutIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
-      playerId: selectedInIds[0]
-    };
-
-    setGame(prev => ({
-      ...prev,
-      onCourtPlayerIds: [
+    setGame(prev => {
+      const updatedOnCourt = [
         ...prev.onCourtPlayerIds.filter(id => !selectedOutIds.includes(id)),
         ...selectedInIds
-      ],
-      events: [subEvent, ...prev.events]
-    }));
+      ];
+
+      if (matchNotStarted) {
+        return { ...prev, onCourtPlayerIds: updatedOnCourt };
+      }
+
+      const pOutNames = selectedOutIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
+      const pInNames = selectedInIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
+
+      const subEvent: GameEvent = {
+        id: Date.now().toString(),
+        timestamp: new Date().toLocaleTimeString(),
+        period: prev.period,
+        clockTime: formatTime(prev.clockSeconds),
+        actionType: `REMPLACEMENT (${selectedOutIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
+        playerId: selectedInIds[0]
+      };
+
+      return { ...prev, onCourtPlayerIds: updatedOnCourt, events: [subEvent, ...prev.events] };
+    });
 
     setIsSubbing(false);
     setSelectedOutIds([]);
@@ -436,7 +443,9 @@ export default function App() {
       return;
     }
 
-    const matchRoster = editingRoster.filter(p => selectedMatchPlayerIds.includes(p.id));
+    const matchRoster = editingRoster
+      .filter(p => selectedMatchPlayerIds.includes(p.id))
+      .map(p => ({ ...p, number: matchNumbers[p.id] ?? p.number }));
     const onCourt = matchRoster.slice(0, 5).map(p => p.id);
 
     setGame({
@@ -501,8 +510,8 @@ export default function App() {
       <main>
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
-            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Configuration & BDD Supabase</h2>
-            
+            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Match</h2>
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile</label>
@@ -512,20 +521,26 @@ export default function App() {
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Adverse</label>
                 <input type="text" value={matchConfig.teamAway} onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
               </div>
+            </div>
 
+            <div className="flex flex-wrap items-end gap-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Nombre de périodes</label>
-                <input type="number" min="1" max="12" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Périodes</label>
+                <input type="number" min="1" max="49" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Durée période (minutes)</label>
-                <input type="number" min="1" max="20" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Durée (min)</label>
+                <input type="number" min="1" max="49" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
+              </div>
+              <div className="flex-1 min-w-[160px]">
+                <label className="block text-xs font-semibold text-slate-400 mb-1">ID FFBB Match</label>
+                <input type="text" placeholder="ex: 12345678" value={matchConfig.ffbbMatchId} onChange={e => setMatchConfig({...matchConfig, ffbbMatchId: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
               </div>
             </div>
 
             <div className="border-t border-slate-800 pt-4 space-y-4">
               <div className="flex justify-between items-center">
-                <h3 className="text-sm font-bold text-amber-400">Équipes & Joueuses (Supabase)</h3>
+                <h3 className="text-sm font-bold text-amber-400">Équipes & Joueuses</h3>
                 <button onClick={fetchTeamsFromSupabase} disabled={isLoadingTeams} className="text-xs text-slate-400 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-slate-700">
                   {isLoadingTeams ? 'Chargement...' : '🔄 Rafraîchir'}
                 </button>
@@ -562,14 +577,27 @@ export default function App() {
                   <p className="text-xs font-bold text-slate-300">Sélectionner les 10 joueuses pour le match :</p>
                   <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                   {editingRoster.map(p => {
                     const isSelected = selectedMatchPlayerIds.includes(p.id);
+                    const matchNumber = matchNumbers[p.id] ?? p.number;
                     return (
-                      <button key={p.id} onClick={() => handleToggleMatchPlayer(p.id)} className={`flex items-center justify-between p-2 rounded-xl border text-xs font-bold transition ${isSelected ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-                        <span>#{p.number} {p.name}</span>
-                        <span className="text-sm">{isSelected ? '✓' : '+'}</span>
-                      </button>
+                      <div key={p.id} className={`flex items-center justify-between p-2 rounded-xl border text-xs font-bold transition ${isSelected ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                        <button onClick={() => handleToggleMatchPlayer(p.id)} className="flex items-center space-x-2 flex-1 text-left">
+                          <span className="text-sm">{isSelected ? '✓' : '+'}</span>
+                          <span className="truncate">{p.name}</span>
+                        </button>
+                        <div className="flex items-center space-x-1 shrink-0">
+                          <span className="text-[9px] text-slate-500 uppercase">N° match</span>
+                          <input
+                            type="number"
+                            value={matchNumber}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => setMatchNumbers({ ...matchNumbers, [p.id]: parseInt(e.target.value) || 0 })}
+                            className="w-12 bg-slate-900 border border-slate-700 rounded-lg p-1 text-center text-white"
+                          />
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -636,10 +664,10 @@ export default function App() {
                     <button
                       key={p.id}
                       onClick={() => setSelectedPlayerId(isSelected ? null : p.id)}
-                      className={`flex flex-col items-center p-2 rounded-2xl border transition ${isSelected ? 'bg-amber-500 text-slate-950 border-amber-300 ring-2 ring-amber-400 shadow-lg scale-105' : 'bg-slate-800/90 text-white border-slate-700/80 hover:bg-slate-700/80'}`}
+                      className={`flex flex-col items-center p-2 rounded-2xl border transition bg-slate-800/90 hover:bg-slate-700/80 ${isSelected ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg scale-105' : 'border-slate-700/80'}`}
                     >
-                      <span className="text-lg font-black">#{p.number}</span>
-                      <span className="text-[10px] font-bold truncate max-w-full">{p.name}</span>
+                      <span className={`text-lg font-black ${isSelected ? 'text-amber-400' : 'text-white'}`}>#{p.number}</span>
+                      <span className={`text-[10px] font-bold truncate max-w-full ${isSelected ? 'text-amber-400' : 'text-white'}`}>{p.name}</span>
                       <div className="mt-1">
                         <FoulSquares count={fouls} size="small" />
                       </div>
@@ -664,7 +692,8 @@ export default function App() {
                         ['2PTS', `${s.pts2Made}/${s.pts2Att}`],
                         ['3PTS', `${s.pts3Made}/${s.pts3Att}`],
                         ['LF', `${s.ftMade}/${s.ftAttempted}`],
-                        ['REB', s.rebOff + s.rebDef],
+                        ['REB O', s.rebOff],
+                        ['REB D', s.rebDef],
                         ['AST', s.assists],
                         ['FT', s.fouls],
                         ['FS', s.foulsDrawn],
@@ -772,7 +801,7 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-rose-400 font-bold mb-2">1. Sortie(s) ({selectedOutIds.length}) :</p>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-2">
                       {game.matchRoster.filter(p => game.onCourtPlayerIds.includes(p.id) || selectedOutIds.includes(p.id)).map(p => {
                         const isSelected = selectedOutIds.includes(p.id);
                         const fouls = getFoulsCount(p.id);
@@ -796,7 +825,7 @@ export default function App() {
 
                   <div>
                     <p className="text-xs text-emerald-400 font-bold mb-2">2. Entrée(s) ({selectedInIds.length}) :</p>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-2">
                       {game.matchRoster.filter(p => !game.onCourtPlayerIds.includes(p.id) && !selectedOutIds.includes(p.id)).map(p => {
                         const fouls = getFoulsCount(p.id);
                         const isFouledOut = fouls >= 5;
@@ -851,7 +880,8 @@ export default function App() {
                     <th className="py-2 px-1 text-center">2PTS</th>
                     <th className="py-2 px-1 text-center">3PTS</th>
                     <th className="py-2 px-1 text-center">LF</th>
-                    <th className="py-2 px-1 text-center">REB</th>
+                    <th className="py-2 px-1 text-center">REB O</th>
+                    <th className="py-2 px-1 text-center">REB D</th>
                     <th className="py-2 px-1 text-center">AST</th>
                     <th className="py-2 px-1 text-center">FT</th>
                     <th className="py-2 px-1 text-center text-blue-400">FS</th>
@@ -869,7 +899,8 @@ export default function App() {
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.pts2Made}/{st.pts2Att}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.pts3Made}/{st.pts3Att}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.ftMade}/{st.ftAttempted}</td>
-                        <td className="py-2.5 px-1 text-center text-slate-300">{st.rebOff + st.rebDef}</td>
+                        <td className="py-2.5 px-1 text-center text-slate-300">{st.rebOff}</td>
+                        <td className="py-2.5 px-1 text-center text-slate-300">{st.rebDef}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.assists}</td>
                         <td className="py-2.5 px-1 text-center text-rose-400 font-bold">{st.fouls}</td>
                         <td className="py-2.5 px-1 text-center text-blue-400 font-bold">{st.foulsDrawn}</td>
