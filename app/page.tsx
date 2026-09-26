@@ -24,6 +24,7 @@ export interface GameConfig {
 }
 
 export interface GameState {
+  supabaseMatchId?: string; // ID interne Supabase (UUID) s'il est déjà enregistré
   config: GameConfig;
   period: number;
   clockSeconds: number;
@@ -36,23 +37,24 @@ export interface GameState {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS' | 'SAVE'>('INIT');
+  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS' | 'SAVE' | 'LOAD'>('INIT');
   const [selectedPeriodFilter, setSelectedPeriodFilter] = useState<number | 'ALL'>('ALL');
 
   const [savedTeams, setSavedTeams] = useState<SavedTeam[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [newTeamName, setNewTeamName] = useState('');
   
-  // Roster de l'équipe sélectionnée (vide au démarrage)
   const [editingRoster, setEditingRoster] = useState<Player[]>([]);
-  
-  // Dictionnaire des numéros temporaires attribués spécifiquement pour CE match { playerId: jerseyNumber }
   const [customMatchNumbers, setCustomMatchNumbers] = useState<{ [playerId: string]: number }>({});
   
   const [newPlayerNumber, setNewPlayerNumber] = useState<number | ''>('');
   const [newPlayerName, setNewPlayerName] = useState('');
   const [isLoadingTeams, setIsLoadingTeams] = useState(false);
   const [isSavingMatch, setIsSavingMatch] = useState(false);
+  
+  // Recherche et chargement de match
+  const [searchFfbbId, setSearchFfbbId] = useState('');
+  const [isLoadingMatch, setIsLoadingMatch] = useState(false);
 
   const [matchConfig, setMatchConfig] = useState<GameConfig>({
     ffbbMatchId: '',
@@ -117,6 +119,135 @@ export default function App() {
     fetchTeamsFromSupabase();
   }, []);
 
+  // --- RECHERCHE ET CHARGEMENT D'UN MATCH EXISTANT ---
+  const handleLoadMatchFromSupabase = async () => {
+    if (!searchFfbbId.trim()) {
+      alert("Veuillez saisir un ID FFBB MATCH.");
+      return;
+    }
+
+    setIsLoadingMatch(true);
+    try {
+      // 1. Récupérer les données du match
+      const { data: matchData, error: matchErr } = await supabase
+        .from('stats_matches')
+        .select('*')
+        .eq('ffbb_match_id', searchFfbbId.trim())
+        .single();
+
+      if (matchErr || !matchData) {
+        alert("Aucun match trouvé avec cet ID FFBB.");
+        setIsLoadingMatch(false);
+        return;
+      }
+
+      // 2. Récupérer les stats des joueuses retenues dans le match
+      const { data: statsData, error: statsErr } = await supabase
+        .from('stats_player_game_stats')
+        .select('*')
+        .eq('match_id', matchData.id);
+
+      if (statsErr) throw statsErr;
+
+      // 3. Récupérer les événements du match
+      const { data: eventsData, error: eventsErr } = await supabase
+        .from('stats_match_events')
+        .select('*')
+        .eq('match_id', matchData.id)
+        .order('id', { ascending: false });
+
+      if (eventsErr) throw eventsErr;
+
+      // Restructuration des joueuses du match
+      const loadedRoster: Player[] = (statsData || []).map((s: any) => ({
+        id: s.player_id,
+        number: s.player_number,
+        name: s.player_name
+      }));
+
+      // Restructuration des événements
+      const loadedEvents: GameEvent[] = (eventsData || []).map((e: any) => ({
+        id: e.id.toString(),
+        timestamp: e.timestamp_str || new Date().toLocaleTimeString(),
+        period: e.period,
+        clockTime: e.clock_time,
+        actionType: e.action_type,
+        playerId: e.player_id
+      }));
+
+      const loadedConfig: GameConfig = {
+        ffbbMatchId: matchData.ffbb_match_id,
+        teamHome: matchData.team_home,
+        teamAway: matchData.team_away,
+        matchDate: matchData.match_date,
+        periodCount: matchData.period_count || 4,
+        periodMinutes: matchData.period_minutes || 10
+      };
+
+      const onCourt = loadedRoster.slice(0, 5).map(p => p.id);
+
+      setGame({
+        supabaseMatchId: matchData.id,
+        config: loadedConfig,
+        period: 1,
+        clockSeconds: loadedConfig.periodMinutes * 60,
+        isClockRunning: false,
+        scoreHome: matchData.score_home || 0,
+        scoreAway: matchData.score_away || 0,
+        matchRoster: loadedRoster,
+        onCourtPlayerIds: onCourt,
+        events: loadedEvents
+      });
+
+      setMatchConfig(loadedConfig);
+      alert(`Match ${matchData.ffbb_match_id} chargé avec succès !`);
+      setActiveTab('MATCH');
+    } catch (err: any) {
+      alert("Erreur lors de la récupération du match : " + err.message);
+    } finally {
+      setIsLoadingMatch(false);
+    }
+  };
+
+  // --- SUPPRESSION DU MATCH EN BDD ---
+  const handleDeleteMatchFromSupabase = async () => {
+    if (!game.supabaseMatchId) {
+      alert("Ce match n'existe pas encore dans la base de données.");
+      return;
+    }
+
+    const confirmDelete = window.confirm(`Êtes-vous sûr de vouloir supprimer définitivement le match ${game.config.ffbbMatchId} de la base de données ? Cette action est irrémédiable.`);
+    if (!confirmDelete) return;
+
+    setIsSavingMatch(true);
+    try {
+      // Les événements et stats sont automatiquement supprimés via clé étrangère CASCADE, ou manuellement :
+      await supabase.from('stats_match_events').delete().eq('match_id', game.supabaseMatchId);
+      await supabase.from('stats_player_game_stats').delete().eq('match_id', game.supabaseMatchId);
+      const { error } = await supabase.from('stats_matches').delete().eq('id', game.supabaseMatchId);
+
+      if (error) throw error;
+
+      alert("Match supprimé de la base de données avec succès !");
+      setGame({
+        config: matchConfig,
+        period: 1,
+        clockSeconds: 600,
+        isClockRunning: false,
+        scoreHome: 0,
+        scoreAway: 0,
+        matchRoster: [],
+        onCourtPlayerIds: [],
+        events: []
+      });
+      setActiveTab('INIT');
+    } catch (err: any) {
+      alert("Erreur lors de la suppression : " + err.message);
+    } finally {
+      setIsSavingMatch(false);
+    }
+  };
+
   const handleSaveTeamToSupabase = async () => {
     if (!newTeamName.trim()) {
       alert("Veuillez saisir un nom d'équipe.");
@@ -168,6 +299,7 @@ export default function App() {
     }
   };
 
+  // --- SAUVEGARDE / MISE À JOUR DU MATCH (UPSERT) ---
   const handleSaveFullMatchToSupabase = async () => {
     if (!game.config.ffbbMatchId.trim()) {
       alert("Veuillez renseigner un ID FFBB MATCH dans la configuration.");
@@ -178,28 +310,47 @@ export default function App() {
     setIsSavingMatch(true);
 
     try {
-      const { data: matchData, error: matchErr } = await supabase
-        .from('stats_matches')
-        .insert({
-          ffbb_match_id: game.config.ffbbMatchId.trim(),
-          match_date: game.config.matchDate,
-          team_home: game.config.teamHome,
-          team_away: game.config.teamAway,
-          score_home: game.scoreHome,
-          score_away: game.scoreAway,
-          period_count: game.config.periodCount,
-          period_minutes: game.config.periodMinutes
-        })
-        .select()
-        .single();
+      let currentMatchId = game.supabaseMatchId;
 
-      if (matchErr || !matchData) throw matchErr;
+      const matchPayload = {
+        ffbb_match_id: game.config.ffbbMatchId.trim(),
+        match_date: game.config.matchDate,
+        team_home: game.config.teamHome,
+        team_away: game.config.teamAway,
+        score_home: game.scoreHome,
+        score_away: game.scoreAway,
+        period_count: game.config.periodCount,
+        period_minutes: game.config.periodMinutes
+      };
 
-      const createdMatchId = matchData.id;
+      if (currentMatchId) {
+        // Mettre à jour le match existant
+        const { error: updateErr } = await supabase
+          .from('stats_matches')
+          .update(matchPayload)
+          .eq('id', currentMatchId);
+
+        if (updateErr) throw updateErr;
+
+        // Effacer les anciens événements et stats pour réinsérer la version à jour
+        await supabase.from('stats_match_events').delete().eq('match_id', currentMatchId);
+        await supabase.from('stats_player_game_stats').delete().eq('match_id', currentMatchId);
+      } else {
+        // Créer un nouveau match
+        const { data: matchData, error: matchErr } = await supabase
+          .from('stats_matches')
+          .insert(matchPayload)
+          .select()
+          .single();
+
+        if (matchErr || !matchData) throw matchErr;
+        currentMatchId = matchData.id;
+        setGame(prev => ({ ...prev, supabaseMatchId: currentMatchId }));
+      }
 
       if (game.events.length > 0) {
         const eventsPayload = game.events.map(ev => ({
-          match_id: createdMatchId,
+          match_id: currentMatchId,
           period: ev.period,
           clock_time: ev.clockTime,
           timestamp_str: ev.timestamp,
@@ -217,9 +368,9 @@ export default function App() {
       const statsPayload = game.matchRoster.map(p => {
         const st = getPlayerStats(p.id, 'ALL');
         return {
-          match_id: createdMatchId,
+          match_id: currentMatchId,
           player_id: p.id,
-          player_number: p.number, // Numéro spécifique retenu pour le match
+          player_number: p.number,
           player_name: p.name,
           points: st.points,
           pts2_made: st.pts2Made,
@@ -243,7 +394,7 @@ export default function App() {
 
       if (statsErr) throw statsErr;
 
-      alert(`Match ${game.config.ffbbMatchId} sauvegardé dans Supabase !`);
+      alert(`Match ${game.config.ffbbMatchId} enregistré avec succès dans Supabase !`);
       setActiveTab('MATCH');
     } catch (err: any) {
       alert("Erreur lors de la sauvegarde : " + err.message);
@@ -518,7 +669,6 @@ export default function App() {
       return;
     }
 
-    // Reconstruction du roster du match avec les numéros ajustés pour le match
     const matchRoster: Player[] = editingRoster
       .filter(p => selectedMatchPlayerIds.includes(p.id))
       .map(p => ({
@@ -529,6 +679,7 @@ export default function App() {
     const onCourt = matchRoster.slice(0, 5).map(p => p.id);
 
     setGame({
+      supabaseMatchId: undefined,
       config: matchConfig,
       period: 1,
       clockSeconds: matchConfig.periodMinutes * 60,
@@ -578,12 +729,13 @@ export default function App() {
             <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
           </div>
           
-          <nav className="flex space-x-1.5 bg-slate-800 p-1 rounded-xl text-base font-semibold border border-slate-700/60">
-            <button onClick={() => setActiveTab('INIT')} title="Configuration" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'INIT' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>⚙️</button>
-            <button onClick={() => setActiveTab('MATCH')} title="Direct" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'MATCH' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🏀</button>
-            <button onClick={() => setActiveTab('STATS')} title="Statistiques" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'STATS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>📊</button>
-            <button onClick={() => setActiveTab('LOGS')} title="Historique" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'LOGS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🕒</button>
-            <button onClick={() => setActiveTab('SAVE')} title="Sauvegarder le Match" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'SAVE' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>💾</button>
+          <nav className="flex space-x-1 bg-slate-800 p-1 rounded-xl text-base font-semibold border border-slate-700/60">
+            <button onClick={() => setActiveTab('INIT')} title="Configuration" className={`w-8 h-8 flex items-center justify-center rounded-lg transition ${activeTab === 'INIT' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>⚙️</button>
+            <button onClick={() => setActiveTab('LOAD')} title="Charger Match BDD" className={`w-8 h-8 flex items-center justify-center rounded-lg transition ${activeTab === 'LOAD' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🔄</button>
+            <button onClick={() => setActiveTab('MATCH')} title="Direct" className={`w-8 h-8 flex items-center justify-center rounded-lg transition ${activeTab === 'MATCH' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🏀</button>
+            <button onClick={() => setActiveTab('STATS')} title="Statistiques" className={`w-8 h-8 flex items-center justify-center rounded-lg transition ${activeTab === 'STATS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>📊</button>
+            <button onClick={() => setActiveTab('LOGS')} title="Historique" className={`w-8 h-8 flex items-center justify-center rounded-lg transition ${activeTab === 'LOGS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🕒</button>
+            <button onClick={() => setActiveTab('SAVE')} title="Sauvegarder le Match" className={`w-8 h-8 flex items-center justify-center rounded-lg transition ${activeTab === 'SAVE' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>💾</button>
           </nav>
         </div>
       </header>
@@ -701,7 +853,45 @@ export default function App() {
           </div>
         )}
 
-        {/* --- ONGARTS INCHANGÉS : MATCH, STATS, LOGS, SAVE --- */}
+        {activeTab === 'LOAD' && (
+          <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
+            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-indigo-400">🔄 Reprendre un Match de la BDD</h2>
+            <p className="text-xs text-slate-300">Saisissez l'ID FFBB du match enregistré pour charger son score, ses joueuses et son historique afin de le modifier ou le supprimer.</p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-indigo-400 mb-1 uppercase tracking-wider">ID FFBB MATCH</label>
+                <div className="flex space-x-2">
+                  <input
+                    type="text"
+                    placeholder="ex: FFBB-2026-U15F-1029"
+                    value={searchFfbbId}
+                    onChange={e => setSearchFfbbId(e.target.value)}
+                    className="flex-1 bg-slate-800 border border-indigo-500/50 rounded-xl p-3 text-sm font-bold text-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <button
+                    onClick={handleLoadMatchFromSupabase}
+                    disabled={isLoadingMatch}
+                    className="bg-indigo-600 hover:bg-indigo-500 font-bold px-6 py-3 rounded-xl text-xs transition"
+                  >
+                    {isLoadingMatch ? 'Chargement...' : '🔍 Charger'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {game.supabaseMatchId && (
+              <div className="p-4 bg-indigo-950/40 border border-indigo-500/40 rounded-2xl space-y-2">
+                <p className="text-xs font-bold text-indigo-300">Match actuellement chargé en mémoire :</p>
+                <div className="text-xs text-slate-300 flex justify-between">
+                  <span>ID FFBB : <strong>{game.config.ffbbMatchId}</strong></span>
+                  <span>Score : <strong>{game.scoreHome} - {game.scoreAway}</strong></span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
@@ -987,12 +1177,18 @@ export default function App() {
 
         {activeTab === 'SAVE' && (
           <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
-            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-emerald-400">💾 Sauvegarder le Match sur Supabase</h2>
+            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-emerald-400">💾 Sauvegarder / Mettre à jour le Match</h2>
             
             <div className="bg-slate-800/60 p-4 rounded-2xl border border-slate-700 space-y-3 text-xs">
               <div className="flex justify-between items-center border-b border-slate-700/50 pb-2">
                 <span className="text-slate-400">ID FFBB MATCH :</span>
                 <span className="font-black text-amber-400 text-sm">{game.config.ffbbMatchId || 'NON DÉFINI ⚠️'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Statut BDD :</span>
+                <span className={`font-bold ${game.supabaseMatchId ? 'text-indigo-400' : 'text-emerald-400'}`}>
+                  {game.supabaseMatchId ? 'Match existant (Mise à jour)' : 'Nouveau Match'}
+                </span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Score Final :</span>
@@ -1002,19 +1198,27 @@ export default function App() {
                 <span className="text-slate-400">Actions enregistrées :</span>
                 <span className="font-bold text-slate-200">{game.events.length}</span>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Joueuses retenues :</span>
-                <span className="font-bold text-slate-200">{game.matchRoster.length} joueuses</span>
-              </div>
             </div>
 
-            <button
-              onClick={handleSaveFullMatchToSupabase}
-              disabled={isSavingMatch || !game.config.ffbbMatchId.trim()}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-4 rounded-2xl shadow-xl transition text-sm flex items-center justify-center space-x-2"
-            >
-              <span>{isSavingMatch ? 'Enregistrement en cours...' : '💾 Enregistrer définitivement le match'}</span>
-            </button>
+            <div className="space-y-3">
+              <button
+                onClick={handleSaveFullMatchToSupabase}
+                disabled={isSavingMatch || !game.config.ffbbMatchId.trim()}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-4 rounded-2xl shadow-xl transition text-sm flex items-center justify-center space-x-2"
+              >
+                <span>{isSavingMatch ? 'Enregistrement en cours...' : game.supabaseMatchId ? '🔄 Mettre à jour le match en BDD' : '💾 Enregistrer définitivement le match'}</span>
+              </button>
+
+              {game.supabaseMatchId && (
+                <button
+                  onClick={handleDeleteMatchFromSupabase}
+                  disabled={isSavingMatch}
+                  className="w-full bg-rose-600/20 hover:bg-rose-600/40 border border-rose-500/50 text-rose-300 font-bold py-3 rounded-2xl transition text-xs flex items-center justify-center space-x-2"
+                >
+                  <span>🗑️ Supprimer définitivement ce match de la BDD</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
       </main>
