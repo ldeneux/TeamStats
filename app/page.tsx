@@ -206,7 +206,9 @@ export default function App() {
   };
 
   const getFoulsCount = (playerId: string) => {
-    return game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE') && !e.actionType.includes('SUBIE')).length;
+    const playerFouls = game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE') && !e.actionType.includes('SUBIE'));
+    if (playerFouls.some(e => e.actionType.includes('DISQUALIFIANTE'))) return 5;
+    return playerFouls.length;
   };
 
   // Fautes commises par notre équipe pendant la période
@@ -236,7 +238,10 @@ export default function App() {
     let updatedOnCourt = [...game.onCourtPlayerIds];
     let alertFoul = false;
 
-    if (action.includes('FAUTE') && !action.includes('SUBIE')) {
+    if (action.includes('DISQUALIFIANTE')) {
+      updatedOnCourt = updatedOnCourt.filter(id => id !== playerId);
+      alertFoul = true;
+    } else if (action.includes('FAUTE') && !action.includes('SUBIE')) {
       const currentFouls = getFoulsCount(playerId) + 1;
       if (currentFouls >= 5) {
         updatedOnCourt = updatedOnCourt.filter(id => id !== playerId);
@@ -286,6 +291,7 @@ export default function App() {
   };
 
   const toggleSelectIn = (id: string) => {
+    if (getFoulsCount(id) >= 5) return;
     if (selectedInIds.includes(id)) {
       setSelectedInIds(selectedInIds.filter(i => i !== id));
     } else if (selectedInIds.length < selectedOutIds.length) {
@@ -646,11 +652,37 @@ export default function App() {
             {selectedPlayer && (
               <div className="bg-slate-900/95 backdrop-blur-md border-2 border-amber-500 p-4 rounded-3xl shadow-2xl text-white space-y-4 animate-fade-in">
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                  <div className="flex items-center space-x-2">
-                    <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{selectedPlayer.number}</span>
-                    <span className="font-bold text-sm text-amber-400">{selectedPlayer.name}</span>
+                  <div className="flex items-center space-x-3 overflow-x-auto">
+                    <div className="flex items-center space-x-2 shrink-0">
+                      <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{selectedPlayer.number}</span>
+                      <span className="font-bold text-sm text-amber-400">{selectedPlayer.name}</span>
+                    </div>
+                    {(() => {
+                      const s = getPlayerStats(selectedPlayer.id, 'ALL');
+                      const cols: [string, string | number][] = [
+                        ['PTS', s.points],
+                        ['2PTS', `${s.pts2Made}/${s.pts2Att}`],
+                        ['3PTS', `${s.pts3Made}/${s.pts3Att}`],
+                        ['LF', `${s.ftMade}/${s.ftAttempted}`],
+                        ['REB', s.rebOff + s.rebDef],
+                        ['AST', s.assists],
+                        ['FT', s.fouls],
+                        ['FS', s.foulsDrawn],
+                        ['Tps', formatTime(s.totalSecs)],
+                      ];
+                      return (
+                        <div className="flex items-end space-x-2 shrink-0">
+                          {cols.map(([label, value]) => (
+                            <div key={label} className="flex flex-col items-center leading-none">
+                              <span className="text-[7px] text-slate-500 font-bold uppercase">{label}</span>
+                              <span className="text-[9px] text-slate-200 font-bold">{value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
-                  <button onClick={() => setSelectedPlayerId(null)} className="text-xs text-slate-400 hover:text-white font-bold">Fermer ✖</button>
+                  <button onClick={() => setSelectedPlayerId(null)} className="text-xs text-slate-400 hover:text-white font-bold shrink-0 ml-2">Fermer ✖</button>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -678,30 +710,33 @@ export default function App() {
                       <button onClick={() => setFtAttempts([null, null, null])} className="text-[10px] text-slate-400 hover:text-white underline font-bold uppercase">Réinitialiser LF</button>
                     )}
                   </div>
-                  <div className="flex space-x-2">
-                    {[0, 1, 2].map(index => (
-                      <div key={index} className="flex-1 flex flex-col items-center bg-slate-900/60 p-1.5 rounded-xl border border-slate-700">
-                        <span className="text-[10px] font-bold text-slate-400 mb-1">LF {index + 1}</span>
-                        <div className="flex space-x-1 w-full">
+                  <div className="grid grid-cols-3 gap-2">
+                    {[0, 1, 2].map(index => {
+                      const isEnabled = index === 0 || ftAttempts[index - 1] !== null;
+                      return (
+                        <div key={index} className={`flex flex-col bg-slate-900/60 p-1.5 rounded-xl border border-slate-700 space-y-1 transition ${!isEnabled ? 'opacity-30 pointer-events-none' : ''}`}>
+                          <span className="text-[10px] font-bold text-slate-400 text-center">LF {index + 1}</span>
                           <button
+                            disabled={!isEnabled}
                             onClick={() => {
                               const updated = [...ftAttempts] as [boolean | null, boolean | null, boolean | null];
                               updated[index] = true;
                               setFtAttempts(updated);
                             }}
-                            className={`flex-1 py-1 rounded text-xs font-black ${ftAttempts[index] === true ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-400'}`}
-                          >✓</button>
+                            className={`py-1.5 rounded-lg text-[10px] font-black transition ${ftAttempts[index] === true ? 'bg-emerald-500 text-white shadow' : 'bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40'}`}
+                          >🟢 Réussi (1 pt)</button>
                           <button
+                            disabled={!isEnabled}
                             onClick={() => {
                               const updated = [...ftAttempts] as [boolean | null, boolean | null, boolean | null];
                               updated[index] = false;
                               setFtAttempts(updated);
                             }}
-                            className={`flex-1 py-1 rounded text-xs font-black ${ftAttempts[index] === false ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-400'}`}
-                          >✗</button>
+                            className={`py-1.5 rounded-lg text-[10px] font-black transition ${ftAttempts[index] === false ? 'bg-rose-500 text-white shadow' : 'bg-rose-600/20 text-rose-300 hover:bg-rose-600/40'}`}
+                          >🔴 Manqué</button>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   {ftAttempts.some(v => v !== null) && (
                     <button onClick={handleFreeThrowsSubmit} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-2 rounded-xl text-xs transition">Valider les lancers francs</button>
@@ -734,7 +769,7 @@ export default function App() {
                   <button onClick={() => { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }} className="text-xs text-rose-400 font-bold">ANNULER</button>
                 </div>
 
-                <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-rose-400 font-bold mb-2">1. Sortie(s) ({selectedOutIds.length}) :</p>
                     <div className="grid grid-cols-2 gap-2">
@@ -784,7 +819,7 @@ export default function App() {
                   </div>
 
                   {selectedInIds.length > 0 && selectedOutIds.length === selectedInIds.length && (
-                    <button onClick={validateSubstitutions} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl shadow-lg transition">Valider le(s) remplacement(s)</button>
+                    <button onClick={validateSubstitutions} className="col-span-2 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl shadow-lg transition">Valider le(s) remplacement(s)</button>
                   )}
                 </div>
               </div>
