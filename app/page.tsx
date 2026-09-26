@@ -1,6 +1,15 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+
+// Configuration Supabase
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://votre-projet.supabase.co';
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'votre-cle-anon';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  db: { schema: 'multisports' }
+});
 
 export interface Player { id: string; number: number; name: string; }
 export interface SavedTeam { id: string; name: string; roster: Player[]; }
@@ -32,11 +41,6 @@ const DEFAULT_PLAYERS: Player[] = [
   { id: '3', number: 6, name: 'ANNABELLE' },
   { id: '4', number: 7, name: 'L. DUBOIS' },
   { id: '5', number: 9, name: 'C. BERNARD' },
-  { id: '6', number: 10, name: 'E. THOMAS' },
-  { id: '7', number: 12, name: 'M. ROBERT' },
-  { id: '8', number: 14, name: 'A. RICHARD' },
-  { id: '9', number: 15, name: 'J. PETIT' },
-  { id: '10', number: 18, name: 'M. DURAND' },
 ];
 
 export default function App() {
@@ -46,12 +50,10 @@ export default function App() {
   const [savedTeams, setSavedTeams] = useState<SavedTeam[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [newTeamName, setNewTeamName] = useState('');
-  const [editingRoster, setEditingRoster] = useState<Player[]>([
-    { id: '1', number: 4, name: 'MAYRA' },
-    { id: '2', number: 5, name: 'CANDICE' }
-  ]);
+  const [editingRoster, setEditingRoster] = useState<Player[]>(DEFAULT_PLAYERS);
   const [newPlayerNumber, setNewPlayerNumber] = useState<number | ''>('');
   const [newPlayerName, setNewPlayerName] = useState('');
+  const [isLoadingTeams, setIsLoadingTeams] = useState(false);
 
   const [matchConfig, setMatchConfig] = useState<GameConfig>({
     teamHome: 'SATHONAY',
@@ -73,7 +75,7 @@ export default function App() {
     scoreHome: 0,
     scoreAway: 0,
     matchRoster: DEFAULT_PLAYERS,
-    onCourtPlayerIds: ['1', '2', '3', '4', '5'],
+    onCourtPlayerIds: DEFAULT_PLAYERS.map(p => p.id),
     events: []
   });
 
@@ -85,16 +87,94 @@ export default function App() {
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
   const [selectedInIds, setSelectedInIds] = useState<string[]>([]);
 
-  useEffect(() => {
-    const saved = localStorage.getItem('sathonay_teams');
-    if (saved) {
-      try { setSavedTeams(JSON.parse(saved)); } catch (e) {}
+  // CHARGEMENT DEPUIS SUPABASE (stats_teams + stats_players)
+  const fetchTeamsFromSupabase = async () => {
+    setIsLoadingTeams(true);
+    try {
+      const { data: teamsData, error } = await supabase
+        .from('stats_teams')
+        .select('id, name, stats_players(id, name, number)');
+
+      if (error) {
+        console.error("Erreur chargement Supabase:", error);
+      } else if (teamsData) {
+        const formatted: SavedTeam[] = teamsData.map((t: any) => ({
+          id: t.id,
+          name: t.name,
+          roster: (t.stats_players || []).map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            number: p.number
+          }))
+        }));
+        setSavedTeams(formatted);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoadingTeams(false);
     }
+  };
+
+  useEffect(() => {
+    fetchTeamsFromSupabase();
   }, []);
 
-  const saveTeamsToStorage = (teams: SavedTeam[]) => {
-    setSavedTeams(teams);
-    localStorage.setItem('sathonay_teams', JSON.stringify(teams));
+  // SAUVEGARDE / MODIFICATION DANS SUPABASE
+  const handleSaveTeamToSupabase = async () => {
+    if (!newTeamName.trim()) {
+      alert("Veuillez saisir un nom d'équipe.");
+      return;
+    }
+
+    try {
+      let targetTeamId = selectedTeamId;
+
+      if (targetTeamId) {
+        // UPDATE ÉQUIPE
+        await supabase
+          .from('stats_teams')
+          .update({ name: newTeamName.trim() })
+          .eq('id', targetTeamId);
+      } else {
+        // INSERT NOUVELLE ÉQUIPE
+        const { data: createdTeam, error: teamErr } = await supabase
+          .from('stats_teams')
+          .insert({ name: newTeamName.trim() })
+          .select()
+          .single();
+
+        if (teamErr || !createdTeam) throw teamErr;
+        targetTeamId = createdTeam.id;
+      }
+
+      // AJOUT / MODIFICATION DES JOUEURS
+      for (const player of editingRoster) {
+        // Si l'ID est un UUID valide de Supabase (longueur > 20) -> UPDATE
+        if (player.id.length > 20) {
+          await supabase
+            .from('stats_players')
+            .update({ name: player.name, number: player.number })
+            .eq('id', player.id);
+        } else {
+          // Nouveau joueur généré localement -> INSERT
+          await supabase
+            .from('stats_players')
+            .insert({
+              team_id: targetTeamId,
+              name: player.name,
+              number: player.number
+            });
+        }
+      }
+
+      alert("Équipe et joueuses enregistrées dans Supabase !");
+      setNewTeamName('');
+      setSelectedTeamId('');
+      fetchTeamsFromSupabase();
+    } catch (err: any) {
+      alert("Erreur lors de la sauvegarde : " + err.message);
+    }
   };
 
   useEffect(() => {
@@ -129,8 +209,14 @@ export default function App() {
     return game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE') && !e.actionType.includes('SUBIE')).length;
   };
 
+  // Fautes commises par notre équipe pendant la période
   const getTeamFoulsForPeriod = (pNum: number) => {
     return game.events.filter(e => e.period === pNum && e.actionType.includes('FAUTE') && !e.actionType.includes('SUBIE')).length;
+  };
+
+  // Fautes commises par l'équipe adverse pendant la période (= Fautes SUBIES par notre équipe)
+  const getOpponentFoulsForPeriod = (pNum: number) => {
+    return game.events.filter(e => e.period === pNum && e.actionType.includes('FAUTE SUBIE')).length;
   };
 
   const availableBenchPlayers = game.matchRoster.filter(
@@ -311,19 +397,15 @@ export default function App() {
     setNewPlayerName('');
   };
 
-  const handleSaveTeam = () => {
-    if (!newTeamName.trim()) return;
-    const team: SavedTeam = { id: Date.now().toString(), name: newTeamName.trim(), roster: editingRoster };
-    const updated = [...savedTeams.filter(t => t.name !== team.name), team];
-    saveTeamsToStorage(updated);
-    setNewTeamName('');
-    alert(`Équipe "${team.name}" enregistrée avec succès !`);
-  };
-
-  const handleLoadTeam = (teamId: string) => {
+  const handleLoadTeamFromSelect = (teamId: string) => {
     setSelectedTeamId(teamId);
+    if (!teamId) {
+      setNewTeamName('');
+      return;
+    }
     const team = savedTeams.find(t => t.id === teamId);
     if (team) {
+      setNewTeamName(team.name);
       setMatchConfig(prev => ({ ...prev, teamHome: team.name }));
       setEditingRoster(team.roster);
       setSelectedMatchPlayerIds(team.roster.slice(0, 10).map(p => p.id));
@@ -413,7 +495,7 @@ export default function App() {
       <main>
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
-            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Configuration du Match</h2>
+            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Configuration & BDD Supabase</h2>
             
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -428,7 +510,6 @@ export default function App() {
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Nombre de périodes</label>
                 <input type="number" min="1" max="12" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
-                <span className="text-[10px] text-slate-400">4 périodes = Q1..Q4 | Autres = P1..Pn</span>
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Durée période (minutes)</label>
@@ -437,22 +518,25 @@ export default function App() {
             </div>
 
             <div className="border-t border-slate-800 pt-4 space-y-4">
-              <h3 className="text-sm font-bold text-amber-400">Gestion des Équipes & Effectifs</h3>
+              <div className="flex justify-between items-center">
+                <h3 className="text-sm font-bold text-amber-400">Équipes & Joueuses (Supabase)</h3>
+                <button onClick={fetchTeamsFromSupabase} disabled={isLoadingTeams} className="text-xs text-slate-400 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-slate-700">
+                  {isLoadingTeams ? 'Chargement...' : '🔄 Rafraîchir'}
+                </button>
+              </div>
               
-              {savedTeams.length > 0 && (
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1">Charger une équipe enregistrée</label>
-                  <select value={selectedTeamId} onChange={e => handleLoadTeam(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
-                    <option value="">-- Sélectionner une équipe --</option>
-                    {savedTeams.map(t => (
-                      <option key={t.id} value={t.id}>{t.name} ({t.roster.length} joueuses)</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Charger une équipe Supabase pour édition</label>
+                <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
+                  <option value="">-- Créer une nouvelle équipe --</option>
+                  {savedTeams.map(t => (
+                    <option key={t.id} value={t.id}>{t.name} ({t.roster.length} joueuses)</option>
+                  ))}
+                </select>
+              </div>
 
               <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 space-y-3">
-                <p className="text-xs font-bold text-slate-300">Ajouter une joueuse à l'effectif global</p>
+                <p className="text-xs font-bold text-slate-300">Ajouter / Modifier une joueuse dans l'effectif actuel</p>
                 <div className="flex space-x-2">
                   <input type="number" placeholder="N°" value={newPlayerNumber} onChange={e => setNewPlayerNumber(e.target.value ? parseInt(e.target.value) : '')} className="w-20 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-center text-white" />
                   <input type="text" placeholder="Nom de la joueuse" value={newPlayerName} onChange={e => setNewPlayerName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-white" />
@@ -461,13 +545,15 @@ export default function App() {
               </div>
 
               <div className="flex space-x-2 items-center">
-                <input type="text" placeholder="Nom de l'équipe (ex: U15F, U11F)" value={newTeamName} onChange={e => setNewTeamName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white" />
-                <button onClick={handleSaveTeam} className="bg-emerald-600 hover:bg-emerald-500 font-bold px-4 py-2.5 rounded-xl text-xs">Enregistrer l'équipe</button>
+                <input type="text" placeholder="Nom de l'équipe (ex: U15F)" value={newTeamName} onChange={e => setNewTeamName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white" />
+                <button onClick={handleSaveTeamToSupabase} className="bg-emerald-600 hover:bg-emerald-500 font-bold px-4 py-2.5 rounded-xl text-xs">
+                  {selectedTeamId ? 'Mettre à jour sur Supabase' : 'Enregistrer sur Supabase'}
+                </button>
               </div>
 
               <div>
                 <div className="flex justify-between items-center mb-2">
-                  <p className="text-xs font-bold text-slate-300">Sélectionner les 10 joueuses pour la feuille de match :</p>
+                  <p className="text-xs font-bold text-slate-300">Sélectionner les 10 joueuses pour le match :</p>
                   <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
@@ -526,15 +612,16 @@ export default function App() {
                     <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
                     <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
                   </div>
+                  <!-- Incrémentation basée sur les Fautes Subies par notre équipe -->
                   <div className="flex flex-col items-center">
-                    <FoulSquares count={0} />
+                    <FoulSquares count={getOpponentFoulsForPeriod(game.period)} />
                   </div>
                 </div>
               </div>
             </div>
 
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Joueuses sur le terrain (Sélectionner pour une action)</h3>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Joueuses sur le terrain</h3>
               <div className="grid grid-cols-5 gap-2">
                 {game.matchRoster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
                   const isSelected = selectedPlayerId === p.id;
