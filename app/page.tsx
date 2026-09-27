@@ -717,25 +717,52 @@ export default function App() {
             <button onClick={() => setActiveTab('MATCH')} title="Direct" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'MATCH' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🏀</button>
             <button onClick={() => setActiveTab('STATS')} title="Statistiques" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'STATS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>📊</button>
             <button onClick={() => setActiveTab('LOGS')} title="Historique" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'LOGS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🕒</button>
+            <span className="w-px h-6 bg-slate-700 self-center mx-0.5" />
+            <button
+              onClick={handleSaveMatch}
+              disabled={saveStatus === 'saving'}
+              title="Enregistrer le match et les statistiques"
+              className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
+                saveStatus === 'saved' ? 'bg-emerald-600 text-white' :
+                saveStatus === 'error' ? 'bg-rose-600 text-white' :
+                saveStatus === 'saving' ? 'bg-slate-700 text-slate-400' :
+                'text-slate-400 hover:text-white'
+              }`}
+            >{saveStatus === 'saving' ? '⏳' : saveStatus === 'saved' ? '✅' : saveStatus === 'error' ? '⚠️' : '💾'}</button>
           </nav>
         </div>
+        {saveStatus === 'error' && (
+          <p className="text-center text-[10px] text-rose-400 pb-1">Échec de l'enregistrement, vérifie la connexion Supabase.</p>
+        )}
+        {saveStatus === 'saved' && (
+          <p className="text-center text-[10px] text-emerald-400 pb-1">Match et statistiques enregistrés.</p>
+        )}
       </header>
 
       <main>
         {activeTab === 'INIT' && (
           <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
-            <h2 className="text-xl font-bold border-b border-slate-700 pb-3 text-amber-400">Match</h2>
+            <div className="flex justify-between items-center border-b border-slate-700 pb-3">
+              <h2 className="text-xl font-bold text-amber-400">Match</h2>
+              <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-1 text-xs font-black">
+                <button onClick={() => setMatchType('OFFICIEL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'OFFICIEL' ? 'bg-amber-600 text-white shadow' : 'text-slate-400'}`}>OFFICIEL</button>
+                <button onClick={() => setMatchType('AMICAL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'AMICAL' ? 'bg-blue-600 text-white shadow' : 'text-slate-400'}`}>AMICAL</button>
+              </div>
+            </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile</label>
-                <input type="text" value={matchConfig.teamHome} onChange={e => setMatchConfig({...matchConfig, teamHome: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                <input type="text" disabled={matchType === 'OFFICIEL'} value={matchConfig.teamHome} onChange={e => setMatchConfig({...matchConfig, teamHome: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed" />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Adverse</label>
-                <input type="text" value={matchConfig.teamAway} onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                <input type="text" disabled={matchType === 'OFFICIEL'} value={matchConfig.teamAway} onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed" />
               </div>
             </div>
+            {matchType === 'OFFICIEL' && (
+              <p className="text-[10px] text-slate-500 -mt-3">Les noms d'équipe sont verrouillés en match officiel : renseigne l'ID FFBB ci-dessous pour les remplir automatiquement.</p>
+            )}
 
             <div className="flex flex-wrap items-end gap-4">
               <div>
@@ -746,9 +773,20 @@ export default function App() {
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Durée (min)</label>
                 <input type="number" min="1" max="49" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
               </div>
-              <div className="flex-1 min-w-[160px]">
-                <label className="block text-xs font-semibold text-slate-400 mb-1">ID FFBB Match</label>
-                <input type="text" placeholder="ex: 12345678" value={matchConfig.ffbbMatchId} onChange={e => setMatchConfig({...matchConfig, ffbbMatchId: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+              <div className="flex-1 min-w-[180px]">
+                <label className="block text-xs font-semibold text-slate-400 mb-1">ID FFBB Match {isLookingUpFfbb && <span className="text-amber-400">(recherche...)</span>}{ffbbLookupStatus === 'notfound' && <span className="text-rose-400">(introuvable)</span>}{ffbbLookupStatus === 'found' && <span className="text-emerald-400">(trouvé ✓)</span>}</label>
+                <div className="flex space-x-1.5">
+                  <input
+                    type="text"
+                    maxLength={20}
+                    placeholder="ex: 200000014737720"
+                    value={matchConfig.ffbbMatchId}
+                    onChange={e => { setFfbbLookupStatus('idle'); setMatchConfig({...matchConfig, ffbbMatchId: e.target.value.slice(0, 20)}); }}
+                    onBlur={e => fetchFfbbMatchInfo(e.target.value)}
+                    className="flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none"
+                  />
+                  <button onClick={openFfbbPicker} title="Rechercher un match déjà enregistré" className="shrink-0 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 text-lg">🔍</button>
+                </div>
               </div>
             </div>
 
@@ -819,6 +857,37 @@ export default function App() {
             </div>
 
             <button onClick={handleApplyMatchConfig} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3.5 rounded-xl shadow-lg transition">Démarrer / Mettre à jour le match</button>
+          </div>
+        )}
+
+        {showFfbbPicker && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setShowFfbbPicker(false)}>
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-md max-h-[80vh] overflow-y-auto space-y-3" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                <h3 className="text-sm font-bold text-amber-400">Matchs déjà enregistrés</h3>
+                <button onClick={() => setShowFfbbPicker(false)} className="text-xs text-slate-400 hover:text-white font-bold">Fermer ✖</button>
+              </div>
+              {isLoadingExistingMatches ? (
+                <p className="text-xs text-slate-400 text-center py-4">Chargement...</p>
+              ) : existingMatches.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-4">Aucun match enregistré pour le moment.</p>
+              ) : (
+                <div className="space-y-2">
+                  {existingMatches.map(m => (
+                    <button key={m.id} onClick={() => handleSelectExistingMatch(m)} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-amber-500 transition">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-bold text-white">{m.team_home} vs {m.team_away}</span>
+                        <span className="text-slate-400">{m.match_date || ''}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1">
+                        <span>ID : {m.ffbb_match_id}</span>
+                        <span className="font-bold text-slate-300">{m.score_home} - {m.score_away}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
