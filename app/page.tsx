@@ -101,6 +101,7 @@ export default function App() {
   const [pickerTypeFilter, setPickerTypeFilter] = useState<'ALL' | 'OFFICIEL' | 'AMICAL'>('OFFICIEL');
   const [matchToDelete, setMatchToDelete] = useState<any | null>(null);
   const [isDeletingMatch, setIsDeletingMatch] = useState(false);
+  const [actionToUndo, setActionToUndo] = useState<GameEvent | null>(null);
   const [currentMatchDbId, setCurrentMatchDbId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isEditingClock, setIsEditingClock] = useState(false);
@@ -544,6 +545,29 @@ export default function App() {
     }
   };
 
+  // Dernière action réelle (hors remplacements/marqueurs internes) enregistrée pour une joueuse
+  const getLastPlayerAction = (playerId: string) => {
+    return game.events.find(e => e.playerId === playerId && !e.actionType.startsWith('REMPLACEMENT') && e.actionType !== 'ETAT:SUR_TERRAIN') || null;
+  };
+
+  // ANNULER (supprimer) la dernière action confirmée
+  const handleConfirmUndo = () => {
+    if (!actionToUndo) return;
+    let pointsToRemove = 0;
+    if (actionToUndo.actionType.includes('TIR 2PTS RÉUSSI')) pointsToRemove = 2;
+    else if (actionToUndo.actionType.includes('TIR 3PTS RÉUSSI')) pointsToRemove = 3;
+    else if (actionToUndo.actionType.startsWith('LANCERS FRANCS')) {
+      const m = actionToUndo.actionType.match(/\((\d+)\//);
+      if (m) pointsToRemove = parseInt(m[1], 10);
+    }
+    setGame(prev => ({
+      ...prev,
+      scoreHome: Math.max(0, prev.scoreHome - pointsToRemove),
+      events: prev.events.filter(e => e.id !== actionToUndo.id)
+    }));
+    setActionToUndo(null);
+  };
+
   const handleFreeThrowsSubmit = () => {
     if (!selectedPlayerId) return;
     let points = 0;
@@ -782,7 +806,7 @@ export default function App() {
       <header className="bg-slate-900/90 backdrop-blur-md text-white rounded-2xl border border-slate-700/50 shadow-lg mb-4">
         <div className="flex justify-between items-center px-4 py-2.5">
           <div className="flex items-center space-x-2.5">
-            <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Sathonay Basket</span>
+            <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Olympic Sathonay</span>
           </div>
           
           <nav className="flex space-x-1.5 bg-slate-800 p-1 rounded-xl text-base font-semibold border border-slate-700/60">
