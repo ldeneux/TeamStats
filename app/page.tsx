@@ -96,18 +96,18 @@ export default function App() {
   const [showFfbbPicker, setShowFfbbPicker] = useState(false);
   const [existingMatches, setExistingMatches] = useState<any[]>([]);
   const [isLoadingExistingMatches, setIsLoadingExistingMatches] = useState(false);
+  const [pickerTeamFilter, setPickerTeamFilter] = useState('ALL');
+  const [pickerSeasonFilter, setPickerSeasonFilter] = useState('ALL');
+  const [pickerTypeFilter, setPickerTypeFilter] = useState<'ALL' | 'OFFICIEL' | 'AMICAL'>('OFFICIEL');
+  const [matchToDelete, setMatchToDelete] = useState<any | null>(null);
+  const [isDeletingMatch, setIsDeletingMatch] = useState(false);
   const [currentMatchDbId, setCurrentMatchDbId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isEditingClock, setIsEditingClock] = useState(false);
   const [clockEditValue, setClockEditValue] = useState('');
 
-  const OUR_TEAM_NAME = 'OLYMPIC SATHONAY';
-
-  useEffect(() => {
-    if (matchType === 'OFFICIEL') {
-      setMatchConfig(prev => ({ ...prev, teamHome: OUR_TEAM_NAME }));
-    }
-  }, [matchType]);
+  // Notre équipe est toujours l'une de celles gérées dans stats_teams (sélectionnée
+  // via "Charger une équipe Supabase" plus bas, qui renseigne matchConfig.teamHome).
 
   // CHARGEMENT DEPUIS SUPABASE (stats_teams + stats_players)
   const fetchTeamsFromSupabase = async () => {
@@ -158,7 +158,6 @@ export default function App() {
       } else {
         setMatchConfig(prev => ({
           ...prev,
-          teamHome: OUR_TEAM_NAME,
           teamAway: data.opponent || prev.teamAway,
           matchDate: data.match_date || prev.matchDate
         }));
@@ -171,21 +170,49 @@ export default function App() {
     }
   };
 
+  // Saison sportive : du 01/09 au 31/08 (ex: un match du 27/09/2026 -> saison "2026-2027")
+  const getSeasonLabel = (dateStr: string | null | undefined) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const y = d.getFullYear();
+    const m = d.getMonth(); // 0 = janvier ... 8 = septembre
+    return m >= 8 ? `${y}-${y + 1}` : `${y - 1}-${y}`;
+  };
+
   // OUVRIR LE SÉLECTEUR DES MATCHS DÉJÀ ENREGISTRÉS (stats_matches)
   const openFfbbPicker = async () => {
     setShowFfbbPicker(true);
     setIsLoadingExistingMatches(true);
+    setPickerSeasonFilter(getSeasonLabel(new Date().toISOString().split('T')[0]));
     try {
       const { data, error } = await supabase
         .from('stats_matches')
         .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer')
         .order('match_date', { ascending: false })
-        .limit(30);
+        .limit(200);
       if (!error && data) setExistingMatches(data);
     } catch (err) {
       console.error(err);
     } finally {
       setIsLoadingExistingMatches(false);
+    }
+  };
+
+  // SUPPRIMER DÉFINITIVEMENT UN MATCH (infos + événements + statistiques)
+  const handleDeleteMatch = async () => {
+    if (!matchToDelete) return;
+    setIsDeletingMatch(true);
+    try {
+      await supabase.from('stats_match_events').delete().eq('match_id', matchToDelete.id);
+      await supabase.from('stats_player_game_stats').delete().eq('match_id', matchToDelete.id);
+      await supabase.from('stats_matches').delete().eq('id', matchToDelete.id);
+      setExistingMatches(prev => prev.filter(m => m.id !== matchToDelete.id));
+      if (currentMatchDbId === matchToDelete.id) setCurrentMatchDbId(null);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsDeletingMatch(false);
+      setMatchToDelete(null);
     }
   };
 
@@ -739,6 +766,17 @@ export default function App() {
 
   const selectedPlayer = game.matchRoster.find(p => p.id === selectedPlayerId);
 
+  const availableSeasons = Array.from(new Set(existingMatches.map(m => getSeasonLabel(m.match_date)))).filter(Boolean).sort().reverse();
+  const pickerTeamNames = Array.from(new Set(savedTeams.map(t => t.name)));
+  const filteredExistingMatches = existingMatches.filter(m => {
+    const isAmical = String(m.ffbb_match_id || '').startsWith('AMICAL-');
+    if (pickerTypeFilter === 'OFFICIEL' && isAmical) return false;
+    if (pickerTypeFilter === 'AMICAL' && !isAmical) return false;
+    if (pickerTeamFilter !== 'ALL' && m.team_home !== pickerTeamFilter && m.team_away !== pickerTeamFilter) return false;
+    if (pickerSeasonFilter !== 'ALL' && getSeasonLabel(m.match_date) !== pickerSeasonFilter) return false;
+    return true;
+  });
+
   return (
     <div className="max-w-3xl mx-auto min-h-screen pb-12 pt-4 px-2">
       <header className="bg-slate-900/90 backdrop-blur-md text-white rounded-2xl border border-slate-700/50 shadow-lg mb-4">
@@ -787,17 +825,20 @@ export default function App() {
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile</label>
-                <input type="text" disabled={matchType === 'OFFICIEL'} value={matchConfig.teamHome} onChange={e => setMatchConfig({...matchConfig, teamHome: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed" />
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile (notre équipe)</label>
+                <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
+                  <option value="">-- Choisir une équipe --</option>
+                  {savedTeams.map(t => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Adverse</label>
                 <input type="text" disabled={matchType === 'OFFICIEL'} value={matchConfig.teamAway} onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed" />
               </div>
             </div>
-            {matchType === 'OFFICIEL' && (
-              <p className="text-[10px] text-slate-500 -mt-3">Les noms d'équipe sont verrouillés en match officiel : renseigne l'ID FFBB ci-dessous pour les remplir automatiquement.</p>
-            )}
+            <p className="text-[10px] text-slate-500 -mt-3">Notre équipe vient obligatoirement de la liste "Équipes & Joueuses" (table stats_teams) ci-dessous.{matchType === 'OFFICIEL' && ` L'adversaire se remplit via l'ID FFBB.`}</p>
 
             <div className="flex flex-wrap items-end gap-4">
               <div>
@@ -897,31 +938,67 @@ export default function App() {
 
         {showFfbbPicker && (
           <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setShowFfbbPicker(false)}>
-            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-md max-h-[80vh] overflow-y-auto space-y-3" onClick={e => e.stopPropagation()}>
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-md max-h-[85vh] overflow-y-auto space-y-3" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                 <h3 className="text-sm font-bold text-amber-400">Matchs déjà enregistrés</h3>
                 <button onClick={() => setShowFfbbPicker(false)} className="text-xs text-slate-400 hover:text-white font-bold">Fermer ✖</button>
               </div>
+
+              <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-1 text-[10px] font-black w-fit">
+                <button onClick={() => setPickerTypeFilter('OFFICIEL')} className={`px-2.5 py-1 rounded-full transition ${pickerTypeFilter === 'OFFICIEL' ? 'bg-amber-600 text-white shadow' : 'text-slate-400'}`}>OFFICIEL</button>
+                <button onClick={() => setPickerTypeFilter('AMICAL')} className={`px-2.5 py-1 rounded-full transition ${pickerTypeFilter === 'AMICAL' ? 'bg-blue-600 text-white shadow' : 'text-slate-400'}`}>AMICAL</button>
+                <button onClick={() => setPickerTypeFilter('ALL')} className={`px-2.5 py-1 rounded-full transition ${pickerTypeFilter === 'ALL' ? 'bg-slate-600 text-white shadow' : 'text-slate-400'}`}>TOUS</button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <select value={pickerTeamFilter} onChange={e => setPickerTeamFilter(e.target.value)} className="bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs font-bold text-white focus:outline-none">
+                  <option value="ALL">Toutes les équipes</option>
+                  {pickerTeamNames.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+                <select value={pickerSeasonFilter} onChange={e => setPickerSeasonFilter(e.target.value)} className="bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs font-bold text-white focus:outline-none">
+                  <option value="ALL">Toutes les saisons</option>
+                  {availableSeasons.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+
               {isLoadingExistingMatches ? (
                 <p className="text-xs text-slate-400 text-center py-4">Chargement...</p>
-              ) : existingMatches.length === 0 ? (
-                <p className="text-xs text-slate-400 text-center py-4">Aucun match enregistré pour le moment.</p>
+              ) : filteredExistingMatches.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-4">Aucun match ne correspond à ces filtres.</p>
               ) : (
                 <div className="space-y-2">
-                  {existingMatches.map(m => (
-                    <button key={m.id} onClick={() => handleSelectExistingMatch(m)} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-amber-500 transition">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="font-bold text-white">{m.team_home} vs {m.team_away}</span>
-                        <span className="text-slate-400">{m.match_date || ''}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1">
-                        <span>ID : {m.ffbb_match_id}</span>
-                        <span className="font-bold text-slate-300">{m.score_home} - {m.score_away}</span>
-                      </div>
-                    </button>
+                  {filteredExistingMatches.map(m => (
+                    <div key={m.id} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-amber-500 transition flex items-center space-x-2">
+                      <button onClick={() => handleSelectExistingMatch(m)} className="flex-1 text-left min-w-0">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-bold text-white truncate">{m.team_home} vs {m.team_away}</span>
+                          <span className="text-slate-400 shrink-0 ml-2">{m.match_date || ''}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1">
+                          <span className="truncate">{String(m.ffbb_match_id || '').startsWith('AMICAL-') ? 'Amical' : `ID : ${m.ffbb_match_id}`}</span>
+                          <span className="font-bold text-slate-300 shrink-0 ml-2">{m.score_home} - {m.score_away}</span>
+                        </div>
+                      </button>
+                      <button onClick={() => setMatchToDelete(m)} title="Supprimer ce match" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 hover:bg-rose-900/60 text-rose-400 transition">🗑️</button>
+                    </div>
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {matchToDelete && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => !isDeletingMatch && setMatchToDelete(null)}>
+            <div className="bg-slate-900 border border-rose-600/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-bold text-rose-400">Supprimer ce match ?</h3>
+              <p className="text-xs text-slate-300">
+                <span className="font-bold text-white">{matchToDelete.team_home} vs {matchToDelete.team_away}</span> ({matchToDelete.match_date || 'date inconnue'}) sera définitivement supprimé, avec tous ses événements et statistiques. Cette action est irréversible.
+              </p>
+              <div className="flex space-x-2">
+                <button onClick={() => setMatchToDelete(null)} disabled={isDeletingMatch} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
+                <button onClick={handleDeleteMatch} disabled={isDeletingMatch} className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-xl text-sm transition">{isDeletingMatch ? 'Suppression...' : 'Supprimer'}</button>
+              </div>
             </div>
           </div>
         )}
