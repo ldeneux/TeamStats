@@ -36,13 +36,9 @@ export interface GameState {
   events: GameEvent[];
 }
 
-const DEFAULT_PLAYERS: Player[] = [
-  { id: '1', number: 4, name: 'MAYRA' },
-  { id: '2', number: 5, name: 'CANDICE' },
-  { id: '3', number: 6, name: 'ANNABELLE' },
-  { id: '4', number: 7, name: 'L. DUBOIS' },
-  { id: '5', number: 9, name: 'C. BERNARD' },
-];
+const DEFAULT_PLAYERS: Player[] = [];
+
+const sortPlayersAlpha = (players: Player[]) => [...players].sort((a, b) => a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }));
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS'>('MATCH');
@@ -57,17 +53,15 @@ export default function App() {
   const [isLoadingTeams, setIsLoadingTeams] = useState(false);
 
   const [matchConfig, setMatchConfig] = useState<GameConfig>({
-    teamHome: 'SATHONAY',
-    teamAway: 'ASVEL U18',
+    teamHome: '',
+    teamAway: '',
     matchDate: new Date().toISOString().split('T')[0],
     periodCount: 4,
     periodMinutes: 10,
     ffbbMatchId: ''
   });
 
-  const [selectedMatchPlayerIds, setSelectedMatchPlayerIds] = useState<string[]>(
-    DEFAULT_PLAYERS.map(p => p.id)
-  );
+  const [selectedMatchPlayerIds, setSelectedMatchPlayerIds] = useState<string[]>([]);
   const [matchNumbers, setMatchNumbers] = useState<{ [playerId: string]: number }>({});
 
   const [game, setGame] = useState<GameState>({
@@ -77,8 +71,8 @@ export default function App() {
     isClockRunning: false,
     scoreHome: 0,
     scoreAway: 0,
-    matchRoster: DEFAULT_PLAYERS,
-    onCourtPlayerIds: DEFAULT_PLAYERS.map(p => p.id),
+    matchRoster: [],
+    onCourtPlayerIds: [],
     events: []
   });
 
@@ -91,6 +85,10 @@ export default function App() {
   const [selectedInIds, setSelectedInIds] = useState<string[]>([]);
 
   const [matchType, setMatchType] = useState<'OFFICIEL' | 'AMICAL'>('OFFICIEL');
+  const [homeAway, setHomeAway] = useState<'DOMICILE' | 'EXTERIEUR'>('DOMICILE');
+  const [isEditingTeamForm, setIsEditingTeamForm] = useState(false);
+  const [teamSaveStatus, setTeamSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [clubNames, setClubNames] = useState<string[]>([]);
   const [isLookingUpFfbb, setIsLookingUpFfbb] = useState(false);
   const [ffbbLookupStatus, setFfbbLookupStatus] = useState<'idle' | 'found' | 'notfound'>('idle');
   const [showFfbbPicker, setShowFfbbPicker] = useState(false);
@@ -105,6 +103,8 @@ export default function App() {
   const [currentMatchDbId, setCurrentMatchDbId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isEditingClock, setIsEditingClock] = useState(false);
+  const [confirmResetPeriod, setConfirmResetPeriod] = useState(false);
+  const [startingFiveByPeriod, setStartingFiveByPeriod] = useState<{ [period: number]: string[] }>({});
   const [clockEditValue, setClockEditValue] = useState('');
 
   // Notre équipe est toujours l'une de celles gérées dans stats_teams (sélectionnée
@@ -124,11 +124,11 @@ export default function App() {
         const formatted: SavedTeam[] = teamsData.map((t: any) => ({
           id: t.id,
           name: t.name,
-          roster: (t.stats_players || []).map((p: any) => ({
+          roster: sortPlayersAlpha((t.stats_players || []).map((p: any) => ({
             id: p.id,
             name: p.name,
             number: p.number
-          }))
+          })))
         }));
         setSavedTeams(formatted);
       }
@@ -141,6 +141,14 @@ export default function App() {
 
   useEffect(() => {
     fetchTeamsFromSupabase();
+    (async () => {
+      try {
+        const { data } = await supabase.from('basketball_clubs').select('display_name').order('display_name');
+        if (data) setClubNames(Array.from(new Set(data.map((c: any) => c.display_name).filter(Boolean))));
+      } catch (err) {
+        console.error(err);
+      }
+    })();
   }, []);
 
   // RECHERCHE DES INFOS D'UN MATCH OFFICIEL VIA L'ID FFBB
@@ -240,6 +248,13 @@ export default function App() {
       const onCourtMarkers = (eventsData || []).filter((e: any) => e.action_type === 'ETAT:SUR_TERRAIN');
       const loadedOnCourtIds = onCourtMarkers.map((e: any) => e.player_id).filter((id: string) => loadedRoster.some(p => p.id === id));
 
+      const startingFiveMarkers = (eventsData || []).filter((e: any) => e.action_type === 'ETAT:CINQ_DEPART');
+      const loadedStartingFiveByPeriod: { [period: number]: string[] } = {};
+      startingFiveMarkers.forEach((e: any) => {
+        if (!loadedStartingFiveByPeriod[e.period]) loadedStartingFiveByPeriod[e.period] = [];
+        loadedStartingFiveByPeriod[e.period].push(e.player_id);
+      });
+
       const loadedEvents: GameEvent[] = (eventsData || [])
         .filter((e: any) => e.action_type !== 'ETAT:SUR_TERRAIN')
         .map((e: any) => ({
@@ -271,6 +286,7 @@ export default function App() {
       setPlayingTime(newPlayingTime);
       setCurrentMatchDbId(matchRow.id);
       setMatchType(String(matchRow.ffbb_match_id || '').startsWith('AMICAL-') ? 'AMICAL' : 'OFFICIEL');
+      setStartingFiveByPeriod(loadedStartingFiveByPeriod);
 
       setGame({
         config: newConfig,
@@ -386,10 +402,8 @@ export default function App() {
 
   // SAUVEGARDE / MODIFICATION DANS SUPABASE
   const handleSaveTeamToSupabase = async () => {
-    if (!newTeamName.trim()) {
-      alert("Veuillez saisir un nom d'équipe.");
-      return;
-    }
+    if (!newTeamName.trim()) return;
+    setTeamSaveStatus('saving');
 
     try {
       let targetTeamId = selectedTeamId;
@@ -412,32 +426,35 @@ export default function App() {
         targetTeamId = createdTeam.id;
       }
 
-      // AJOUT / MODIFICATION DES JOUEURS
+      // On récupère les joueuses déjà en base pour cette équipe, pour fusionner par NOM
+      // (clé Équipe/Nom) plutôt que par numéro ou par id local, ce qui évite les doublons
+      // si "Enregistrer" est cliqué plusieurs fois de suite.
+      const { data: existingPlayers } = await supabase
+        .from('stats_players')
+        .select('id, name')
+        .eq('team_id', targetTeamId);
+
       for (const player of editingRoster) {
-        // Si l'ID est un UUID valide de Supabase (longueur > 20) -> UPDATE
-        if (player.id.length > 20) {
-          await supabase
-            .from('stats_players')
-            .update({ name: player.name, number: player.number })
-            .eq('id', player.id);
+        const match = (existingPlayers || []).find(
+          (ep: any) => ep.name.trim().toUpperCase() === player.name.trim().toUpperCase()
+        );
+        if (match) {
+          await supabase.from('stats_players').update({ number: player.number }).eq('id', match.id);
         } else {
-          // Nouveau joueur généré localement -> INSERT
-          await supabase
-            .from('stats_players')
-            .insert({
-              team_id: targetTeamId,
-              name: player.name,
-              number: player.number
-            });
+          await supabase.from('stats_players').insert({ team_id: targetTeamId, name: player.name, number: player.number });
         }
       }
 
-      alert("Équipe et joueuses enregistrées dans Supabase !");
+      setTeamSaveStatus('saved');
+      setTimeout(() => setTeamSaveStatus('idle'), 2000);
       setNewTeamName('');
       setSelectedTeamId('');
-      fetchTeamsFromSupabase();
+      setIsEditingTeamForm(false);
+      await fetchTeamsFromSupabase();
     } catch (err: any) {
-      alert("Erreur lors de la sauvegarde : " + err.message);
+      console.error(err);
+      setTeamSaveStatus('error');
+      setTimeout(() => setTeamSaveStatus('idle'), 3000);
     }
   };
 
@@ -469,6 +486,29 @@ export default function App() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Affichage allégé "PRENOM" (+ initiale(s) du nom si une autre joueuse partage le même prénom)
+  const getShortDisplayName = (player: { name: string; id: string }, pool: { id: string; name: string }[]) => {
+    const parts = player.name.trim().split(/\s+/);
+    const firstName = parts[0] || player.name;
+    const lastName = parts.slice(1).join(' ');
+    if (!lastName) return firstName;
+
+    const homonyms = pool.filter(p => {
+      if (p.id === player.id) return false;
+      const pFirst = p.name.trim().split(/\s+/)[0] || p.name;
+      return pFirst.toUpperCase() === firstName.toUpperCase();
+    });
+    if (homonyms.length === 0) return firstName;
+
+    const myLast = lastName.toUpperCase();
+    const otherLasts = homonyms.map(p => (p.name.trim().split(/\s+/).slice(1).join(' ') || '').toUpperCase());
+    let prefixLen = 1;
+    while (prefixLen < myLast.length && otherLasts.some(ln => ln.slice(0, prefixLen) === myLast.slice(0, prefixLen))) {
+      prefixLen++;
+    }
+    return `${firstName} ${myLast.slice(0, prefixLen)}.`;
+  };
+
   const startEditingClock = () => {
     setClockEditValue(formatTime(game.clockSeconds));
     setIsEditingClock(true);
@@ -483,6 +523,49 @@ export default function App() {
       setGame(prev => ({ ...prev, clockSeconds: totalSecs, isClockRunning: false }));
     }
     setIsEditingClock(false);
+  };
+
+  // Changer de période : mémorise le 5 sur le terrain comme "5 de départ" de cette période
+  // (une seule fois, la première fois que la période est atteinte).
+  const changePeriod = (newPeriod: number) => {
+    const clamped = Math.min(game.config.periodCount, Math.max(1, newPeriod));
+    setGame(prev => {
+      const alreadyRecorded = prev.events.some(e => e.period === clamped && e.actionType === 'ETAT:CINQ_DEPART');
+      const startingFiveEvents: GameEvent[] = alreadyRecorded ? [] : prev.onCourtPlayerIds.map(pid => ({
+        id: `${Date.now()}-${pid}`,
+        timestamp: new Date().toLocaleTimeString(),
+        period: clamped,
+        clockTime: formatTime(prev.clockSeconds),
+        actionType: 'ETAT:CINQ_DEPART',
+        playerId: pid
+      }));
+      if (startingFiveEvents.length > 0) {
+        setStartingFiveByPeriod(sf => ({ ...sf, [clamped]: prev.onCourtPlayerIds }));
+      }
+      return { ...prev, period: clamped, events: [...startingFiveEvents, ...prev.events] };
+    });
+  };
+
+  // RÉINITIALISER LE QUART-TEMPS EN COURS : remet le chrono à fond et efface le temps de jeu
+  // + les actions déjà enregistrées pour cette période précise (hors marqueur "5 de départ").
+  const handleConfirmResetPeriod = () => {
+    const p = game.period;
+    setGame(prev => ({
+      ...prev,
+      clockSeconds: prev.config.periodMinutes * 60,
+      isClockRunning: false,
+      events: prev.events.filter(e => e.period !== p || e.actionType === 'ETAT:CINQ_DEPART')
+    }));
+    setPlayingTime(prev => {
+      const updated: { [playerId: string]: { [period: number]: number } } = {};
+      Object.keys(prev).forEach(pid => {
+        const periods = { ...prev[pid] };
+        delete periods[p];
+        updated[pid] = periods;
+      });
+      return updated;
+    });
+    setConfirmResetPeriod(false);
   };
 
   const getFoulsCount = (playerId: string) => {
@@ -547,24 +630,13 @@ export default function App() {
 
   // Dernière action réelle (hors remplacements/marqueurs internes) enregistrée pour une joueuse
   const getLastPlayerAction = (playerId: string) => {
-    return game.events.find(e => e.playerId === playerId && !e.actionType.startsWith('REMPLACEMENT') && e.actionType !== 'ETAT:SUR_TERRAIN') || null;
+    return game.events.find(e => e.playerId === playerId && !e.actionType.startsWith('REMPLACEMENT') && e.actionType !== 'ETAT:SUR_TERRAIN' && e.actionType !== 'ETAT:CINQ_DEPART') || null;
   };
 
   // ANNULER (supprimer) la dernière action confirmée
   const handleConfirmUndo = () => {
     if (!actionToUndo) return;
-    let pointsToRemove = 0;
-    if (actionToUndo.actionType.includes('TIR 2PTS RÉUSSI')) pointsToRemove = 2;
-    else if (actionToUndo.actionType.includes('TIR 3PTS RÉUSSI')) pointsToRemove = 3;
-    else if (actionToUndo.actionType.startsWith('LANCERS FRANCS')) {
-      const m = actionToUndo.actionType.match(/\((\d+)\//);
-      if (m) pointsToRemove = parseInt(m[1], 10);
-    }
-    setGame(prev => ({
-      ...prev,
-      scoreHome: Math.max(0, prev.scoreHome - pointsToRemove),
-      events: prev.events.filter(e => e.id !== actionToUndo.id)
-    }));
+    deleteEvent(actionToUndo.id);
     setActionToUndo(null);
   };
 
@@ -705,15 +777,18 @@ export default function App() {
   const handleAddPlayerToEditing = () => {
     if (newPlayerNumber === '' || !newPlayerName.trim()) return;
     const p: Player = { id: Date.now().toString(), number: Number(newPlayerNumber), name: newPlayerName.trim().toUpperCase() };
-    setEditingRoster([...editingRoster, p]);
+    setEditingRoster(sortPlayersAlpha([...editingRoster, p]));
     setNewPlayerNumber('');
     setNewPlayerName('');
   };
 
   const handleLoadTeamFromSelect = (teamId: string) => {
     setSelectedTeamId(teamId);
+    setIsEditingTeamForm(false);
     if (!teamId) {
       setNewTeamName('');
+      setEditingRoster([]);
+      setSelectedMatchPlayerIds([]);
       return;
     }
     const team = savedTeams.find(t => t.id === teamId);
@@ -743,22 +818,47 @@ export default function App() {
       return;
     }
 
-    const matchRoster = editingRoster
-      .filter(p => selectedMatchPlayerIds.includes(p.id))
-      .map(p => ({ ...p, number: matchNumbers[p.id] ?? p.number }));
-    const onCourt = matchRoster.slice(0, 5).map(p => p.id);
+    const matchRoster = sortPlayersAlpha(
+      editingRoster
+        .filter(p => selectedMatchPlayerIds.includes(p.id))
+        .map(p => ({ ...p, number: matchNumbers[p.id] ?? p.number }))
+    );
 
-    setGame({
-      config: matchConfig,
-      period: 1,
-      clockSeconds: matchConfig.periodMinutes * 60,
-      isClockRunning: false,
-      scoreHome: 0,
-      scoreAway: 0,
-      matchRoster: matchRoster,
-      onCourtPlayerIds: onCourt,
-      events: []
-    });
+    const hasProgress = game.events.length > 0 || game.scoreHome > 0 || game.scoreAway > 0;
+
+    if (!hasProgress) {
+      // Le match n'a pas encore commencé : on applique la configuration (périodes, durée...) à neuf.
+      const onCourt = matchRoster.slice(0, 5).map(p => p.id);
+      const startingFiveEvents: GameEvent[] = onCourt.map(pid => ({
+        id: `${Date.now()}-${pid}`,
+        timestamp: new Date().toLocaleTimeString(),
+        period: 1,
+        clockTime: formatTime(matchConfig.periodMinutes * 60),
+        actionType: 'ETAT:CINQ_DEPART',
+        playerId: pid
+      }));
+      setStartingFiveByPeriod({ 1: onCourt });
+      setGame({
+        config: matchConfig,
+        period: 1,
+        clockSeconds: matchConfig.periodMinutes * 60,
+        isClockRunning: false,
+        scoreHome: 0,
+        scoreAway: 0,
+        matchRoster,
+        onCourtPlayerIds: onCourt,
+        events: startingFiveEvents
+      });
+    } else {
+      // Le match est déjà en cours : on met à jour la configuration et la feuille de match
+      // (dont le nombre/durée de périodes) sans toucher au score, au chrono ni à l'historique.
+      setGame(prev => ({
+        ...prev,
+        config: matchConfig,
+        matchRoster,
+        onCourtPlayerIds: prev.onCourtPlayerIds.filter(id => matchRoster.some(p => p.id === id))
+      }));
+    }
 
     setActiveTab('MATCH');
   };
@@ -838,99 +938,141 @@ export default function App() {
 
       <main>
         {activeTab === 'INIT' && (
-          <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-6 border border-white/10 shadow-2xl">
-            <div className="flex justify-between items-center border-b border-slate-700 pb-3">
-              <h2 className="text-xl font-bold text-amber-400">Match</h2>
-              <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-1 text-xs font-black">
-                <button onClick={() => setMatchType('OFFICIEL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'OFFICIEL' ? 'bg-amber-600 text-white shadow' : 'text-slate-400'}`}>OFFICIEL</button>
-                <button onClick={() => setMatchType('AMICAL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'AMICAL' ? 'bg-blue-600 text-white shadow' : 'text-slate-400'}`}>AMICAL</button>
-              </div>
-            </div>
+          <div className="space-y-4">
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Domicile (notre équipe)</label>
-                <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
-                  <option value="">-- Choisir une équipe --</option>
-                  {savedTeams.map(t => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe Adverse</label>
-                <input type="text" disabled={matchType === 'OFFICIEL'} value={matchConfig.teamAway} onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed" />
-              </div>
-            </div>
-            <p className="text-[10px] text-slate-500 -mt-3">Notre équipe vient obligatoirement de la liste "Équipes & Joueuses" (table stats_teams) ci-dessous.{matchType === 'OFFICIEL' && ` L'adversaire se remplit via l'ID FFBB.`}</p>
-
-            <div className="flex flex-wrap items-end gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Périodes</label>
-                <input type="number" min="1" max="49" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Durée (min)</label>
-                <input type="number" min="1" max="49" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
-              </div>
-              <div className="flex-1 min-w-[180px]">
-                <label className="block text-xs font-semibold text-slate-400 mb-1">ID FFBB Match {isLookingUpFfbb && <span className="text-amber-400">(recherche...)</span>}{ffbbLookupStatus === 'notfound' && <span className="text-rose-400">(introuvable)</span>}{ffbbLookupStatus === 'found' && <span className="text-emerald-400">(trouvé ✓)</span>}</label>
-                <div className="flex space-x-1.5">
-                  <input
-                    type="text"
-                    maxLength={20}
-                    placeholder="ex: 200000014737720"
-                    value={matchConfig.ffbbMatchId}
-                    onChange={e => { setFfbbLookupStatus('idle'); setMatchConfig({...matchConfig, ffbbMatchId: e.target.value.slice(0, 20)}); }}
-                    onBlur={e => fetchFfbbMatchInfo(e.target.value)}
-                    className="flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none"
-                  />
-                  <button onClick={openFfbbPicker} title="Rechercher un match déjà enregistré" className="shrink-0 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 text-lg">🔍</button>
-                </div>
-              </div>
-            </div>
-
-            <div className="border-t border-slate-800 pt-4 space-y-4">
-              <div className="flex justify-between items-center">
-                <h3 className="text-sm font-bold text-amber-400">Équipes & Joueuses</h3>
+            {/* 1. ÉQUIPES & JOUEUSES */}
+            <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
+              <div className="flex justify-between items-center border-b border-slate-700 pb-3">
+                <h2 className="text-xl font-bold text-amber-400 uppercase">Équipes &amp; Joueuses</h2>
                 <button onClick={fetchTeamsFromSupabase} disabled={isLoadingTeams} className="text-xs text-slate-400 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-slate-700">
                   {isLoadingTeams ? 'Chargement...' : '🔄 Rafraîchir'}
                 </button>
               </div>
-              
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Charger une équipe Supabase pour édition</label>
-                <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
-                  <option value="">-- Créer une nouvelle équipe --</option>
-                  {savedTeams.map(t => (
-                    <option key={t.id} value={t.id}>{t.name} ({t.roster.length} joueuses)</option>
-                  ))}
-                </select>
+
+              <div className="flex items-end space-x-2">
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Choisir une équipe</label>
+                  <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
+                    <option value="">-- Créer une nouvelle équipe --</option>
+                    {savedTeams.map(t => (
+                      <option key={t.id} value={t.id}>{t.name} ({t.roster.length} joueuses)</option>
+                    ))}
+                  </select>
+                </div>
+                <button onClick={() => setIsEditingTeamForm(v => !v)} title="Créer / modifier l'effectif de l'équipe" className={`shrink-0 w-10 h-10 flex items-center justify-center rounded-xl border transition ${isEditingTeamForm ? 'bg-amber-600 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'}`}>✏️</button>
               </div>
 
-              <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 space-y-3">
-                <p className="text-xs font-bold text-slate-300">Ajouter / Modifier une joueuse dans l'effectif actuel</p>
-                <div className="flex space-x-2">
-                  <input type="number" placeholder="N°" value={newPlayerNumber} onChange={e => setNewPlayerNumber(e.target.value ? parseInt(e.target.value) : '')} className="w-20 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-center text-white" />
-                  <input type="text" placeholder="Nom de la joueuse" value={newPlayerName} onChange={e => setNewPlayerName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-white" />
-                  <button onClick={handleAddPlayerToEditing} className="bg-blue-600 hover:bg-blue-500 font-bold px-4 py-2 rounded-xl text-xs">Ajouter</button>
+              {(isEditingTeamForm || !selectedTeamId) && (
+                <div className="space-y-3">
+                  <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 space-y-3">
+                    <p className="text-xs font-bold text-slate-300">Ajouter / Modifier une joueuse dans l'effectif actuel</p>
+                    <div className="flex space-x-2">
+                      <input type="number" placeholder="N°" value={newPlayerNumber} onChange={e => setNewPlayerNumber(e.target.value ? parseInt(e.target.value) : '')} className="w-20 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-center text-white" />
+                      <input type="text" placeholder="Nom de la joueuse" value={newPlayerName} onChange={e => setNewPlayerName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-white" />
+                      <button onClick={handleAddPlayerToEditing} className="bg-blue-600 hover:bg-blue-500 font-bold px-4 py-2 rounded-xl text-xs">Ajouter</button>
+                    </div>
+                    {editingRoster.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {editingRoster.map(p => (
+                          <span key={p.id} className="text-[10px] font-bold bg-slate-900 border border-slate-700 text-slate-300 px-2 py-1 rounded-lg">#{p.number} {p.name}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex space-x-2 items-center">
+                    <input type="text" placeholder="Nom de l'équipe (ex: U15F)" value={newTeamName} onChange={e => setNewTeamName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white" />
+                    <button onClick={handleSaveTeamToSupabase} disabled={teamSaveStatus === 'saving'} className="bg-emerald-600 hover:bg-emerald-500 font-bold px-4 py-2.5 rounded-xl text-xs shrink-0">
+                      {teamSaveStatus === 'saving' ? 'Enregistrement...' : 'Mettre à jour'}
+                    </button>
+                  </div>
+                  {teamSaveStatus === 'saved' && <p className="text-[10px] text-emerald-400">Équipe enregistrée.</p>}
+                  {teamSaveStatus === 'error' && <p className="text-[10px] text-rose-400">Échec de l'enregistrement.</p>}
+                </div>
+              )}
+            </div>
+
+            {/* 2. MATCH */}
+            <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
+              <div className="flex justify-between items-center border-b border-slate-700 pb-3">
+                <h2 className="text-xl font-bold text-amber-400">Match</h2>
+                <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-1 text-xs font-black">
+                  <button onClick={() => setMatchType('OFFICIEL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'OFFICIEL' ? 'bg-amber-600 text-white shadow' : 'text-slate-400'}`}>OFFICIEL</button>
+                  <button onClick={() => setMatchType('AMICAL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'AMICAL' ? 'bg-blue-600 text-white shadow' : 'text-slate-400'}`}>AMICAL</button>
                 </div>
               </div>
 
-              <div className="flex space-x-2 items-center">
-                <input type="text" placeholder="Nom de l'équipe (ex: U15F)" value={newTeamName} onChange={e => setNewTeamName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white" />
-                <button onClick={handleSaveTeamToSupabase} className="bg-emerald-600 hover:bg-emerald-500 font-bold px-4 py-2.5 rounded-xl text-xs">
-                  {selectedTeamId ? 'Mettre à jour sur Supabase' : 'Enregistrer sur Supabase'}
-                </button>
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <p className="text-xs font-bold text-slate-300">Sélectionner les 10 joueuses pour le match :</p>
-                  <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-400">Équipe Domicile</label>
+                    <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-0.5 text-[9px] font-black">
+                      <button onClick={() => setHomeAway('DOMICILE')} className={`px-2 py-0.5 rounded-full transition ${homeAway === 'DOMICILE' ? 'bg-amber-600 text-white' : 'text-slate-400'}`}>DOM</button>
+                      <button onClick={() => setHomeAway('EXTERIEUR')} className={`px-2 py-0.5 rounded-full transition ${homeAway === 'EXTERIEUR' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>EXT</button>
+                    </div>
+                  </div>
+                  <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
+                    <option value="">-- Choisir une équipe --</option>
+                    {savedTeams.map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
                 </div>
-                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                  {editingRoster.map(p => {
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe extérieure</label>
+                  <input
+                    type="text"
+                    list="club-names-list"
+                    disabled={matchType === 'OFFICIEL'}
+                    value={matchConfig.teamAway}
+                    onChange={e => setMatchConfig({...matchConfig, teamAway: e.target.value})}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                  />
+                  <datalist id="club-names-list">
+                    {clubNames.map(name => <option key={name} value={name} />)}
+                  </datalist>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-500 -mt-2">Notre équipe vient obligatoirement de la liste "Équipes &amp; Joueuses" ci-dessus. On ne joue pas forcément à domicile : utilise le flag DOM/EXT.{matchType === 'OFFICIEL' && ` En officiel, l'adversaire se remplit via l'ID FFBB.`}</p>
+
+              <div className="flex flex-wrap items-end gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Périodes</label>
+                  <input type="number" min="1" max="49" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Durée (min)</label>
+                  <input type="number" min="1" max="49" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
+                </div>
+                <div className="flex-1 min-w-[180px]">
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">ID FFBB Match {isLookingUpFfbb && <span className="text-amber-400">(recherche...)</span>}{ffbbLookupStatus === 'notfound' && <span className="text-rose-400">(introuvable)</span>}{ffbbLookupStatus === 'found' && <span className="text-emerald-400">(trouvé ✓)</span>}</label>
+                  <div className="flex space-x-1.5">
+                    <input
+                      type="text"
+                      maxLength={20}
+                      placeholder="ex: 200000014737720"
+                      value={matchConfig.ffbbMatchId}
+                      onChange={e => { setFfbbLookupStatus('idle'); setMatchConfig({...matchConfig, ffbbMatchId: e.target.value.slice(0, 20)}); }}
+                      onBlur={e => fetchFfbbMatchInfo(e.target.value)}
+                      className="flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none"
+                    />
+                    <button onClick={openFfbbPicker} title="Rechercher un match déjà enregistré" className="shrink-0 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 text-lg">🔍</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. FEUILLE DE MATCH */}
+            <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
+              <div className="flex justify-between items-center border-b border-slate-700 pb-3">
+                <h2 className="text-xl font-bold text-amber-400">Feuille de Match</h2>
+                <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
+              </div>
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {editingRoster.length === 0 ? (
+                  <p className="text-xs text-slate-500 text-center py-4">Choisis ou crée une équipe ci-dessus pour constituer la feuille de match.</p>
+                ) : (
+                  editingRoster.map(p => {
                     const isSelected = selectedMatchPlayerIds.includes(p.id);
                     const matchNumber = matchNumbers[p.id] ?? p.number;
                     return (
@@ -951,8 +1093,8 @@ export default function App() {
                         </div>
                       </div>
                     );
-                  })}
-                </div>
+                  })
+                )}
               </div>
             </div>
 
@@ -1027,12 +1169,27 @@ export default function App() {
           </div>
         )}
 
+        {confirmResetPeriod && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => setConfirmResetPeriod(false)}>
+            <div className="bg-slate-900 border border-rose-600/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-bold text-rose-400">Réinitialiser {getPeriodLabel(game.period, game.config.periodCount)} ?</h3>
+              <p className="text-xs text-slate-300">
+                Le chrono repart à <span className="font-bold text-white">{formatTime(game.config.periodMinutes * 60)}</span> et toutes les actions déjà enregistrées pour cette période (temps de jeu inclus) seront effacées de l'historique. Les autres périodes ne sont pas concernées. Cette action est irréversible.
+              </p>
+              <div className="flex space-x-2">
+                <button onClick={() => setConfirmResetPeriod(false)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
+                <button onClick={handleConfirmResetPeriod} className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-xl text-sm transition">Réinitialiser</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               <div className="grid grid-cols-3 items-center text-center">
                 <div className="flex flex-col items-center">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamHome}</p>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamHome || 'DOMICILE'}</p>
                   <p className="text-4xl font-black text-amber-400 my-1">{game.scoreHome}</p>
                   <div className="flex justify-center space-x-1 mb-2">
                     <button onClick={() => setGame({...game, scoreHome: Math.max(0, game.scoreHome - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
@@ -1045,11 +1202,11 @@ export default function App() {
 
                 <div className="border-x border-slate-800 px-2">
                   <div className="flex items-center justify-center space-x-2">
-                    <button onClick={() => setGame(prev => ({ ...prev, period: Math.max(1, prev.period - 1) }))} className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30">-</button>
+                    <button onClick={() => changePeriod(game.period - 1)} className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30">-</button>
                     <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
                       {getPeriodLabel(game.period, game.config.periodCount)}
                     </span>
-                    <button onClick={() => setGame(prev => ({ ...prev, period: Math.min(game.config.periodCount, prev.period + 1) }))} className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30">+</button>
+                    <button onClick={() => changePeriod(game.period + 1)} className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30">+</button>
                   </div>
                   {isEditingClock ? (
                     <input
@@ -1067,12 +1224,12 @@ export default function App() {
                   )}
                   <div className="flex justify-center space-x-1">
                     <button onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})} className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600' : 'bg-emerald-600'}`}>{game.isClockRunning ? 'PAUSE' : 'START'}</button>
-                    <button onClick={() => setGame({...game, clockSeconds: game.config.periodMinutes * 60, isClockRunning: false})} className="text-[10px] font-extrabold px-2 py-1 bg-slate-800 text-slate-400 rounded-lg">RESET</button>
+                    <button onClick={() => setConfirmResetPeriod(true)} className="text-[10px] font-extrabold px-2 py-1 bg-slate-800 text-slate-400 rounded-lg">RESET</button>
                   </div>
                 </div>
 
                 <div className="flex flex-col items-center">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamAway}</p>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamAway || 'EXTÉRIEUR'}</p>
                   <p className="text-4xl font-black text-slate-300 my-1">{game.scoreAway}</p>
                   <div className="flex justify-center space-x-1 mb-2">
                     <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
@@ -1089,34 +1246,43 @@ export default function App() {
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Joueuses sur le terrain</h3>
               <div className="grid grid-cols-5 gap-2">
-                {game.matchRoster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
-                  const isSelected = selectedPlayerId === p.id;
-                  const fouls = getFoulsCount(p.id);
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedPlayerId(isSelected ? null : p.id)}
-                      className={`flex flex-col items-center p-2 rounded-2xl border transition bg-slate-800/90 hover:bg-slate-700/80 ${isSelected ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg scale-105' : 'border-slate-700/80'}`}
-                    >
-                      <span className={`text-lg font-black ${isSelected ? 'text-amber-400' : 'text-white'}`}>#{p.number}</span>
-                      <span className={`text-[10px] font-bold truncate max-w-full ${isSelected ? 'text-amber-400' : 'text-white'}`}>{p.name}</span>
-                      <div className="mt-1">
-                        <FoulSquares count={fouls} size="small" />
-                      </div>
-                    </button>
-                  );
-                })}
+                {game.matchRoster.length === 0 ? (
+                  Array.from({ length: 5 }, (_, i) => i + 1).map(n => (
+                    <div key={n} className="flex flex-col items-center p-2 rounded-2xl border border-dashed border-slate-700/80 text-slate-600">
+                      <span className="text-lg font-black">#</span>
+                      <span className="text-[10px] font-bold truncate max-w-full">Joueuse {n}</span>
+                    </div>
+                  ))
+                ) : (
+                  game.matchRoster.filter(p => game.onCourtPlayerIds.includes(p.id)).map(p => {
+                    const isSelected = selectedPlayerId === p.id;
+                    const fouls = getFoulsCount(p.id);
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => setSelectedPlayerId(isSelected ? null : p.id)}
+                        className={`flex flex-col items-center p-2 rounded-2xl border transition bg-slate-800/90 hover:bg-slate-700/80 ${isSelected ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg scale-105' : 'border-slate-700/80'}`}
+                      >
+                        <span className={`text-lg font-black ${isSelected ? 'text-amber-400' : 'text-white'}`}>#{p.number}</span>
+                        <span className={`text-[10px] font-bold truncate max-w-full ${isSelected ? 'text-amber-400' : 'text-white'}`}>{getShortDisplayName(p, game.matchRoster)}</span>
+                        <div className="mt-1">
+                          <FoulSquares count={fouls} size="small" />
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
               </div>
             </div>
 
             {selectedPlayer && (
               <div className="bg-slate-900/95 backdrop-blur-md border-2 border-amber-500 p-4 rounded-3xl shadow-2xl text-white space-y-4 animate-fade-in">
-                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                  <div className="flex items-center space-x-3 overflow-x-auto">
-                    <div className="flex items-center space-x-2 shrink-0">
-                      <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{selectedPlayer.number}</span>
-                      <span className="font-bold text-sm text-amber-400">{selectedPlayer.name}</span>
-                    </div>
+                <div className="flex items-center border-b border-slate-800 pb-2">
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{selectedPlayer.number}</span>
+                    <span className="font-bold text-sm text-amber-400">{getShortDisplayName(selectedPlayer, game.matchRoster)}</span>
+                  </div>
+                  <div className="flex-1 flex justify-center overflow-x-auto px-2">
                     {(() => {
                       const s = getPlayerStats(selectedPlayer.id, 'ALL');
                       const cols: [string, string | number][] = [
@@ -1143,8 +1309,31 @@ export default function App() {
                       );
                     })()}
                   </div>
-                  <button onClick={() => setSelectedPlayerId(null)} className="text-xs text-slate-400 hover:text-white font-bold shrink-0 ml-2">Fermer ✖</button>
+                  <div className="flex items-center space-x-1 shrink-0">
+                    <button
+                      onClick={() => { const last = getLastPlayerAction(selectedPlayer.id); if (last) setActionToUndo(last); }}
+                      disabled={!getLastPlayerAction(selectedPlayer.id)}
+                      title="Supprimer la dernière action enregistrée"
+                      className="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-800 hover:bg-rose-900/60 text-rose-400 disabled:opacity-30 disabled:hover:bg-slate-800 transition"
+                    >🧹</button>
+                    <button onClick={() => setSelectedPlayerId(null)} className="text-xs text-slate-400 hover:text-white font-bold">Fermer ✖</button>
+                  </div>
                 </div>
+
+                {actionToUndo && (
+                  <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => setActionToUndo(null)}>
+                    <div className="bg-slate-900 border border-rose-600/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+                      <h3 className="text-sm font-bold text-rose-400">Supprimer cette action ?</h3>
+                      <p className="text-xs text-slate-300">
+                        <span className="font-bold text-white">{getPeriodLabel(actionToUndo.period, game.config.periodCount)} - {actionToUndo.clockTime}</span> : {actionToUndo.actionType} pour <span className="font-bold text-white">#{selectedPlayer.number} {getShortDisplayName(selectedPlayer, game.matchRoster)}</span> sera retirée de l'historique. Cette action est irréversible.
+                      </p>
+                      <div className="flex space-x-2">
+                        <button onClick={() => setActionToUndo(null)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
+                        <button onClick={handleConfirmUndo} className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-xl text-sm transition">Supprimer</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-slate-800/60 p-2.5 rounded-2xl border border-slate-700/60 space-y-2">
@@ -1242,7 +1431,7 @@ export default function App() {
                           <button key={p.id} disabled={isFouledOut} onClick={() => toggleSelectOut(p.id)} className={`flex items-center justify-between p-2.5 rounded-xl border text-left text-xs transition ${isFouledOut ? 'bg-rose-950/80 border-rose-600 text-rose-200 cursor-not-allowed' : isSelected ? 'bg-rose-500/20 border-rose-500 text-white font-bold' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
                             <div className="flex items-center space-x-2 truncate">
                               <input type="checkbox" checked={isSelected} readOnly disabled={isFouledOut} className="accent-rose-500" />
-                              <span className="truncate">#{p.number} {p.name}</span>
+                              <span className="truncate">#{p.number} {getShortDisplayName(p, game.matchRoster)}</span>
                             </div>
                             {isFouledOut ? (
                               <span className="text-[10px] bg-rose-600 text-white px-2 py-0.5 rounded font-black tracking-wider">EXCLUE</span>
@@ -1266,7 +1455,7 @@ export default function App() {
                           <button key={p.id} disabled={isFouledOut} onClick={() => toggleSelectIn(p.id)} className={`flex items-center justify-between p-2.5 rounded-xl border text-left text-xs transition ${isFouledOut ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed' : isSelected ? 'bg-emerald-500/20 border-emerald-500 text-white font-bold' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
                             <div className="flex items-center space-x-2 truncate">
                               {!isFouledOut && <input type="checkbox" checked={isSelected} readOnly className="accent-emerald-500" />}
-                              <span className="truncate">#{p.number} {p.name}</span>
+                              <span className="truncate">#{p.number} {getShortDisplayName(p, game.matchRoster)}</span>
                             </div>
                             {isFouledOut ? (
                               <span className="text-[10px] bg-rose-600 text-white px-2 py-0.5 rounded font-black tracking-wider">EXCLUE</span>
@@ -1326,7 +1515,7 @@ export default function App() {
                     return (
                       <tr key={p.id} className="hover:bg-slate-800/40">
                         <td className="py-2.5 px-1 font-black text-amber-400">#{p.number}</td>
-                        <td className="py-2.5 px-1 font-bold text-slate-200">{p.name}</td>
+                        <td className="py-2.5 px-1 font-bold text-slate-200">{getShortDisplayName(p, game.matchRoster)}</td>
                         <td className="py-2.5 px-1 text-center font-black text-amber-300">{st.points}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.pts2Made}/{st.pts2Att}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.pts3Made}/{st.pts3Att}</td>
@@ -1349,27 +1538,30 @@ export default function App() {
         {activeTab === 'LOGS' && (
           <div className="bg-slate-900/90 text-white p-4 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
             <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-3">Historique du Match</h2>
-            {game.events.length === 0 ? (
-              <p className="text-xs text-slate-500 text-center py-6">Aucun événement enregistré.</p>
-            ) : (
-              <div className="space-y-2">
-                {game.events.map(ev => {
-                  const player = game.matchRoster.find(p => p.id === ev.playerId);
-                  return (
-                    <div key={ev.id} className="flex justify-between items-center bg-slate-800/60 p-2.5 rounded-xl border border-slate-700/50 text-xs">
-                      <div className="flex items-center space-x-2.5">
-                        <span className="bg-slate-700 text-amber-400 font-black px-2 py-0.5 rounded text-[10px]">
-                          {getPeriodLabel(ev.period, game.config.periodCount)} - {ev.clockTime}
-                        </span>
-                        <span className="font-bold text-white">{player ? `#${player.number} ${player.name}` : 'Équipe'}</span>
-                        <span className="text-slate-300">{ev.actionType}</span>
+            {(() => {
+              const visibleEvents = game.events.filter(ev => ev.actionType !== 'ETAT:CINQ_DEPART');
+              return visibleEvents.length === 0 ? (
+                <p className="text-xs text-slate-500 text-center py-6">Aucun événement enregistré.</p>
+              ) : (
+                <div className="space-y-2">
+                  {visibleEvents.map(ev => {
+                    const player = game.matchRoster.find(p => p.id === ev.playerId);
+                    return (
+                      <div key={ev.id} className="flex justify-between items-center bg-slate-800/60 p-2.5 rounded-xl border border-slate-700/50 text-xs">
+                        <div className="flex items-center space-x-2.5">
+                          <span className="bg-slate-700 text-amber-400 font-black px-2 py-0.5 rounded text-[10px]">
+                            {getPeriodLabel(ev.period, game.config.periodCount)} - {ev.clockTime}
+                          </span>
+                          <span className="font-bold text-white">{player ? `#${player.number} ${getShortDisplayName(player, game.matchRoster)}` : 'Équipe'}</span>
+                          <span className="text-slate-300">{ev.actionType}</span>
+                        </div>
+                        <button onClick={() => deleteEvent(ev.id)} className="text-rose-400 hover:text-rose-300 font-bold px-2 py-1 bg-rose-950/50 rounded-lg">Supprimer</button>
                       </div>
-                      <button onClick={() => deleteEvent(ev.id)} className="text-rose-400 hover:text-rose-300 font-bold px-2 py-1 bg-rose-950/50 rounded-lg">Supprimer</button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         )}
       </main>
