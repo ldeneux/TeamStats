@@ -98,6 +98,8 @@ export default function App() {
   const [isLoadingExistingMatches, setIsLoadingExistingMatches] = useState(false);
   const [currentMatchDbId, setCurrentMatchDbId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [isEditingClock, setIsEditingClock] = useState(false);
+  const [clockEditValue, setClockEditValue] = useState('');
 
   const OUR_TEAM_NAME = 'OLYMPIC SATHONAY';
 
@@ -207,14 +209,19 @@ export default function App() {
         name: s.player_name || '?'
       }));
 
-      const loadedEvents: GameEvent[] = (eventsData || []).map((e: any) => ({
-        id: e.id,
-        timestamp: e.timestamp_str || '',
-        period: e.period,
-        clockTime: e.clock_time,
-        actionType: e.action_type,
-        playerId: e.player_id
-      })).reverse();
+      const onCourtMarkers = (eventsData || []).filter((e: any) => e.action_type === 'ETAT:SUR_TERRAIN');
+      const loadedOnCourtIds = onCourtMarkers.map((e: any) => e.player_id).filter((id: string) => loadedRoster.some(p => p.id === id));
+
+      const loadedEvents: GameEvent[] = (eventsData || [])
+        .filter((e: any) => e.action_type !== 'ETAT:SUR_TERRAIN')
+        .map((e: any) => ({
+          id: e.id,
+          timestamp: e.timestamp_str || '',
+          period: e.period,
+          clockTime: e.clock_time,
+          actionType: e.action_type,
+          playerId: e.player_id
+        })).reverse();
 
       // Le détail par période n'est pas conservé en base : le temps de jeu total
       // rechargé est placé dans un compteur unique (période 0) pour rester visible en cumul "TOUT".
@@ -245,7 +252,7 @@ export default function App() {
         scoreHome: matchRow.score_home || 0,
         scoreAway: matchRow.score_away || 0,
         matchRoster: loadedRoster,
-        onCourtPlayerIds: loadedRoster.slice(0, 5).map(p => p.id),
+        onCourtPlayerIds: loadedOnCourtIds.length > 0 ? loadedOnCourtIds : loadedRoster.slice(0, 5).map(p => p.id),
         events: loadedEvents
       });
 
@@ -296,6 +303,18 @@ export default function App() {
             timestamp_str: ev.timestamp,
             player_id: ev.playerId,
             action_type: ev.actionType
+          }))
+        );
+      }
+      if (game.onCourtPlayerIds.length > 0) {
+        await supabase.from('stats_match_events').insert(
+          game.onCourtPlayerIds.map(playerId => ({
+            match_id: matchId,
+            period: game.period,
+            clock_time: formatTime(game.clockSeconds),
+            timestamp_str: new Date().toLocaleTimeString(),
+            player_id: playerId,
+            action_type: 'ETAT:SUR_TERRAIN'
           }))
         );
       }
@@ -420,6 +439,22 @@ export default function App() {
     const m = Math.floor(secs / 60);
     const s = secs % 60;
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const startEditingClock = () => {
+    setClockEditValue(formatTime(game.clockSeconds));
+    setIsEditingClock(true);
+  };
+
+  const commitClockEdit = () => {
+    const match = clockEditValue.trim().match(/^(\d{1,2}):?(\d{0,2})$/);
+    if (match) {
+      const m = parseInt(match[1] || '0', 10);
+      const s = parseInt(match[2] || '0', 10);
+      const totalSecs = Math.max(0, m * 60 + Math.min(59, s));
+      setGame(prev => ({ ...prev, clockSeconds: totalSecs, isClockRunning: false }));
+    }
+    setIsEditingClock(false);
   };
 
   const getFoulsCount = (playerId: string) => {
@@ -915,7 +950,20 @@ export default function App() {
                     </span>
                     <button onClick={() => setGame(prev => ({ ...prev, period: Math.min(game.config.periodCount, prev.period + 1) }))} className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30">+</button>
                   </div>
-                  <p className="text-3xl font-mono font-bold my-1 text-white">{formatTime(game.clockSeconds)}</p>
+                  {isEditingClock ? (
+                    <input
+                      type="text"
+                      autoFocus
+                      value={clockEditValue}
+                      onChange={e => setClockEditValue(e.target.value)}
+                      onBlur={commitClockEdit}
+                      onKeyDown={e => { if (e.key === 'Enter') commitClockEdit(); if (e.key === 'Escape') setIsEditingClock(false); }}
+                      placeholder="mm:ss"
+                      className="text-3xl font-mono font-bold my-1 text-white bg-slate-800 border border-amber-500 rounded-lg w-28 text-center focus:outline-none"
+                    />
+                  ) : (
+                    <p onDoubleClick={startEditingClock} title="Double-clic pour corriger le chrono" className="text-3xl font-mono font-bold my-1 text-white cursor-pointer select-none">{formatTime(game.clockSeconds)}</p>
+                  )}
                   <div className="flex justify-center space-x-1">
                     <button onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})} className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600' : 'bg-emerald-600'}`}>{game.isClockRunning ? 'PAUSE' : 'START'}</button>
                     <button onClick={() => setGame({...game, clockSeconds: game.config.periodMinutes * 60, isClockRunning: false})} className="text-[10px] font-extrabold px-2 py-1 bg-slate-800 text-slate-400 rounded-lg">RESET</button>
