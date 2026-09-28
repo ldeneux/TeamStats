@@ -248,15 +248,28 @@ export default function App() {
       const onCourtMarkers = (eventsData || []).filter((e: any) => e.action_type === 'ETAT:SUR_TERRAIN');
       const loadedOnCourtIds = onCourtMarkers.map((e: any) => e.player_id).filter((id: string) => loadedRoster.some(p => p.id === id));
 
-      const startingFiveMarkers = (eventsData || []).filter((e: any) => e.action_type === 'ETAT:CINQ_DEPART');
+      const { data: periodData } = await supabase
+        .from('stats_player_period_stats')
+        .select('player_id, period, is_starter, playing_time_seconds')
+        .eq('match_id', matchRow.id);
+
       const loadedStartingFiveByPeriod: { [period: number]: string[] } = {};
-      startingFiveMarkers.forEach((e: any) => {
-        if (!loadedStartingFiveByPeriod[e.period]) loadedStartingFiveByPeriod[e.period] = [];
-        loadedStartingFiveByPeriod[e.period].push(e.player_id);
+      const newPlayingTime: { [playerId: string]: { [period: number]: number } } = {};
+      (periodData || []).forEach((r: any) => {
+        if (r.is_starter) {
+          if (!loadedStartingFiveByPeriod[r.period]) loadedStartingFiveByPeriod[r.period] = [];
+          loadedStartingFiveByPeriod[r.period].push(r.player_id);
+        }
+        if (!newPlayingTime[r.player_id]) newPlayingTime[r.player_id] = {};
+        newPlayingTime[r.player_id][r.period] = r.playing_time_seconds || 0;
+      });
+      // Repli pour un match sans détail par période : total placé dans un compteur "période 0".
+      (statsData || []).forEach((s: any) => {
+        if (!newPlayingTime[s.player_id]) newPlayingTime[s.player_id] = { 0: s.playing_time_seconds || 0 };
       });
 
       const loadedEvents: GameEvent[] = (eventsData || [])
-        .filter((e: any) => e.action_type !== 'ETAT:SUR_TERRAIN')
+        .filter((e: any) => !String(e.action_type).startsWith('ETAT:'))
         .map((e: any) => ({
           id: e.id,
           timestamp: e.timestamp_str || '',
@@ -266,16 +279,14 @@ export default function App() {
           playerId: e.player_id
         })).reverse();
 
-      // Le détail par période n'est pas conservé en base : le temps de jeu total
-      // rechargé est placé dans un compteur unique (période 0) pour rester visible en cumul "TOUT".
-      const newPlayingTime: { [playerId: string]: { [period: number]: number } } = {};
-      (statsData || []).forEach((s: any) => {
-        newPlayingTime[s.player_id] = { 0: s.playing_time_seconds || 0 };
-      });
+      // Notre équipe est celle qui figure dans stats_teams : on en déduit DOM ou EXT.
+      const ourTeamNames = savedTeams.map(t => t.name);
+      const weAreAway = !ourTeamNames.includes(matchRow.team_home) && ourTeamNames.includes(matchRow.team_away);
+      setHomeAway(weAreAway ? 'EXTERIEUR' : 'DOMICILE');
 
       const newConfig: GameConfig = {
-        teamHome: matchRow.team_home,
-        teamAway: matchRow.team_away,
+        teamHome: weAreAway ? matchRow.team_away : matchRow.team_home,
+        teamAway: weAreAway ? matchRow.team_home : matchRow.team_away,
         matchDate: matchRow.match_date || new Date().toISOString().split('T')[0],
         periodCount: matchRow.period_count || 4,
         periodMinutes: matchRow.period_minutes || 10,
@@ -293,8 +304,8 @@ export default function App() {
         period: parseInt(String(matchRow.current_period || 'Q1').replace(/\D/g, ''), 10) || 1,
         clockSeconds: matchRow.current_timer ?? matchRow.period_minutes * 60,
         isClockRunning: false,
-        scoreHome: matchRow.score_home || 0,
-        scoreAway: matchRow.score_away || 0,
+        scoreHome: (weAreAway ? matchRow.score_away : matchRow.score_home) || 0,
+        scoreAway: (weAreAway ? matchRow.score_home : matchRow.score_away) || 0,
         matchRoster: loadedRoster,
         onCourtPlayerIds: loadedOnCourtIds.length > 0 ? loadedOnCourtIds : loadedRoster.slice(0, 5).map(p => p.id),
         events: loadedEvents
@@ -321,10 +332,11 @@ export default function App() {
         .from('stats_matches')
         .upsert({
           ffbb_match_id: ffbbId,
-          team_home: game.config.teamHome,
-          team_away: game.config.teamAway,
-          score_home: game.scoreHome,
-          score_away: game.scoreAway,
+          // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT)
+          team_home: homeAway === 'DOMICILE' ? game.config.teamHome : game.config.teamAway,
+          team_away: homeAway === 'DOMICILE' ? game.config.teamAway : game.config.teamHome,
+          score_home: homeAway === 'DOMICILE' ? game.scoreHome : game.scoreAway,
+          score_away: homeAway === 'DOMICILE' ? game.scoreAway : game.scoreHome,
           period_count: game.config.periodCount,
           period_minutes: game.config.periodMinutes,
           current_period: getPeriodLabel(game.period, game.config.periodCount),
@@ -361,6 +373,46 @@ export default function App() {
             action_type: 'ETAT:SUR_TERRAIN'
           }))
         );
+      }
+
+      // Statistiques par joueuse ET par période (table dédiée stats_player_period_stats)
+      const maxPeriod = Math.max(
+        game.period,
+        ...game.events.map(e => e.period),
+        ...Object.values(playingTime).flatMap(pt => Object.keys(pt).map(Number))
+      );
+      const periodRows: any[] = [];
+      game.matchRoster.forEach(p => {
+        for (let per = 1; per <= maxPeriod; per++) {
+          const st = getPlayerStats(p.id, per);
+          periodRows.push({
+            match_id: matchId,
+            player_id: p.id,
+            player_number: p.number,
+            player_name: p.name,
+            period: per,
+            is_starter: (startingFiveByPeriod[per] || []).includes(p.id),
+            playing_time_seconds: st.totalSecs,
+            points: st.points,
+            pts2_made: st.pts2Made,
+            pts2_att: st.pts2Att,
+            pts3_made: st.pts3Made,
+            pts3_att: st.pts3Att,
+            ft_made: st.ftMade,
+            ft_att: st.ftAttempted,
+            reb_off: st.rebOff,
+            reb_def: st.rebDef,
+            assists: st.assists,
+            fouls: st.fouls,
+            fouls_drawn: st.foulsDrawn
+          });
+        }
+      });
+      const { error: periodDelErr } = await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId);
+      if (periodDelErr) throw periodDelErr;
+      if (periodRows.length > 0) {
+        const { error: periodInsErr } = await supabase.from('stats_player_period_stats').insert(periodRows);
+        if (periodInsErr) throw periodInsErr;
       }
 
       await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId);
@@ -526,35 +578,23 @@ export default function App() {
   };
 
   // Changer de période : mémorise le 5 sur le terrain comme "5 de départ" de cette période
-  // (une seule fois, la première fois que la période est atteinte).
+  // (une seule fois, la première fois que la période est atteinte). Stocké en base dans la
+  // table par joueuse et par période (colonne is_starter), jamais affiché à l'écran.
   const changePeriod = (newPeriod: number) => {
     const clamped = Math.min(game.config.periodCount, Math.max(1, newPeriod));
-    setGame(prev => {
-      const alreadyRecorded = prev.events.some(e => e.period === clamped && e.actionType === 'ETAT:CINQ_DEPART');
-      const startingFiveEvents: GameEvent[] = alreadyRecorded ? [] : prev.onCourtPlayerIds.map(pid => ({
-        id: `${Date.now()}-${pid}`,
-        timestamp: new Date().toLocaleTimeString(),
-        period: clamped,
-        clockTime: formatTime(prev.clockSeconds),
-        actionType: 'ETAT:CINQ_DEPART',
-        playerId: pid
-      }));
-      if (startingFiveEvents.length > 0) {
-        setStartingFiveByPeriod(sf => ({ ...sf, [clamped]: prev.onCourtPlayerIds }));
-      }
-      return { ...prev, period: clamped, events: [...startingFiveEvents, ...prev.events] };
-    });
+    setStartingFiveByPeriod(sf => (sf[clamped] ? sf : { ...sf, [clamped]: game.onCourtPlayerIds }));
+    setGame(prev => ({ ...prev, period: clamped }));
   };
 
   // RÉINITIALISER LE QUART-TEMPS EN COURS : remet le chrono à fond et efface le temps de jeu
-  // + les actions déjà enregistrées pour cette période précise (hors marqueur "5 de départ").
+  // + les actions déjà enregistrées pour cette période précise .
   const handleConfirmResetPeriod = () => {
     const p = game.period;
     setGame(prev => ({
       ...prev,
       clockSeconds: prev.config.periodMinutes * 60,
       isClockRunning: false,
-      events: prev.events.filter(e => e.period !== p || e.actionType === 'ETAT:CINQ_DEPART')
+      events: prev.events.filter(e => e.period !== p)
     }));
     setPlayingTime(prev => {
       const updated: { [playerId: string]: { [period: number]: number } } = {};
@@ -630,7 +670,7 @@ export default function App() {
 
   // Dernière action réelle (hors remplacements/marqueurs internes) enregistrée pour une joueuse
   const getLastPlayerAction = (playerId: string) => {
-    return game.events.find(e => e.playerId === playerId && !e.actionType.startsWith('REMPLACEMENT') && e.actionType !== 'ETAT:SUR_TERRAIN' && e.actionType !== 'ETAT:CINQ_DEPART') || null;
+    return game.events.find(e => e.playerId === playerId && !e.actionType.startsWith('REMPLACEMENT') && !e.actionType.startsWith('ETAT:')) || null;
   };
 
   // ANNULER (supprimer) la dernière action confirmée
@@ -829,14 +869,6 @@ export default function App() {
     if (!hasProgress) {
       // Le match n'a pas encore commencé : on applique la configuration (périodes, durée...) à neuf.
       const onCourt = matchRoster.slice(0, 5).map(p => p.id);
-      const startingFiveEvents: GameEvent[] = onCourt.map(pid => ({
-        id: `${Date.now()}-${pid}`,
-        timestamp: new Date().toLocaleTimeString(),
-        period: 1,
-        clockTime: formatTime(matchConfig.periodMinutes * 60),
-        actionType: 'ETAT:CINQ_DEPART',
-        playerId: pid
-      }));
       setStartingFiveByPeriod({ 1: onCourt });
       setGame({
         config: matchConfig,
@@ -847,7 +879,7 @@ export default function App() {
         scoreAway: 0,
         matchRoster,
         onCourtPlayerIds: onCourt,
-        events: startingFiveEvents
+        events: []
       });
     } else {
       // Le match est déjà en cours : on met à jour la configuration et la feuille de match
@@ -1003,9 +1035,9 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <div>
+                <div className={homeAway === 'DOMICILE' ? 'order-1' : 'order-2'}>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-semibold text-slate-400">Équipe Domicile</label>
+                    <label className="text-xs font-semibold text-slate-400">{homeAway === 'DOMICILE' ? 'Équipe Domicile' : 'Équipe Extérieure'}</label>
                     <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-0.5 text-[9px] font-black">
                       <button onClick={() => setHomeAway('DOMICILE')} className={`px-2 py-0.5 rounded-full transition ${homeAway === 'DOMICILE' ? 'bg-amber-600 text-white' : 'text-slate-400'}`}>DOM</button>
                       <button onClick={() => setHomeAway('EXTERIEUR')} className={`px-2 py-0.5 rounded-full transition ${homeAway === 'EXTERIEUR' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>EXT</button>
@@ -1018,8 +1050,8 @@ export default function App() {
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1">Équipe extérieure</label>
+                <div className={homeAway === 'DOMICILE' ? 'order-2' : 'order-1'}>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">{homeAway === 'DOMICILE' ? 'Équipe Extérieure' : 'Équipe Domicile'}</label>
                   <input
                     type="text"
                     list="club-names-list"
@@ -1188,8 +1220,8 @@ export default function App() {
           <div className="space-y-4">
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               <div className="grid grid-cols-3 items-center text-center">
-                <div className="flex flex-col items-center">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamHome || 'DOMICILE'}</p>
+                <div className={`flex flex-col items-center ${homeAway === 'DOMICILE' ? 'order-1' : 'order-3'}`}>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamHome || (homeAway === 'DOMICILE' ? 'DOMICILE' : 'EXTÉRIEUR')}</p>
                   <p className="text-4xl font-black text-amber-400 my-1">{game.scoreHome}</p>
                   <div className="flex justify-center space-x-1 mb-2">
                     <button onClick={() => setGame({...game, scoreHome: Math.max(0, game.scoreHome - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
@@ -1200,7 +1232,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="border-x border-slate-800 px-2">
+                <div className="order-2 border-x border-slate-800 px-2">
                   <div className="flex items-center justify-center space-x-2">
                     <button onClick={() => changePeriod(game.period - 1)} className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30">-</button>
                     <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
@@ -1228,8 +1260,8 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex flex-col items-center">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamAway || 'EXTÉRIEUR'}</p>
+                <div className={`flex flex-col items-center ${homeAway === 'DOMICILE' ? 'order-3' : 'order-1'}`}>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamAway || (homeAway === 'DOMICILE' ? 'EXTÉRIEUR' : 'DOMICILE')}</p>
                   <p className="text-4xl font-black text-slate-300 my-1">{game.scoreAway}</p>
                   <div className="flex justify-center space-x-1 mb-2">
                     <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
@@ -1282,7 +1314,7 @@ export default function App() {
                     <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{selectedPlayer.number}</span>
                     <span className="font-bold text-sm text-amber-400">{getShortDisplayName(selectedPlayer, game.matchRoster)}</span>
                   </div>
-                  <div className="flex-1 flex justify-center overflow-x-auto px-2">
+                  <div className="flex-1 flex justify-center px-3 py-1">
                     {(() => {
                       const s = getPlayerStats(selectedPlayer.id, 'ALL');
                       const cols: [string, string | number][] = [
@@ -1298,11 +1330,11 @@ export default function App() {
                         ['Tps', formatTime(s.totalSecs)],
                       ];
                       return (
-                        <div className="flex items-end space-x-2 shrink-0">
+                        <div className="flex flex-wrap justify-center items-end gap-x-3 gap-y-2">
                           {cols.map(([label, value]) => (
-                            <div key={label} className="flex flex-col items-center leading-none">
-                              <span className="text-[7px] text-slate-500 font-bold uppercase">{label}</span>
-                              <span className="text-[9px] text-slate-200 font-bold">{value}</span>
+                            <div key={label} className="flex flex-col items-center leading-tight">
+                              <span className="text-[8px] text-slate-500 font-bold uppercase">{label}</span>
+                              <span className="text-[11px] text-slate-200 font-bold">{value}</span>
                             </div>
                           ))}
                         </div>
@@ -1539,7 +1571,7 @@ export default function App() {
           <div className="bg-slate-900/90 text-white p-4 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
             <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-3">Historique du Match</h2>
             {(() => {
-              const visibleEvents = game.events.filter(ev => ev.actionType !== 'ETAT:CINQ_DEPART');
+              const visibleEvents = game.events.filter(ev => !ev.actionType.startsWith('ETAT:'));
               return visibleEvents.length === 0 ? (
                 <p className="text-xs text-slate-500 text-center py-6">Aucun événement enregistré.</p>
               ) : (
