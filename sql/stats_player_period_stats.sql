@@ -35,6 +35,9 @@ CREATE INDEX IF NOT EXISTS stats_player_period_stats_match_idx
 -- Mêmes droits que les autres tables stats_* (adapter si tu utilises des politiques RLS) :
 GRANT ALL ON multisports.stats_player_period_stats TO anon, authenticated, service_role;
 
+-- Force l'API Supabase à reconnaître la nouvelle table immédiatement :
+NOTIFY pgrst, 'reload schema';
+
 -- OPTIONNEL (phase de recette) : repartir de zéro en supprimant les matchs existants.
 -- DELETE FROM multisports.stats_match_events;
 -- DELETE FROM multisports.stats_player_game_stats;

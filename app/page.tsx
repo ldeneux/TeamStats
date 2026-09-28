@@ -102,6 +102,7 @@ export default function App() {
   const [actionToUndo, setActionToUndo] = useState<GameEvent | null>(null);
   const [currentMatchDbId, setCurrentMatchDbId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveErrorMessage, setSaveErrorMessage] = useState('');
   const [isEditingClock, setIsEditingClock] = useState(false);
   const [confirmResetPeriod, setConfirmResetPeriod] = useState(false);
   const [startingFiveByPeriod, setStartingFiveByPeriod] = useState<{ [period: number]: string[] }>({});
@@ -321,6 +322,10 @@ export default function App() {
   // ENREGISTRER LE MATCH EN COURS (infos + statistiques) DANS SUPABASE
   const handleSaveMatch = async () => {
     setSaveStatus('saving');
+    setSaveErrorMessage('');
+    const check = (res: { error: any }, step: string) => {
+      if (res.error) throw new Error(`${step} : ${res.error.message}`);
+    };
     try {
       let ffbbId = matchConfig.ffbbMatchId.trim();
       if (!ffbbId) {
@@ -345,13 +350,13 @@ export default function App() {
         .select()
         .single();
 
-      if (matchErr || !savedMatch) throw matchErr;
+      if (matchErr || !savedMatch) throw new Error(`stats_matches : ${matchErr?.message || 'aucune ligne renvoyée'}`);
       const matchId = savedMatch.id;
       setCurrentMatchDbId(matchId);
 
-      await supabase.from('stats_match_events').delete().eq('match_id', matchId);
+      check(await supabase.from('stats_match_events').delete().eq('match_id', matchId), 'stats_match_events (suppression)');
       if (game.events.length > 0) {
-        await supabase.from('stats_match_events').insert(
+        check(await supabase.from('stats_match_events').insert(
           game.events.map(ev => ({
             match_id: matchId,
             period: ev.period,
@@ -360,10 +365,10 @@ export default function App() {
             player_id: ev.playerId,
             action_type: ev.actionType
           }))
-        );
+        ), 'stats_match_events (événements)');
       }
       if (game.onCourtPlayerIds.length > 0) {
-        await supabase.from('stats_match_events').insert(
+        check(await supabase.from('stats_match_events').insert(
           game.onCourtPlayerIds.map(playerId => ({
             match_id: matchId,
             period: game.period,
@@ -372,7 +377,35 @@ export default function App() {
             player_id: playerId,
             action_type: 'ETAT:SUR_TERRAIN'
           }))
-        );
+        ), 'stats_match_events (joueuses sur le terrain)');
+      }
+
+      check(await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId), 'stats_player_game_stats (suppression)');
+      if (game.matchRoster.length > 0) {
+        check(await supabase.from('stats_player_game_stats').insert(
+          game.matchRoster.map(p => {
+            const st = getPlayerStats(p.id, 'ALL');
+            return {
+              match_id: matchId,
+              player_id: p.id,
+              player_number: p.number,
+              player_name: p.name,
+              points: st.points,
+              pts2_made: st.pts2Made,
+              pts2_att: st.pts2Att,
+              pts3_made: st.pts3Made,
+              pts3_att: st.pts3Att,
+              ft_made: st.ftMade,
+              ft_att: st.ftAttempted,
+              reb_off: st.rebOff,
+              reb_def: st.rebDef,
+              assists: st.assists,
+              fouls: st.fouls,
+              fouls_drawn: st.foulsDrawn,
+              playing_time_seconds: st.totalSecs
+            };
+          })
+        ), 'stats_player_game_stats (totaux)');
       }
 
       // Statistiques par joueuse ET par période (table dédiée stats_player_period_stats)
@@ -408,47 +441,18 @@ export default function App() {
           });
         }
       });
-      const { error: periodDelErr } = await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId);
-      if (periodDelErr) throw periodDelErr;
+      check(await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId), 'stats_player_period_stats (suppression)');
       if (periodRows.length > 0) {
-        const { error: periodInsErr } = await supabase.from('stats_player_period_stats').insert(periodRows);
-        if (periodInsErr) throw periodInsErr;
-      }
-
-      await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId);
-      if (game.matchRoster.length > 0) {
-        await supabase.from('stats_player_game_stats').insert(
-          game.matchRoster.map(p => {
-            const st = getPlayerStats(p.id, 'ALL');
-            return {
-              match_id: matchId,
-              player_id: p.id,
-              player_number: p.number,
-              player_name: p.name,
-              points: st.points,
-              pts2_made: st.pts2Made,
-              pts2_att: st.pts2Att,
-              pts3_made: st.pts3Made,
-              pts3_att: st.pts3Att,
-              ft_made: st.ftMade,
-              ft_att: st.ftAttempted,
-              reb_off: st.rebOff,
-              reb_def: st.rebDef,
-              assists: st.assists,
-              fouls: st.fouls,
-              fouls_drawn: st.foulsDrawn,
-              playing_time_seconds: st.totalSecs
-            };
-          })
-        );
+        check(await supabase.from('stats_player_period_stats').insert(periodRows), 'stats_player_period_stats (insertion)');
       }
 
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2500);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setSaveErrorMessage(err?.message || String(err));
       setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 3000);
+      setTimeout(() => setSaveStatus('idle'), 15000);
     }
   };
 
@@ -961,7 +965,7 @@ export default function App() {
           </nav>
         </div>
         {saveStatus === 'error' && (
-          <p className="text-center text-[10px] text-rose-400 pb-1">Échec de l'enregistrement, vérifie la connexion Supabase.</p>
+          <p className="text-center text-[10px] text-rose-400 pb-1 px-2 break-words">Échec de l'enregistrement : {saveErrorMessage || 'vérifie la connexion Supabase.'}</p>
         )}
         {saveStatus === 'saved' && (
           <p className="text-center text-[10px] text-emerald-400 pb-1">Match et statistiques enregistrés.</p>
