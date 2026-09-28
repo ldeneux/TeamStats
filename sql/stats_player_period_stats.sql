@@ -35,6 +35,13 @@ CREATE INDEX IF NOT EXISTS stats_player_period_stats_match_idx
 -- Mêmes droits que les autres tables stats_* (adapter si tu utilises des politiques RLS) :
 GRANT ALL ON multisports.stats_player_period_stats TO anon, authenticated, service_role;
 
+-- Sécurité par ligne (RLS) : la table est créée avec la RLS active mais sans politique,
+-- ce qui refuse toute écriture. Même accès ouvert que l'appli utilise sur les autres tables stats_*.
+ALTER TABLE multisports.stats_player_period_stats ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS stats_player_period_stats_all ON multisports.stats_player_period_stats;
+CREATE POLICY stats_player_period_stats_all ON multisports.stats_player_period_stats
+  FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
 -- Force l'API Supabase à reconnaître la nouvelle table immédiatement :
 NOTIFY pgrst, 'reload schema';
 

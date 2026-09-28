@@ -87,10 +87,12 @@ export default function App() {
   const [matchType, setMatchType] = useState<'OFFICIEL' | 'AMICAL'>('OFFICIEL');
   const [homeAway, setHomeAway] = useState<'DOMICILE' | 'EXTERIEUR'>('DOMICILE');
   const [isEditingTeamForm, setIsEditingTeamForm] = useState(false);
+  const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
   const [teamSaveStatus, setTeamSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [clubNames, setClubNames] = useState<string[]>([]);
   const [isLookingUpFfbb, setIsLookingUpFfbb] = useState(false);
-  const [ffbbLookupStatus, setFfbbLookupStatus] = useState<'idle' | 'found' | 'notfound'>('idle');
+  const [ffbbLookupStatus, setFfbbLookupStatus] = useState<'idle' | 'found' | 'notfound' | 'error'>('idle');
+  const [ffbbLookupError, setFfbbLookupError] = useState('');
   const [showFfbbPicker, setShowFfbbPicker] = useState(false);
   const [existingMatches, setExistingMatches] = useState<any[]>([]);
   const [isLoadingExistingMatches, setIsLoadingExistingMatches] = useState(false);
@@ -156,25 +158,29 @@ export default function App() {
   const fetchFfbbMatchInfo = async (ffbbId: string) => {
     if (!ffbbId.trim()) { setFfbbLookupStatus('idle'); return; }
     setIsLookingUpFfbb(true);
+    setFfbbLookupError('');
     try {
-      const { data, error } = await supabase
-        .from('basketball_matches')
-        .select('opponent, home_away, match_date, division_label')
-        .eq('ffbb_rencontre_id', ffbbId.trim())
-        .maybeSingle();
+      // Fonction SQL dédiée (voir sql/ffbb_lookup.sql) : contourne la RLS de basketball_matches
+      // tout en ne renvoyant que les colonnes utiles pour un ID exact.
+      const { data, error } = await supabase.rpc('lookup_ffbb_match', { p_ffbb_id: ffbbId.trim() });
+      const row: any = Array.isArray(data) ? data[0] : data;
 
-      if (error || !data) {
+      if (error) {
+        setFfbbLookupError(error.message);
+        setFfbbLookupStatus('error');
+      } else if (!row) {
         setFfbbLookupStatus('notfound');
       } else {
         setMatchConfig(prev => ({
           ...prev,
-          teamAway: data.opponent || prev.teamAway,
-          matchDate: data.match_date || prev.matchDate
+          teamAway: row.opponent || prev.teamAway,
+          matchDate: row.match_date ? String(row.match_date).slice(0, 10) : prev.matchDate
         }));
         setFfbbLookupStatus('found');
       }
-    } catch (err) {
-      setFfbbLookupStatus('notfound');
+    } catch (err: any) {
+      setFfbbLookupError(err?.message || String(err));
+      setFfbbLookupStatus('error');
     } finally {
       setIsLookingUpFfbb(false);
     }
@@ -337,6 +343,7 @@ export default function App() {
         .from('stats_matches')
         .upsert({
           ffbb_match_id: ffbbId,
+          match_date: matchConfig.matchDate,
           // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT)
           team_home: homeAway === 'DOMICILE' ? game.config.teamHome : game.config.teamAway,
           team_away: homeAway === 'DOMICILE' ? game.config.teamAway : game.config.teamHome,
@@ -501,11 +508,21 @@ export default function App() {
         }
       }
 
+      // Les joueuses retirées localement (bouton 🗑️) sont aussi supprimées en base.
+      const currentNames = editingRoster.map(p => p.name.trim().toUpperCase());
+      const removedPlayers = (existingPlayers || []).filter(
+        (ep: any) => !currentNames.includes(ep.name.trim().toUpperCase())
+      );
+      for (const removed of removedPlayers) {
+        await supabase.from('stats_players').delete().eq('id', removed.id);
+      }
+
       setTeamSaveStatus('saved');
       setTimeout(() => setTeamSaveStatus('idle'), 2000);
       setNewTeamName('');
       setSelectedTeamId('');
       setIsEditingTeamForm(false);
+      setEditingPlayerId(null);
       await fetchTeamsFromSupabase();
     } catch (err: any) {
       console.error(err);
@@ -818,10 +835,37 @@ export default function App() {
     return { points, totalSecs, fouls, foulsDrawn, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists };
   };
 
-  const handleAddPlayerToEditing = () => {
+  const handleAddOrUpdatePlayer = () => {
     if (newPlayerNumber === '' || !newPlayerName.trim()) return;
-    const p: Player = { id: Date.now().toString(), number: Number(newPlayerNumber), name: newPlayerName.trim().toUpperCase() };
-    setEditingRoster(sortPlayersAlpha([...editingRoster, p]));
+    if (editingPlayerId) {
+      setEditingRoster(sortPlayersAlpha(editingRoster.map(p =>
+        p.id === editingPlayerId ? { ...p, number: Number(newPlayerNumber), name: newPlayerName.trim().toUpperCase() } : p
+      )));
+    } else {
+      const p: Player = { id: Date.now().toString(), number: Number(newPlayerNumber), name: newPlayerName.trim().toUpperCase() };
+      setEditingRoster(sortPlayersAlpha([...editingRoster, p]));
+    }
+    setEditingPlayerId(null);
+    setNewPlayerNumber('');
+    setNewPlayerName('');
+  };
+
+  const handleSelectPlayerToEdit = (p: Player) => {
+    setEditingPlayerId(p.id);
+    setNewPlayerNumber(p.number);
+    setNewPlayerName(p.name);
+  };
+
+  const handleCancelEditPlayer = () => {
+    setEditingPlayerId(null);
+    setNewPlayerNumber('');
+    setNewPlayerName('');
+  };
+
+  const handleDeletePlayerFromEditing = () => {
+    if (!editingPlayerId) return;
+    setEditingRoster(editingRoster.filter(p => p.id !== editingPlayerId));
+    setEditingPlayerId(null);
     setNewPlayerNumber('');
     setNewPlayerName('');
   };
@@ -829,6 +873,9 @@ export default function App() {
   const handleLoadTeamFromSelect = (teamId: string) => {
     setSelectedTeamId(teamId);
     setIsEditingTeamForm(false);
+    setEditingPlayerId(null);
+    setNewPlayerNumber('');
+    setNewPlayerName('');
     if (!teamId) {
       setNewTeamName('');
       setEditingRoster([]);
@@ -1001,16 +1048,26 @@ export default function App() {
               {(isEditingTeamForm || !selectedTeamId) && (
                 <div className="space-y-3">
                   <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 space-y-3">
-                    <p className="text-xs font-bold text-slate-300">Ajouter / Modifier une joueuse dans l'effectif actuel</p>
+                    <p className="text-xs font-bold text-slate-300">{editingPlayerId ? 'Modifier la joueuse sélectionnée' : 'Ajouter une joueuse dans l\'effectif actuel'}</p>
                     <div className="flex space-x-2">
                       <input type="number" placeholder="N°" value={newPlayerNumber} onChange={e => setNewPlayerNumber(e.target.value ? parseInt(e.target.value) : '')} className="w-20 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-center text-white" />
                       <input type="text" placeholder="Nom de la joueuse" value={newPlayerName} onChange={e => setNewPlayerName(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl p-2 text-sm font-bold text-white" />
-                      <button onClick={handleAddPlayerToEditing} className="bg-blue-600 hover:bg-blue-500 font-bold px-4 py-2 rounded-xl text-xs">Ajouter</button>
+                      <button onClick={handleAddOrUpdatePlayer} className="bg-blue-600 hover:bg-blue-500 font-bold px-4 py-2 rounded-xl text-xs shrink-0">{editingPlayerId ? 'Mettre à jour' : 'Ajouter'}</button>
+                      {editingPlayerId && (
+                        <>
+                          <button onClick={handleDeletePlayerFromEditing} title="Supprimer cette joueuse" className="bg-rose-600 hover:bg-rose-500 font-bold px-3 py-2 rounded-xl text-xs shrink-0">🗑️</button>
+                          <button onClick={handleCancelEditPlayer} title="Annuler" className="bg-slate-700 hover:bg-slate-600 font-bold px-3 py-2 rounded-xl text-xs shrink-0">✖</button>
+                        </>
+                      )}
                     </div>
                     {editingRoster.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 pt-1">
                         {editingRoster.map(p => (
-                          <span key={p.id} className="text-[10px] font-bold bg-slate-900 border border-slate-700 text-slate-300 px-2 py-1 rounded-lg">#{p.number} {p.name}</span>
+                          <button
+                            key={p.id}
+                            onClick={() => handleSelectPlayerToEdit(p)}
+                            className={`text-[10px] font-bold px-2 py-1 rounded-lg border transition ${editingPlayerId === p.id ? 'bg-amber-500/20 border-amber-500 text-amber-300' : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-500'}`}
+                          >#{p.number} {p.name}</button>
                         ))}
                       </div>
                     )}
@@ -1081,7 +1138,7 @@ export default function App() {
                   <input type="number" min="1" max="49" value={matchConfig.periodMinutes} onChange={e => setMatchConfig({...matchConfig, periodMinutes: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
                 </div>
                 <div className="flex-1 min-w-[180px]">
-                  <label className="block text-xs font-semibold text-slate-400 mb-1">ID FFBB Match {isLookingUpFfbb && <span className="text-amber-400">(recherche...)</span>}{ffbbLookupStatus === 'notfound' && <span className="text-rose-400">(introuvable)</span>}{ffbbLookupStatus === 'found' && <span className="text-emerald-400">(trouvé ✓)</span>}</label>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">ID FFBB Match {isLookingUpFfbb && <span className="text-amber-400">(recherche...)</span>}{ffbbLookupStatus === 'notfound' && <span className="text-rose-400">(introuvable)</span>}{ffbbLookupStatus === 'error' && <span className="text-rose-400">(erreur)</span>}{ffbbLookupStatus === 'found' && <span className="text-emerald-400">(trouvé ✓)</span>}</label>
                   <div className="flex space-x-1.5">
                     <input
                       type="text"
@@ -1094,6 +1151,9 @@ export default function App() {
                     />
                     <button onClick={openFfbbPicker} title="Rechercher un match déjà enregistré" className="shrink-0 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 text-lg">🔍</button>
                   </div>
+                  {ffbbLookupStatus === 'error' && (
+                    <p className="text-[10px] text-rose-400 mt-1 break-words">{ffbbLookupError} (as-tu exécuté sql/ffbb_lookup.sql ?)</p>
+                  )}
                 </div>
               </div>
             </div>
