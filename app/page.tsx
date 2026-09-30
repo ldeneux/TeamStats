@@ -31,6 +31,7 @@ export interface GameState {
   isClockRunning: boolean;
   scoreHome: number;
   scoreAway: number;
+  scoreByPeriod: { [period: number]: { home: number; away: number } };
   matchRoster: Player[];
   onCourtPlayerIds: string[];
   events: GameEvent[];
@@ -71,6 +72,7 @@ export default function App() {
     isClockRunning: false,
     scoreHome: 0,
     scoreAway: 0,
+    scoreByPeriod: {},
     matchRoster: [],
     onCourtPlayerIds: [],
     events: []
@@ -203,7 +205,7 @@ export default function App() {
     try {
       const { data, error } = await supabase
         .from('stats_matches')
-        .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer')
+        .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at')
         .order('match_date', { ascending: false })
         .limit(200);
       if (!error && data) setExistingMatches(data);
@@ -286,6 +288,15 @@ export default function App() {
           playerId: e.player_id
         })).reverse();
 
+      // Score par période, reconstruit depuis les marqueurs "ETAT:SCORE_PERIODE:home-away"
+      const loadedScoreByPeriod: { [period: number]: { home: number; away: number } } = {};
+      (eventsData || [])
+        .filter((e: any) => String(e.action_type).startsWith('ETAT:SCORE_PERIODE:'))
+        .forEach((e: any) => {
+          const [h, a] = String(e.action_type).split(':')[2].split('-').map((v: string) => parseInt(v, 10) || 0);
+          loadedScoreByPeriod[e.period] = { home: h, away: a };
+        });
+
       // Notre équipe est celle qui figure dans stats_teams : on en déduit DOM ou EXT.
       const ourTeamNames = savedTeams.map(t => t.name);
       const weAreAway = !ourTeamNames.includes(matchRow.team_home) && ourTeamNames.includes(matchRow.team_away);
@@ -313,6 +324,9 @@ export default function App() {
         isClockRunning: false,
         scoreHome: (weAreAway ? matchRow.score_away : matchRow.score_home) || 0,
         scoreAway: (weAreAway ? matchRow.score_home : matchRow.score_away) || 0,
+        scoreByPeriod: Object.fromEntries(
+          Object.entries(loadedScoreByPeriod).map(([p, s]) => [p, weAreAway ? { home: s.away, away: s.home } : s])
+        ),
         matchRoster: loadedRoster,
         onCourtPlayerIds: loadedOnCourtIds.length > 0 ? loadedOnCourtIds : loadedRoster.slice(0, 5).map(p => p.id),
         events: loadedEvents
@@ -385,6 +399,24 @@ export default function App() {
             action_type: 'ETAT:SUR_TERRAIN'
           }))
         ), 'stats_match_events (joueuses sur le terrain)');
+      }
+      const scorePeriodEntries = Object.entries(game.scoreByPeriod);
+      if (scorePeriodEntries.length > 0) {
+        check(await supabase.from('stats_match_events').insert(
+          scorePeriodEntries.map(([period, s]) => {
+            // Même convention "vrai domicile/extérieur" que team_home/score_home ci-dessus.
+            const dbHome = homeAway === 'DOMICILE' ? s.home : s.away;
+            const dbAway = homeAway === 'DOMICILE' ? s.away : s.home;
+            return {
+              match_id: matchId,
+              period: Number(period),
+              clock_time: formatTime(game.clockSeconds),
+              timestamp_str: new Date().toLocaleTimeString(),
+              player_id: '',
+              action_type: `ETAT:SCORE_PERIODE:${dbHome}-${dbAway}`
+            };
+          })
+        ), 'stats_match_events (score par période)');
       }
 
       check(await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId), 'stats_player_game_stats (suppression)');
@@ -649,8 +681,20 @@ export default function App() {
     p => !game.onCourtPlayerIds.includes(p.id) && getFoulsCount(p.id) < 5
   );
 
-  const recordEvent = (action: string, playerId: string, points = 0) => {
-    const newEvent: GameEvent = {
+  // Ajustement manuel du score (+/-) : garde le score par période synchronisé
+  const bumpScore = (side: 'home' | 'away', delta: number) => {
+    setGame(prev => {
+      const per = prev.scoreByPeriod[prev.period] || { home: 0, away: 0 };
+      return {
+        ...prev,
+        scoreHome: side === 'home' ? Math.max(0, prev.scoreHome + delta) : prev.scoreHome,
+        scoreAway: side === 'away' ? Math.max(0, prev.scoreAway + delta) : prev.scoreAway,
+        scoreByPeriod: { ...prev.scoreByPeriod, [prev.period]: { ...per, [side]: Math.max(0, per[side] + delta) } }
+      };
+    });
+  };
+
+  const recordEvent = (action: string, playerId: string, points = 0) => {    const newEvent: GameEvent = {
       id: Date.now().toString(),
       timestamp: new Date().toLocaleTimeString(),
       period: game.period,
@@ -673,12 +717,16 @@ export default function App() {
       }
     }
 
-    setGame(prev => ({
-      ...prev,
-      scoreHome: prev.scoreHome + points,
-      onCourtPlayerIds: updatedOnCourt,
-      events: [newEvent, ...prev.events]
-    }));
+    setGame(prev => {
+      const per = prev.scoreByPeriod[prev.period] || { home: 0, away: 0 };
+      return {
+        ...prev,
+        scoreHome: prev.scoreHome + points,
+        scoreByPeriod: points !== 0 ? { ...prev.scoreByPeriod, [prev.period]: { ...per, home: per.home + points } } : prev.scoreByPeriod,
+        onCourtPlayerIds: updatedOnCourt,
+        events: [newEvent, ...prev.events]
+      };
+    });
 
     setSelectedPlayerId(null);
     setFtAttempts([null, null, null]);
@@ -780,11 +828,17 @@ export default function App() {
       if (matchLF) pointsToRemove = parseInt(matchLF[1], 10);
     }
 
-    setGame(prev => ({
-      ...prev,
-      scoreHome: Math.max(0, prev.scoreHome - pointsToRemove),
-      events: prev.events.filter(ev => ev.id !== eventId)
-    }));
+    setGame(prev => {
+      const per = prev.scoreByPeriod[eventToDelete.period] || { home: 0, away: 0 };
+      return {
+        ...prev,
+        scoreHome: Math.max(0, prev.scoreHome - pointsToRemove),
+        scoreByPeriod: pointsToRemove !== 0
+          ? { ...prev.scoreByPeriod, [eventToDelete.period]: { ...per, home: Math.max(0, per.home - pointsToRemove) } }
+          : prev.scoreByPeriod,
+        events: prev.events.filter(ev => ev.id !== eventId)
+      };
+    });
   };
 
   const getPlayerStats = (playerId: string, periodFilter: number | 'ALL') => {
@@ -928,6 +982,7 @@ export default function App() {
         isClockRunning: false,
         scoreHome: 0,
         scoreAway: 0,
+        scoreByPeriod: {},
         matchRoster,
         onCourtPlayerIds: onCourt,
         events: []
@@ -1130,6 +1185,10 @@ export default function App() {
 
               <div className="flex flex-wrap items-end gap-4">
                 <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Date du match</label>
+                  <input type="date" value={matchConfig.matchDate} onChange={e => setMatchConfig({...matchConfig, matchDate: e.target.value})} className="bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                </div>
+                <div>
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Périodes</label>
                   <input type="number" min="1" max="49" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
                 </div>
@@ -1232,13 +1291,19 @@ export default function App() {
                   {filteredExistingMatches.map(m => (
                     <div key={m.id} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-amber-500 transition flex items-center space-x-2">
                       <button onClick={() => handleSelectExistingMatch(m)} className="flex-1 text-left min-w-0">
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="font-bold text-white truncate">{m.team_home} vs {m.team_away}</span>
-                          <span className="text-slate-400 shrink-0 ml-2">{m.match_date || ''}</span>
+                        <div className="flex justify-between items-start gap-2 text-xs">
+                          <span className="font-bold text-white break-words">{m.team_home} vs {m.team_away}</span>
+                          <span className="font-bold text-slate-300 shrink-0">{m.score_home} - {m.score_away}</span>
                         </div>
                         <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1">
-                          <span className="truncate">{String(m.ffbb_match_id || '').startsWith('AMICAL-') ? 'Amical' : `ID : ${m.ffbb_match_id}`}</span>
-                          <span className="font-bold text-slate-300 shrink-0 ml-2">{m.score_home} - {m.score_away}</span>
+                          <span className="truncate">
+                            {m.match_date ? new Date(m.match_date).toLocaleDateString('fr-FR') : 'Date inconnue'}
+                            {' · '}
+                            {String(m.ffbb_match_id || '').startsWith('AMICAL-') ? 'Amical' : `ID : ${m.ffbb_match_id}`}
+                            {m.created_at && (
+                              <span className="text-slate-600"> (enregistré le {new Date(m.created_at).toLocaleDateString('fr-FR')} à {new Date(m.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})</span>
+                            )}
+                          </span>
                         </div>
                       </button>
                       <button onClick={() => setMatchToDelete(m)} title="Supprimer ce match" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 hover:bg-rose-900/60 text-rose-400 transition">🗑️</button>
@@ -1288,8 +1353,8 @@ export default function App() {
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamHome || (homeAway === 'DOMICILE' ? 'DOMICILE' : 'EXTÉRIEUR')}</p>
                   <p className="text-4xl font-black text-amber-400 my-1">{game.scoreHome}</p>
                   <div className="flex justify-center space-x-1 mb-2">
-                    <button onClick={() => setGame({...game, scoreHome: Math.max(0, game.scoreHome - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
-                    <button onClick={() => setGame({...game, scoreHome: game.scoreHome + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
+                    <button onClick={() => bumpScore('home', -1)} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
+                    <button onClick={() => bumpScore('home', 1)} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
                   </div>
                   <div className="flex flex-col items-center">
                     <FoulSquares count={getTeamFoulsForPeriod(game.period)} />
@@ -1328,8 +1393,8 @@ export default function App() {
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamAway || (homeAway === 'DOMICILE' ? 'EXTÉRIEUR' : 'DOMICILE')}</p>
                   <p className="text-4xl font-black text-slate-300 my-1">{game.scoreAway}</p>
                   <div className="flex justify-center space-x-1 mb-2">
-                    <button onClick={() => setGame({...game, scoreAway: Math.max(0, game.scoreAway - 1)})} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
-                    <button onClick={() => setGame({...game, scoreAway: game.scoreAway + 1})} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
+                    <button onClick={() => bumpScore('away', -1)} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
+                    <button onClick={() => bumpScore('away', 1)} className="text-xs text-slate-200 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">+</button>
                   </div>
                   {/* Incrémentation basée sur les Fautes Subies par notre équipe */}
                   <div className="flex flex-col items-center">
@@ -1337,6 +1402,15 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              {Object.keys(game.scoreByPeriod).length > 0 && (
+                <div className="flex justify-center flex-wrap gap-x-3 gap-y-1 pt-3 mt-3 border-t border-slate-800">
+                  {Object.keys(game.scoreByPeriod).map(Number).sort((a, b) => a - b).map(p => (
+                    <span key={p} className="text-[10px] text-slate-400 font-bold">
+                      {getPeriodLabel(p, game.config.periodCount)} <span className="text-slate-200">{game.scoreByPeriod[p].home}-{game.scoreByPeriod[p].away}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
