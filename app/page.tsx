@@ -358,13 +358,16 @@ export default function App() {
         .upsert({
           ffbb_match_id: ffbbId,
           match_date: matchConfig.matchDate,
-          // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT)
-          team_home: homeAway === 'DOMICILE' ? game.config.teamHome : game.config.teamAway,
-          team_away: homeAway === 'DOMICILE' ? game.config.teamAway : game.config.teamHome,
+          // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT).
+          // On part toujours des valeurs en direct du formulaire (matchConfig), jamais de
+          // l'instantané game.config figé au dernier "Démarrer / Mettre à jour le match" :
+          // sinon un nom d'équipe ou une date corrigés après coup ne seraient pas sauvegardés.
+          team_home: homeAway === 'DOMICILE' ? matchConfig.teamHome : matchConfig.teamAway,
+          team_away: homeAway === 'DOMICILE' ? matchConfig.teamAway : matchConfig.teamHome,
           score_home: homeAway === 'DOMICILE' ? game.scoreHome : game.scoreAway,
           score_away: homeAway === 'DOMICILE' ? game.scoreAway : game.scoreHome,
-          period_count: game.config.periodCount,
-          period_minutes: game.config.periodMinutes,
+          period_count: matchConfig.periodCount,
+          period_minutes: matchConfig.periodMinutes,
           current_period: getPeriodLabel(game.period, game.config.periodCount),
           current_timer: game.clockSeconds
         }, { onConflict: 'ffbb_match_id' })
@@ -1350,7 +1353,7 @@ export default function App() {
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               <div className="grid grid-cols-3 items-center text-center">
                 <div className={`flex flex-col items-center ${homeAway === 'DOMICILE' ? 'order-1' : 'order-3'}`}>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamHome || (homeAway === 'DOMICILE' ? 'DOMICILE' : 'EXTÉRIEUR')}</p>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{matchConfig.teamHome || (homeAway === 'DOMICILE' ? 'DOMICILE' : 'EXTÉRIEUR')}</p>
                   <p className="text-4xl font-black text-amber-400 my-1">{game.scoreHome}</p>
                   <div className="flex justify-center space-x-1 mb-2">
                     <button onClick={() => bumpScore('home', -1)} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
@@ -1390,7 +1393,7 @@ export default function App() {
                 </div>
 
                 <div className={`flex flex-col items-center ${homeAway === 'DOMICILE' ? 'order-3' : 'order-1'}`}>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{game.config.teamAway || (homeAway === 'DOMICILE' ? 'EXTÉRIEUR' : 'DOMICILE')}</p>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{matchConfig.teamAway || (homeAway === 'DOMICILE' ? 'EXTÉRIEUR' : 'DOMICILE')}</p>
                   <p className="text-4xl font-black text-slate-300 my-1">{game.scoreAway}</p>
                   <div className="flex justify-center space-x-1 mb-2">
                     <button onClick={() => bumpScore('away', -1)} className="text-xs text-slate-400 font-bold px-2 py-0.5 bg-slate-800 rounded border border-slate-700">-</button>
