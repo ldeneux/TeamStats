@@ -1090,6 +1090,10 @@ export default function App() {
                 </button>
               </div>
 
+              <div className="flex flex-col sm:flex-row gap-4">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo-stats.png" alt="Statistiques basket" className="w-28 h-28 sm:w-56 sm:h-56 shrink-0 self-center sm:self-start" />
+              <div className="flex-1 min-w-0 space-y-4">
               <div className="flex items-end space-x-2">
                 <div className="flex-1">
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Choisir une équipe</label>
@@ -1141,6 +1145,8 @@ export default function App() {
                   {teamSaveStatus === 'error' && <p className="text-[10px] text-rose-400">Échec de l'enregistrement.</p>}
                 </div>
               )}
+              </div>
+              </div>
             </div>
 
             {/* 2. MATCH */}
