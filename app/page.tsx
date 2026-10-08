@@ -89,6 +89,14 @@ export default function App() {
   const [matchType, setMatchType] = useState<'OFFICIEL' | 'AMICAL'>('OFFICIEL');
   const [homeAway, setHomeAway] = useState<'DOMICILE' | 'EXTERIEUR'>('DOMICILE');
   const [isEditingTeamForm, setIsEditingTeamForm] = useState(false);
+  const [showLogoFull, setShowLogoFull] = useState(false);
+  const lastLogoTapRef = React.useRef(0);
+  useEffect(() => {
+    if (!showLogoFull) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowLogoFull(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showLogoFull]);
   const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
   const [teamSaveStatus, setTeamSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [clubNames, setClubNames] = useState<string[]>([]);
@@ -1092,7 +1100,25 @@ export default function App() {
 
               <div className="flex flex-col sm:flex-row gap-4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/logo-stats.png" alt="Statistiques basket" className="w-28 h-28 sm:w-56 sm:h-56 shrink-0 self-center sm:self-start" />
+              <img
+                src="/logo-stats.png"
+                alt="Statistiques basket"
+                title="Double-clic pour agrandir"
+                onClick={() => {
+                  const now = Date.now();
+                  if (now - lastLogoTapRef.current < 400) { setShowLogoFull(true); lastLogoTapRef.current = 0; }
+                  else lastLogoTapRef.current = now;
+                }}
+                style={{ touchAction: 'manipulation' }}
+                className="w-28 h-28 sm:w-56 sm:h-56 shrink-0 self-center sm:self-start cursor-zoom-in select-none"
+              />
+              {showLogoFull && (
+                <div onClick={() => setShowLogoFull(false)} className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3 cursor-zoom-out">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src="/logo-stats-full.png" alt="Statistiques basket" className="max-w-full max-h-full object-contain" />
+                  <button onClick={() => setShowLogoFull(false)} aria-label="Fermer" className="absolute top-3 right-3 w-10 h-10 rounded-full bg-slate-800/90 text-white text-lg font-bold border border-slate-600">✕</button>
+                </div>
+              )}
               <div className="flex-1 min-w-0 space-y-4">
               <div className="flex items-end space-x-2">
                 <div className="flex-1">
