@@ -148,6 +148,7 @@ export default function App() {
   const [upcomingMatches, setUpcomingMatches] = useState<any[]>([]);
   const [upcomingError, setUpcomingError] = useState('');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isSheetExpanded, setIsSheetExpanded] = useState(false);
   const [pdfError, setPdfError] = useState('');
   const [matchToDelete, setMatchToDelete] = useState<any | null>(null);
   const [isDeletingMatch, setIsDeletingMatch] = useState(false);
@@ -298,8 +299,8 @@ export default function App() {
       ffbbMatchId: String(u.ffbb_rencontre_id || '').slice(0, 20)
     }));
     setFfbbLookupStatus('found');
+    // On reste sur l'écran de configuration : le formulaire du match est prérempli, il suffit de le vérifier.
     setShowFfbbPicker(false);
-    setActiveTab('MATCH');
   };
 
   // SUPPRIMER DÉFINITIVEMENT UN MATCH (infos + événements + statistiques)
@@ -1011,7 +1012,14 @@ export default function App() {
       }
     }
 
-    return { points, totalSecs, fouls, foulsDrawn, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists };
+    // Évaluation (formule FIBA) = (points + rebonds + passes décisives + fautes subies)
+    //                            - (tirs manqués + lancers francs manqués + fautes commises).
+    // Interceptions, contres et balles perdues ne sont pas saisis dans l'application : ils ne comptent pas ici.
+    const missedShots = (pts2Att - pts2Made) + (pts3Att - pts3Made);
+    const missedFt = ftAttempted - ftMade;
+    const evaluation = points + rebOff + rebDef + assists + foulsDrawn - missedShots - missedFt - fouls;
+
+    return { points, totalSecs, fouls, foulsDrawn, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists, evaluation };
   };
 
   const handleAddOrUpdatePlayer = () => {
@@ -1274,9 +1282,9 @@ export default function App() {
       const cardX = M + 156;
       const cardW = pageW - M - cardX;
       doc.setFillColor(...LIGHT);
-      doc.roundedRect(cardX, 52, cardW, 28, 3, 3, 'F');
+      doc.roundedRect(cardX, 52, cardW, 33, 3, 3, 'F');
       doc.setFillColor(...AMBER);
-      doc.rect(cardX, 52, 1.6, 28, 'F');
+      doc.rect(cardX, 52, 1.6, 33, 'F');
       doc.setTextColor(...NAVY);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
@@ -1287,32 +1295,33 @@ export default function App() {
       doc.text(best('Points', s => s.points), cardX + 6, 66);
       doc.text(best('Rebonds', s => s.rebOff + s.rebDef), cardX + 6, 71.5);
       doc.text(best('Passes décisives', s => s.assists), cardX + 6, 77);
+      doc.text(best('Évaluation', s => s.evaluation), cardX + 6, 82.5);
 
       // ---- Tableau principal
-      const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'FT', 'FS', 'Temps']];
+      const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'FT', 'FS', 'ÉVAL', 'Temps']];
       const rowOf = (p: Player, st: ReturnType<typeof getPlayerStats>) => [
         `#${p.number}`, p.name, String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
         pct(st.pts2Made + st.pts3Made, st.pts2Att + st.pts3Att), String(st.rebOff), String(st.rebDef), String(st.rebOff + st.rebDef),
-        String(st.assists), String(st.fouls), String(st.foulsDrawn), mmss(st.totalSecs)
+        String(st.assists), String(st.fouls), String(st.foulsDrawn), String(st.evaluation), mmss(st.totalSecs)
       ];
       const sum = (f: (s: ReturnType<typeof getPlayerStats>) => number) => withStats.reduce((t, x) => t + f(x.st), 0);
       const totals = [
         '', 'ÉQUIPE', String(sum(s => s.points)), `${sum(s => s.pts2Made)}/${sum(s => s.pts2Att)}`, `${sum(s => s.pts3Made)}/${sum(s => s.pts3Att)}`,
         `${sum(s => s.ftMade)}/${sum(s => s.ftAttempted)}`, pct(sum(s => s.pts2Made + s.pts3Made), sum(s => s.pts2Att + s.pts3Att)),
         String(sum(s => s.rebOff)), String(sum(s => s.rebDef)), String(sum(s => s.rebOff + s.rebDef)), String(sum(s => s.assists)),
-        String(sum(s => s.fouls)), String(sum(s => s.foulsDrawn)), mmss(sum(s => s.totalSecs))
+        String(sum(s => s.fouls)), String(sum(s => s.foulsDrawn)), String(sum(s => s.evaluation)), mmss(sum(s => s.totalSecs))
       ];
       const tableStyles = {
-        styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.2, textColor: TEXT, halign: 'center' as const, lineColor: [226, 232, 240] },
+        styles: { font: 'helvetica', fontSize: 10, cellPadding: withStats.length <= 9 ? 3.3 : 2.5, textColor: TEXT, halign: 'center' as const, lineColor: [226, 232, 240] },
         headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold' as const },
         alternateRowStyles: { fillColor: LIGHT },
         footStyles: { fillColor: [254, 243, 199], textColor: NAVY, fontStyle: 'bold' as const },
-        columnStyles: { 0: { fontStyle: 'bold' as const, textColor: AMBER_D, cellWidth: 14 }, 1: { halign: 'left' as const, fontStyle: 'bold' as const, cellWidth: 52 }, 2: { fontStyle: 'bold' as const } },
+        columnStyles: { 0: { fontStyle: 'bold' as const, textColor: AMBER_D, cellWidth: 14 }, 1: { halign: 'left' as const, fontStyle: 'bold' as const, cellWidth: 56 }, 2: { fontStyle: 'bold' as const }, 13: { fontStyle: 'bold' as const, textColor: [5, 150, 105] as [number, number, number] } },
         theme: 'grid' as const
       };
       autoTable(doc, {
         ...tableStyles,
-        startY: Math.max(periodsBottom, 80) + 7,
+        startY: Math.max(periodsBottom, 85) + 7,
         margin: { left: M, right: M, top: 24, bottom: 16 },
         head,
         body: withStats.map(({ p, st }) => rowOf(p, st)),
@@ -1345,7 +1354,7 @@ export default function App() {
               '', 'ÉQUIPE', String(tot(s => s.points)), `${tot(s => s.pts2Made)}/${tot(s => s.pts2Att)}`, `${tot(s => s.pts3Made)}/${tot(s => s.pts3Att)}`,
               `${tot(s => s.ftMade)}/${tot(s => s.ftAttempted)}`, pct(tot(s => s.pts2Made + s.pts3Made), tot(s => s.pts2Att + s.pts3Att)),
               String(tot(s => s.rebOff)), String(tot(s => s.rebDef)), String(tot(s => s.rebOff + s.rebDef)), String(tot(s => s.assists)),
-              String(tot(s => s.fouls)), String(tot(s => s.foulsDrawn)), mmss(tot(s => s.totalSecs))
+              String(tot(s => s.fouls)), String(tot(s => s.foulsDrawn)), String(tot(s => s.evaluation)), mmss(tot(s => s.totalSecs))
             ]],
             showFoot: 'lastPage'
           });
@@ -1357,7 +1366,7 @@ export default function App() {
       doc.setTextColor(...MUTED);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8);
-      const legend = 'PTS : points | 2PTS / 3PTS / LF : réussis sur tentés | TIR % : réussite aux tirs à 2 et 3 points | REB O / D : rebonds offensifs / défensifs | AST : passes décisives | FT : fautes commises | FS : fautes subies | Temps : temps de jeu';
+      const legend = 'PTS : points | 2PTS / 3PTS / LF : réussis sur tentés | TIR % : réussite aux tirs à 2 et 3 points | REB O / D : rebonds offensifs / défensifs | AST : passes décisives | FT : fautes commises | FS : fautes subies | ÉVAL : évaluation = (points + rebonds + passes décisives + fautes subies) - (tirs et lancers francs manqués + fautes commises), sans interceptions, contres ni balles perdues (non saisis) | Temps : temps de jeu';
       doc.text(doc.splitTextToSize(legend, pageW - 2 * M), M, Math.min(lastY + 8, pageH - 22));
 
       const pages: number = doc.getNumberOfPages();
@@ -1624,12 +1633,26 @@ export default function App() {
             </div>
 
             {/* 3. FEUILLE DE MATCH */}
-            <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
-              <div className="flex justify-between items-center border-b border-slate-700 pb-3">
+            <div className={isSheetExpanded
+              ? 'fixed inset-0 z-50 overflow-y-auto bg-slate-950 text-white p-5 space-y-4'
+              : 'bg-slate-900/90 text-white p-6 rounded-3xl space-y-4 border border-white/10 shadow-2xl'}>
+              {/* Double-clic (ou double tape) sur le bandeau : feuille de match en grand, un second double-clic la remet à sa taille. */}
+              <div
+                onDoubleClick={() => setIsSheetExpanded(v => !v)}
+                title="Double-clic : agrandir / réduire"
+                className={`flex justify-between items-center border-b border-slate-700 pb-3 cursor-pointer select-none touch-manipulation ${isSheetExpanded ? 'sticky top-0 z-10 bg-slate-950 pt-1' : ''}`}
+              >
                 <h2 className="text-xl font-bold text-amber-400">Feuille de Match</h2>
-                <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
+                <div className="flex items-center space-x-3">
+                  <span className={`text-xs font-black ${selectedMatchPlayerIds.length === 10 ? 'text-amber-400' : 'text-slate-400'}`}>{selectedMatchPlayerIds.length} / 10 max</span>
+                  <button
+                    onClick={() => setIsSheetExpanded(v => !v)}
+                    title={isSheetExpanded ? 'Réduire' : 'Agrandir'}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white text-sm"
+                  >{isSheetExpanded ? '⤡' : '⤢'}</button>
+                </div>
               </div>
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              <div className={isSheetExpanded ? 'space-y-3' : 'space-y-2 max-h-64 overflow-y-auto pr-1'}>
                 {editingRoster.length === 0 ? (
                   <p className="text-xs text-slate-500 text-center py-4">Choisis ou crée une équipe ci-dessus pour constituer la feuille de match.</p>
                 ) : (
@@ -1637,7 +1660,7 @@ export default function App() {
                     const isSelected = selectedMatchPlayerIds.includes(p.id);
                     const matchNumber = matchNumbers[p.id] ?? p.number;
                     return (
-                      <div key={p.id} className={`flex items-center justify-between p-2 rounded-xl border text-xs font-bold transition ${isSelected ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                      <div key={p.id} className={`flex items-center justify-between rounded-xl border font-bold transition ${isSheetExpanded ? 'p-4 text-base' : 'p-2 text-xs'} ${isSelected ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
                         <button onClick={() => handleToggleMatchPlayer(p.id)} className="flex items-center space-x-2 flex-1 text-left">
                           <span className="text-sm">{isSelected ? '✓' : '+'}</span>
                           <span className="truncate">{p.name}</span>
@@ -2146,6 +2169,7 @@ export default function App() {
                     <th className="py-2 px-1 text-center">AST</th>
                     <th className="py-2 px-1 text-center">FT</th>
                     <th className="py-2 px-1 text-center text-blue-400">FS</th>
+                    <th className="py-2 px-1 text-center text-emerald-400" title="Évaluation = (points + rebonds + passes + fautes subies) - (tirs et lancers francs manqués + fautes commises)">ÉVAL</th>
                     <th className="py-2 px-1 text-right">Tps</th>
                   </tr>
                 </thead>
@@ -2165,6 +2189,7 @@ export default function App() {
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.assists}</td>
                         <td className="py-2.5 px-1 text-center text-rose-400 font-bold">{st.fouls}</td>
                         <td className="py-2.5 px-1 text-center text-blue-400 font-bold">{st.foulsDrawn}</td>
+                        <td className={`py-2.5 px-1 text-center font-black ${st.evaluation < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{st.evaluation}</td>
                         <td className="py-2.5 px-1 text-right font-mono text-slate-400">{formatTime(st.totalSecs)}</td>
                       </tr>
                     );
