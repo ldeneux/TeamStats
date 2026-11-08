@@ -44,6 +44,17 @@ const DEFAULT_PLAYERS: Player[] = [];
 // ce qui réutilise tel quel le stockage existant (événements, stats par période, score par période).
 const OVERTIME_MINUTES = 5;
 
+// Points rapportés par une action (tir réussi, lancers francs réussis).
+const pointsOfAction = (act: string) => {
+  if (act.includes('TIR 3PTS') && !act.includes('Manqué')) return 3;
+  if (act.includes('TIR 2PTS') && !act.includes('Manqué')) return 2;
+  if (act.includes('LANCERS FRANCS')) {
+    const m = act.match(/\((\d+)\/\d+\)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  return 0;
+};
+
 // Catégorie lue dans un libellé ("SATHONAY U15F - 2026/2027", "U15F", division...).
 const parseCategory = (label: string | null | undefined) => {
   const m = /\bU\s?(\d{1,2})\s*([FMG])?/i.exec(label || '');
@@ -136,6 +147,8 @@ export default function App() {
   const [pickerStatusFilter, setPickerStatusFilter] = useState<'JOUE' | 'A_VENIR' | 'ALL'>('JOUE');
   const [upcomingMatches, setUpcomingMatches] = useState<any[]>([]);
   const [upcomingError, setUpcomingError] = useState('');
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState('');
   const [matchToDelete, setMatchToDelete] = useState<any | null>(null);
   const [isDeletingMatch, setIsDeletingMatch] = useState(false);
   const [actionToUndo, setActionToUndo] = useState<GameEvent | null>(null);
@@ -726,13 +739,17 @@ export default function App() {
     const goesBeyondRegular = target > game.period && target > game.config.periodCount;
     // Au-delà du temps réglementaire : une prolongation à la fois, seulement si autorisée et à égalité.
     if (goesBeyondRegular && !(canStartOvertime && target === game.period + 1)) return;
-    const startsNewOvertime = goesBeyondRegular && !game.events.some(e => e.period === target);
+    // Passer du temps réglementaire aux prolongations (ou l'inverse, ex. OT1 -> Q4) remet le chrono
+    // à la durée de ce type de période : 5 min en prolongation, durée normale sinon.
+    const willBeOvertime = target > game.config.periodCount;
+    const crossesBoundary = (game.period > game.config.periodCount) !== willBeOvertime;
     setStartingFiveByPeriod(sf => (sf[target] ? sf : { ...sf, [target]: game.onCourtPlayerIds }));
     setGame(prev => ({
       ...prev,
       period: target,
-      // Une prolongation dure OVERTIME_MINUTES : le chrono est remis à ce temps à son démarrage.
-      ...(startsNewOvertime ? { clockSeconds: OVERTIME_MINUTES * 60, isClockRunning: false } : {})
+      ...(crossesBoundary
+        ? { clockSeconds: (willBeOvertime ? OVERTIME_MINUTES : prev.config.periodMinutes) * 60, isClockRunning: false }
+        : {})
     }));
   };
 
@@ -740,12 +757,21 @@ export default function App() {
   // + les actions déjà enregistrées pour cette période précise .
   const handleConfirmResetPeriod = () => {
     const p = game.period;
-    setGame(prev => ({
-      ...prev,
-      clockSeconds: (p > prev.config.periodCount ? OVERTIME_MINUTES : prev.config.periodMinutes) * 60,
-      isClockRunning: false,
-      events: prev.events.filter(e => e.period !== p)
-    }));
+    setGame(prev => {
+      // Le score de la période (le nôtre et celui de l'adversaire, tenus période par période) est retiré :
+      // on revient au score de la fin de la période précédente (0-0 pour la première).
+      const fallbackHome = prev.events.filter(e => e.period === p).reduce((sum, e) => sum + pointsOfAction(e.actionType), 0);
+      const removed = prev.scoreByPeriod[p] ?? { home: fallbackHome, away: 0 };
+      return {
+        ...prev,
+        clockSeconds: (p > prev.config.periodCount ? OVERTIME_MINUTES : prev.config.periodMinutes) * 60,
+        isClockRunning: false,
+        events: prev.events.filter(e => e.period !== p),
+        scoreHome: Math.max(0, prev.scoreHome - removed.home),
+        scoreAway: Math.max(0, prev.scoreAway - removed.away),
+        scoreByPeriod: { ...prev.scoreByPeriod, [p]: { home: 0, away: 0 } }
+      };
+    });
     setPlayingTime(prev => {
       const updated: { [playerId: string]: { [period: number]: number } } = {};
       Object.keys(prev).forEach(pid => {
@@ -791,7 +817,9 @@ export default function App() {
     });
   };
 
-  const recordEvent = (action: string, playerId: string, points = 0) => {    const newEvent: GameEvent = {
+  const recordEvent = (action: string, playerId: string, points = 0) => {
+    if (!playerId) return;
+    const newEvent: GameEvent = {
       id: Date.now().toString(),
       timestamp: new Date().toLocaleTimeString(),
       period: game.period,
@@ -1124,6 +1152,8 @@ export default function App() {
   };
 
   const selectedPlayer = game.matchRoster.find(p => p.id === selectedPlayerId);
+  // Le panneau d'actions est toujours affiché : sans joueuse choisie il est grisé et inactif.
+  const panelPlayer: Player = selectedPlayer ?? { id: '', number: 0, name: '' };
 
   // Dernière période à afficher : périodes du match + prolongations jouées.
   const lastPeriodShown = Math.max(
@@ -1132,6 +1162,240 @@ export default function App() {
     ...game.events.map(e => e.period),
     ...Object.keys(game.scoreByPeriod).map(Number)
   );
+
+  // ---------------------------------------------------------------------------
+  // EXPORT PDF DES STATISTIQUES (vue affichée : match complet ou une période)
+  // ---------------------------------------------------------------------------
+  const handleExportStatsPdf = async () => {
+    if (isExportingPdf) return;
+    setIsExportingPdf(true);
+    setPdfError('');
+    try {
+      const { jsPDF } = await import('jspdf');
+      const autoTable: any = (await import('jspdf-autotable')).default;
+      const doc: any = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pageW: number = doc.internal.pageSize.getWidth();
+      const pageH: number = doc.internal.pageSize.getHeight();
+      const M = 12;
+      const NAVY: [number, number, number] = [11, 27, 58];
+      const AMBER: [number, number, number] = [245, 158, 11];
+      const AMBER_D: [number, number, number] = [217, 119, 6];
+      const LIGHT: [number, number, number] = [241, 245, 249];
+      const MUTED: [number, number, number] = [100, 116, 139];
+      const TEXT: [number, number, number] = [30, 41, 59];
+
+      // Logo (facultatif : si le chargement échoue, le PDF est généré sans)
+      let logoData: string | null = null;
+      try {
+        const res = await fetch('/logo-stats.png');
+        const blob = await res.blob();
+        logoData = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error('logo'));
+          reader.readAsDataURL(blob);
+        });
+      } catch { /* sans logo */ }
+
+      const isAllView = selectedPeriodFilter === 'ALL';
+      const viewLabel = isAllView ? 'Match complet' : getPeriodLabel(selectedPeriodFilter as number, game.config.periodCount);
+      const ours = matchConfig.teamHome || 'Notre équipe';
+      const theirs = matchConfig.teamAway || 'Adversaire';
+      const weAreHome = homeAway === 'DOMICILE';
+      const leftName = weAreHome ? ours : theirs;
+      const rightName = weAreHome ? theirs : ours;
+      const leftScore = weAreHome ? game.scoreHome : game.scoreAway;
+      const rightScore = weAreHome ? game.scoreAway : game.scoreHome;
+      const dateLabel = matchConfig.matchDate ? new Date(matchConfig.matchDate + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : '';
+      const pct = (made: number, att: number) => (att > 0 ? `${Math.round((made * 100) / att)}%` : '-');
+      const mmss = (secs: number) => formatTime(secs);
+
+      // ---- Bandeau d'en-tête (page 1)
+      doc.setFillColor(...NAVY);
+      doc.rect(0, 0, pageW, 32, 'F');
+      doc.setFillColor(...AMBER);
+      doc.rect(0, 32, pageW, 1.4, 'F');
+      let textX = M;
+      if (logoData) {
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(M, 4, 24, 24, 3, 3, 'F');
+        doc.addImage(logoData, 'PNG', M + 1, 5, 22, 22);
+        textX = M + 30;
+      }
+      doc.setTextColor(...AMBER);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text('OLYMPIC SATHONAY', textX, 11);
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(21);
+      doc.text('Statistiques des joueuses', textX, 20.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(191, 219, 254);
+      doc.text(`${dateLabel ? dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1) + '   |   ' : ''}Match ${matchType === 'OFFICIEL' ? 'officiel' : 'amical'}   |   Vue : ${viewLabel}`, textX, 27);
+
+      // ---- Score
+      doc.setTextColor(...NAVY);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.text(leftName, pageW / 2 - 24, 45, { align: 'right' });
+      doc.text(rightName, pageW / 2 + 24, 45);
+      doc.setFontSize(24);
+      doc.setTextColor(...AMBER_D);
+      doc.text(`${leftScore}  -  ${rightScore}`, pageW / 2, 46, { align: 'center' });
+
+      // ---- Score par période (à gauche) et meilleures performances (à droite)
+      const periodsShown = Array.from({ length: lastPeriodShown }, (_, i) => i + 1);
+      const periodScore = (side: 'home' | 'away', p: number) => {
+        const s = game.scoreByPeriod[p];
+        return s ? String(s[side]) : '-';
+      };
+      autoTable(doc, {
+        startY: 53,
+        margin: { left: M, right: pageW - M - 150, top: 24, bottom: 16 },
+        head: [['', ...periodsShown.map(p => getPeriodLabel(p, game.config.periodCount)), 'Total']],
+        body: [
+          [ours, ...periodsShown.map(p => periodScore('home', p)), String(game.scoreHome)],
+          [theirs, ...periodsShown.map(p => periodScore('away', p)), String(game.scoreAway)]
+        ],
+        theme: 'grid',
+        styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.2, textColor: TEXT, halign: 'center', lineColor: [226, 232, 240] },
+        headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold' },
+        columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 48 } },
+        didParseCell: (d: any) => { if (d.section === 'body' && d.column.index === periodsShown.length + 1) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.fillColor = [254, 243, 199]; } }
+      });
+      const periodsBottom: number = doc.lastAutoTable.finalY;
+
+      const withStats = game.matchRoster.map(p => ({ p, st: getPlayerStats(p.id, selectedPeriodFilter) }));
+      const best = (label: string, value: (s: ReturnType<typeof getPlayerStats>) => number) => {
+        const top = [...withStats].sort((a, b) => value(b.st) - value(a.st))[0];
+        return top && value(top.st) > 0 ? `${label} : ${top.p.name} (${value(top.st)})` : `${label} : -`;
+      };
+      const cardX = M + 156;
+      const cardW = pageW - M - cardX;
+      doc.setFillColor(...LIGHT);
+      doc.roundedRect(cardX, 52, cardW, 28, 3, 3, 'F');
+      doc.setFillColor(...AMBER);
+      doc.rect(cardX, 52, 1.6, 28, 'F');
+      doc.setTextColor(...NAVY);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text('Meilleures performances', cardX + 6, 59);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9.5);
+      doc.setTextColor(...TEXT);
+      doc.text(best('Points', s => s.points), cardX + 6, 66);
+      doc.text(best('Rebonds', s => s.rebOff + s.rebDef), cardX + 6, 71.5);
+      doc.text(best('Passes décisives', s => s.assists), cardX + 6, 77);
+
+      // ---- Tableau principal
+      const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'FT', 'FS', 'Temps']];
+      const rowOf = (p: Player, st: ReturnType<typeof getPlayerStats>) => [
+        `#${p.number}`, p.name, String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
+        pct(st.pts2Made + st.pts3Made, st.pts2Att + st.pts3Att), String(st.rebOff), String(st.rebDef), String(st.rebOff + st.rebDef),
+        String(st.assists), String(st.fouls), String(st.foulsDrawn), mmss(st.totalSecs)
+      ];
+      const sum = (f: (s: ReturnType<typeof getPlayerStats>) => number) => withStats.reduce((t, x) => t + f(x.st), 0);
+      const totals = [
+        '', 'ÉQUIPE', String(sum(s => s.points)), `${sum(s => s.pts2Made)}/${sum(s => s.pts2Att)}`, `${sum(s => s.pts3Made)}/${sum(s => s.pts3Att)}`,
+        `${sum(s => s.ftMade)}/${sum(s => s.ftAttempted)}`, pct(sum(s => s.pts2Made + s.pts3Made), sum(s => s.pts2Att + s.pts3Att)),
+        String(sum(s => s.rebOff)), String(sum(s => s.rebDef)), String(sum(s => s.rebOff + s.rebDef)), String(sum(s => s.assists)),
+        String(sum(s => s.fouls)), String(sum(s => s.foulsDrawn)), mmss(sum(s => s.totalSecs))
+      ];
+      const tableStyles = {
+        styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.2, textColor: TEXT, halign: 'center' as const, lineColor: [226, 232, 240] },
+        headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold' as const },
+        alternateRowStyles: { fillColor: LIGHT },
+        footStyles: { fillColor: [254, 243, 199], textColor: NAVY, fontStyle: 'bold' as const },
+        columnStyles: { 0: { fontStyle: 'bold' as const, textColor: AMBER_D, cellWidth: 14 }, 1: { halign: 'left' as const, fontStyle: 'bold' as const, cellWidth: 52 }, 2: { fontStyle: 'bold' as const } },
+        theme: 'grid' as const
+      };
+      autoTable(doc, {
+        ...tableStyles,
+        startY: Math.max(periodsBottom, 80) + 7,
+        margin: { left: M, right: M, top: 24, bottom: 16 },
+        head,
+        body: withStats.map(({ p, st }) => rowOf(p, st)),
+        foot: [totals],
+        showFoot: 'lastPage'
+      });
+
+      // ---- Détail période par période (vue "Match complet")
+      if (isAllView && periodsShown.length > 1) {
+        periodsShown.forEach(pNum => {
+          const rows = game.matchRoster.map(p => ({ p, st: getPlayerStats(p.id, pNum) }));
+          const tot = (f: (s: ReturnType<typeof getPlayerStats>) => number) => rows.reduce((t, x) => t + f(x.st), 0);
+          const per = game.scoreByPeriod[pNum];
+          doc.addPage();
+          doc.setFillColor(...NAVY);
+          doc.roundedRect(M, 24, pageW - 2 * M, 10, 2, 2, 'F');
+          doc.setTextColor(255, 255, 255);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(12);
+          doc.text(`Détail - ${getPeriodLabel(pNum, game.config.periodCount)}`, M + 5, 30.7);
+          doc.setTextColor(...AMBER);
+          doc.text(per ? `${ours} ${per.home} - ${per.away} ${theirs}` : '', pageW - M - 5, 30.7, { align: 'right' });
+          autoTable(doc, {
+            ...tableStyles,
+            startY: 38,
+            margin: { left: M, right: M, top: 24, bottom: 16 },
+            head,
+            body: rows.map(({ p, st }) => rowOf(p, st)),
+            foot: [[
+              '', 'ÉQUIPE', String(tot(s => s.points)), `${tot(s => s.pts2Made)}/${tot(s => s.pts2Att)}`, `${tot(s => s.pts3Made)}/${tot(s => s.pts3Att)}`,
+              `${tot(s => s.ftMade)}/${tot(s => s.ftAttempted)}`, pct(tot(s => s.pts2Made + s.pts3Made), tot(s => s.pts2Att + s.pts3Att)),
+              String(tot(s => s.rebOff)), String(tot(s => s.rebDef)), String(tot(s => s.rebOff + s.rebDef)), String(tot(s => s.assists)),
+              String(tot(s => s.fouls)), String(tot(s => s.foulsDrawn)), mmss(tot(s => s.totalSecs))
+            ]],
+            showFoot: 'lastPage'
+          });
+        });
+      }
+
+      // ---- Légende (dernière page) puis en-têtes fins + pieds de page
+      const lastY: number = doc.lastAutoTable.finalY;
+      doc.setTextColor(...MUTED);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      const legend = 'PTS : points | 2PTS / 3PTS / LF : réussis sur tentés | TIR % : réussite aux tirs à 2 et 3 points | REB O / D : rebonds offensifs / défensifs | AST : passes décisives | FT : fautes commises | FS : fautes subies | Temps : temps de jeu';
+      doc.text(doc.splitTextToSize(legend, pageW - 2 * M), M, Math.min(lastY + 8, pageH - 22));
+
+      const pages: number = doc.getNumberOfPages();
+      const generated = new Date().toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+      for (let i = 1; i <= pages; i++) {
+        doc.setPage(i);
+        if (i > 1) {
+          doc.setFillColor(...NAVY);
+          doc.rect(0, 0, pageW, 14, 'F');
+          doc.setFillColor(...AMBER);
+          doc.rect(0, 14, pageW, 0.9, 'F');
+          doc.setTextColor(255, 255, 255);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(10);
+          doc.text('Statistiques des joueuses', M, 9);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(191, 219, 254);
+          doc.text(`${leftName} ${leftScore} - ${rightScore} ${rightName}`, pageW - M, 9, { align: 'right' });
+        }
+        doc.setDrawColor(226, 232, 240);
+        doc.line(M, pageH - 11, pageW - M, pageH - 11);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8);
+        doc.setTextColor(...MUTED);
+        doc.text('TeamStats - Olympic Sathonay', M, pageH - 6.5);
+        doc.text(`Document généré le ${generated}`, pageW / 2, pageH - 6.5, { align: 'center' });
+        doc.text(`Page ${i} / ${pages}`, pageW - M, pageH - 6.5, { align: 'right' });
+      }
+
+      const slug = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      doc.save(`Stats-${slug(ours)}-vs-${slug(theirs)}-${matchConfig.matchDate || 'match'}-${slug(viewLabel)}.pdf`);
+    } catch (err) {
+      console.error(err);
+      setPdfError(err instanceof Error ? err.message : 'Échec de la génération du PDF.');
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
 
   const availableSeasons = Array.from(new Set([...existingMatches, ...upcomingMatches].map(m => getSeasonLabel(m.match_date)))).filter(Boolean).sort().reverse();
   const pickerTeamNames = Array.from(new Set(savedTeams.map(t => t.name)));
@@ -1507,7 +1771,7 @@ export default function App() {
             <div className="bg-slate-900 border border-rose-600/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
               <h3 className="text-sm font-bold text-rose-400">Réinitialiser {getPeriodLabel(game.period, game.config.periodCount)} ?</h3>
               <p className="text-xs text-slate-300">
-                Le chrono repart à <span className="font-bold text-white">{formatTime((game.period > game.config.periodCount ? OVERTIME_MINUTES : game.config.periodMinutes) * 60)}</span> et toutes les actions déjà enregistrées pour cette période (temps de jeu inclus) seront effacées de l'historique. Les autres périodes ne sont pas concernées. Cette action est irréversible.
+                Le chrono repart à <span className="font-bold text-white">{formatTime((game.period > game.config.periodCount ? OVERTIME_MINUTES : game.config.periodMinutes) * 60)}</span> et toutes les actions déjà enregistrées pour cette période (temps de jeu inclus) seront effacées de l'historique. Le score revient à celui de la fin de la période précédente (<span className="font-bold text-white">{game.scoreHome - (game.scoreByPeriod[game.period]?.home ?? 0)} - {game.scoreAway - (game.scoreByPeriod[game.period]?.away ?? 0)}</span>). Les autres périodes ne sont pas concernées. Cette action est irréversible.
               </p>
               <div className="flex space-x-2">
                 <button onClick={() => setConfirmResetPeriod(false)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
@@ -1594,7 +1858,18 @@ export default function App() {
             </div>
 
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-4 rounded-3xl shadow-xl space-y-3">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Joueuses sur le terrain</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Joueuses sur le terrain</h3>
+                <button
+                  onClick={() => {
+                    if (isSubbing) { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }
+                    else { setSelectedPlayerId(null); setIsSubbing(true); }
+                  }}
+                  disabled={!isSubbing && availableBenchPlayers.length === 0}
+                  title="Faire un ou plusieurs changements"
+                  className={`px-3 py-1 rounded-full text-[11px] font-black tracking-wide border transition disabled:opacity-40 ${isSubbing ? 'bg-indigo-500 border-indigo-300 text-white shadow' : 'bg-indigo-600/80 hover:bg-indigo-600 border-indigo-400/30 text-white'}`}
+                >🔄 CHANGEMENTS</button>
+              </div>
               <div className="grid grid-cols-5 gap-2">
                 {game.matchRoster.length === 0 ? (
                   Array.from({ length: 5 }, (_, i) => i + 1).map(n => (
@@ -1625,16 +1900,22 @@ export default function App() {
               </div>
             </div>
 
-            {selectedPlayer && (
-              <div className="bg-slate-900/95 backdrop-blur-md border-2 border-amber-500 p-4 rounded-3xl shadow-2xl text-white space-y-4 animate-fade-in">
+            {!isSubbing && (
+              <div className={`bg-slate-900/95 backdrop-blur-md border-2 p-4 rounded-3xl shadow-2xl text-white space-y-4 transition ${selectedPlayer ? 'border-amber-500' : 'border-slate-700 opacity-60 pointer-events-none'}`}>
                 <div className="flex items-center border-b border-slate-800 pb-2">
                   <div className="flex items-center space-x-2 shrink-0">
-                    <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{selectedPlayer.number}</span>
-                    <span className="font-bold text-sm text-amber-400">{getShortDisplayName(selectedPlayer, game.matchRoster)}</span>
+                    {selectedPlayer ? (
+                      <>
+                        <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-lg font-black text-sm">#{panelPlayer.number}</span>
+                        <span className="font-bold text-sm text-amber-400">{getShortDisplayName(panelPlayer, game.matchRoster)}</span>
+                      </>
+                    ) : (
+                      <span className="font-bold text-sm text-slate-400">Touchez une joueuse</span>
+                    )}
                   </div>
                   <div className="flex-1 flex justify-center px-3 py-1">
                     {(() => {
-                      const s = getPlayerStats(selectedPlayer.id, 'ALL');
+                      const s = getPlayerStats(panelPlayer.id, 'ALL');
                       const cols: [string, string | number][] = [
                         ['PTS', s.points],
                         ['2PTS', `${s.pts2Made}/${s.pts2Att}`],
@@ -1661,12 +1942,11 @@ export default function App() {
                   </div>
                   <div className="flex items-center space-x-1 shrink-0">
                     <button
-                      onClick={() => { const last = getLastPlayerAction(selectedPlayer.id); if (last) setActionToUndo(last); }}
-                      disabled={!getLastPlayerAction(selectedPlayer.id)}
+                      onClick={() => { const last = getLastPlayerAction(panelPlayer.id); if (last) setActionToUndo(last); }}
+                      disabled={!getLastPlayerAction(panelPlayer.id)}
                       title="Supprimer la dernière action enregistrée"
                       className="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-800 hover:bg-rose-900/60 text-rose-400 disabled:opacity-30 disabled:hover:bg-slate-800 transition"
                     >🧹</button>
-                    <button onClick={() => setSelectedPlayerId(null)} className="text-xs text-slate-400 hover:text-white font-bold">Fermer ✖</button>
                   </div>
                 </div>
 
@@ -1675,7 +1955,7 @@ export default function App() {
                     <div className="bg-slate-900 border border-rose-600/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
                       <h3 className="text-sm font-bold text-rose-400">Supprimer cette action ?</h3>
                       <p className="text-xs text-slate-300">
-                        <span className="font-bold text-white">{getPeriodLabel(actionToUndo.period, game.config.periodCount)} - {actionToUndo.clockTime}</span> : {actionToUndo.actionType} pour <span className="font-bold text-white">#{selectedPlayer.number} {getShortDisplayName(selectedPlayer, game.matchRoster)}</span> sera retirée de l'historique. Cette action est irréversible.
+                        <span className="font-bold text-white">{getPeriodLabel(actionToUndo.period, game.config.periodCount)} - {actionToUndo.clockTime}</span> : {actionToUndo.actionType} pour <span className="font-bold text-white">#{panelPlayer.number} {getShortDisplayName(panelPlayer, game.matchRoster)}</span> sera retirée de l'historique. Cette action est irréversible.
                       </p>
                       <div className="flex space-x-2">
                         <button onClick={() => setActionToUndo(null)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
@@ -1689,16 +1969,16 @@ export default function App() {
                   <div className="bg-slate-800/60 p-2.5 rounded-2xl border border-slate-700/60 space-y-2">
                     <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir à 2 Points</span>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button onClick={() => recordEvent('TIR 2PTS RÉUSSI', selectedPlayer.id, 2)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+2)</button>
-                      <button onClick={() => recordEvent('TIR 2PTS Manqué', selectedPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
+                      <button onClick={() => recordEvent('TIR 2PTS RÉUSSI', panelPlayer.id, 2)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+2)</button>
+                      <button onClick={() => recordEvent('TIR 2PTS Manqué', panelPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
                     </div>
                   </div>
 
                   <div className="bg-slate-800/60 p-2.5 rounded-2xl border border-slate-700/60 space-y-2">
                     <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir à 3 Points</span>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button onClick={() => recordEvent('TIR 3PTS RÉUSSI', selectedPlayer.id, 3)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+3)</button>
-                      <button onClick={() => recordEvent('TIR 3PTS Manqué', selectedPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
+                      <button onClick={() => recordEvent('TIR 3PTS RÉUSSI', panelPlayer.id, 3)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+3)</button>
+                      <button onClick={() => recordEvent('TIR 3PTS Manqué', panelPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
                     </div>
                   </div>
                 </div>
@@ -1744,25 +2024,21 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 pt-1">
-                  <button onClick={() => recordEvent('REBOND OFFENSIF', selectedPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🗑️ Rebond Off.</button>
-                  <button onClick={() => recordEvent('REBOND DÉFENSIF', selectedPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🛡️ Rebond Déf.</button>
-                  <button onClick={() => recordEvent('PASSE DÉCISIVE', selectedPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🎯 Assist</button>
+                  <button onClick={() => recordEvent('REBOND OFFENSIF', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🗑️ Rebond Off.</button>
+                  <button onClick={() => recordEvent('REBOND DÉFENSIF', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🛡️ Rebond Déf.</button>
+                  <button onClick={() => recordEvent('PASSE DÉCISIVE', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🎯 Assist</button>
                 </div>
 
                 <div className="grid grid-cols-4 gap-2 border-t border-slate-800 pt-2">
-                  <button onClick={() => recordEvent('FAUTE SUBIE', selectedPlayer.id)} className="bg-blue-950/60 hover:bg-blue-900 border border-blue-800/80 text-blue-200 text-xs font-bold py-2 rounded-xl">🛡️ Faute Subie</button>
-                  <button onClick={() => recordEvent('FAUTE PERSONNELLE', selectedPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Perso</button>
-                  <button onClick={() => recordEvent('FAUTE TECHNIQUE', selectedPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Tech.</button>
-                  <button onClick={() => recordEvent('FAUTE DISQUALIFIANTE', selectedPlayer.id)} className="bg-rose-900 hover:bg-rose-800 text-white text-xs font-bold py-2 rounded-xl">🟥 Disqual.</button>
+                  <button onClick={() => recordEvent('FAUTE SUBIE', panelPlayer.id)} className="bg-blue-950/60 hover:bg-blue-900 border border-blue-800/80 text-blue-200 text-xs font-bold py-2 rounded-xl">🛡️ Faute Subie</button>
+                  <button onClick={() => recordEvent('FAUTE PERSONNELLE', panelPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Perso</button>
+                  <button onClick={() => recordEvent('FAUTE TECHNIQUE', panelPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Tech.</button>
+                  <button onClick={() => recordEvent('FAUTE DISQUALIFIANTE', panelPlayer.id)} className="bg-rose-900 hover:bg-rose-800 text-white text-xs font-bold py-2 rounded-xl">🟥 Disqual.</button>
                 </div>
               </div>
             )}
 
-            {!isSubbing ? (
-              <button onClick={() => setIsSubbing(true)} disabled={availableBenchPlayers.length === 0} className="w-full bg-indigo-600/80 hover:bg-indigo-600 disabled:opacity-40 border border-indigo-400/30 text-white font-bold py-3 rounded-2xl shadow-md transition flex items-center justify-center space-x-2">
-                <span>🔄 Effectuer un ou plusieurs changements</span>
-              </button>
-            ) : (
+            {isSubbing && (
               <div className="bg-slate-900/95 backdrop-blur-md border border-indigo-500/50 p-4 rounded-3xl shadow-xl space-y-4 text-white">
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                   <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Changements de joueuses</h3>
@@ -1839,6 +2115,20 @@ export default function App() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href="/mode-emploi-teamstats.pdf"
+                download="TeamStats - Mode d'emploi.pdf"
+                className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow transition"
+              >📘 Mode d'emploi (PDF)</a>
+              <button
+                onClick={handleExportStatsPdf}
+                disabled={isExportingPdf}
+                className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-60 text-white text-xs font-bold shadow transition"
+              >{isExportingPdf ? '⏳ Génération…' : '📄 Statistiques (PDF)'}</button>
+              {pdfError && <span className="text-[10px] text-rose-400 break-words">Échec du PDF : {pdfError}</span>}
             </div>
 
             <div className="overflow-x-auto">
