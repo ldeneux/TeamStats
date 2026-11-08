@@ -39,6 +39,31 @@ export interface GameState {
 
 const DEFAULT_PLAYERS: Player[] = [];
 
+// Prolongations : OT1, OT2... de 5 minutes, uniquement à partir de U13 et en cas d'égalité.
+// Une prolongation est une période de numéro > nombre de périodes du match (Q4 -> OT1 = période 5),
+// ce qui réutilise tel quel le stockage existant (événements, stats par période, score par période).
+const OVERTIME_MINUTES = 5;
+
+// Catégorie lue dans un libellé ("SATHONAY U15F - 2026/2027", "U15F", division...).
+const parseCategory = (label: string | null | undefined) => {
+  const m = /\bU\s?(\d{1,2})\s*([FMG])?/i.exec(label || '');
+  return m ? { n: parseInt(m[1], 10), g: (m[2] || '').toUpperCase() } : null;
+};
+// U13 et + (une équipe sans "U" dans son nom est considérée comme senior).
+const categoryAllowsOvertime = (teamName: string) => {
+  const c = parseCategory(teamName);
+  return c ? c.n >= 13 : true;
+};
+// Une des étiquettes (catégorie, équipe, division...) correspond-elle à la catégorie de l'équipe ?
+const sameCategory = (teamName: string, labels: (string | null | undefined)[]) => {
+  const t = parseCategory(teamName);
+  if (!t) return false;
+  return labels.some(l => {
+    const c = parseCategory(l);
+    return !!c && c.n === t.n && (!c.g || !t.g || c.g === t.g);
+  });
+};
+
 const sortPlayersAlpha = (players: Player[]) => [...players].sort((a, b) => a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }));
 
 export default function App() {
@@ -108,7 +133,9 @@ export default function App() {
   const [isLoadingExistingMatches, setIsLoadingExistingMatches] = useState(false);
   const [pickerTeamFilter, setPickerTeamFilter] = useState('ALL');
   const [pickerSeasonFilter, setPickerSeasonFilter] = useState('ALL');
-  const [pickerTypeFilter, setPickerTypeFilter] = useState<'ALL' | 'OFFICIEL' | 'AMICAL'>('OFFICIEL');
+  const [pickerStatusFilter, setPickerStatusFilter] = useState<'JOUE' | 'A_VENIR' | 'ALL'>('JOUE');
+  const [upcomingMatches, setUpcomingMatches] = useState<any[]>([]);
+  const [upcomingError, setUpcomingError] = useState('');
   const [matchToDelete, setMatchToDelete] = useState<any | null>(null);
   const [isDeletingMatch, setIsDeletingMatch] = useState(false);
   const [actionToUndo, setActionToUndo] = useState<GameEvent | null>(null);
@@ -211,17 +238,55 @@ export default function App() {
     setIsLoadingExistingMatches(true);
     setPickerSeasonFilter(getSeasonLabel(new Date().toISOString().split('T')[0]));
     try {
-      const { data, error } = await supabase
-        .from('stats_matches')
-        .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at')
-        .order('match_date', { ascending: false })
-        .limit(200);
-      if (!error && data) setExistingMatches(data);
+      const [playedRes, upcomingRes] = await Promise.all([
+        supabase
+          .from('stats_matches')
+          .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at')
+          .order('match_date', { ascending: false })
+          .limit(200),
+        // Calendrier des matchs à venir tenu dans l'appli principale (voir sql/ffbb_upcoming.sql).
+        supabase.rpc('list_upcoming_ffbb_matches')
+      ]);
+      if (!playedRes.error && playedRes.data) setExistingMatches(playedRes.data);
+      if (upcomingRes.error) {
+        setUpcomingMatches([]);
+        setUpcomingError(upcomingRes.error.message);
+      } else {
+        setUpcomingMatches(Array.isArray(upcomingRes.data) ? upcomingRes.data : []);
+        setUpcomingError('');
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setIsLoadingExistingMatches(false);
     }
+  };
+
+  // Notre équipe (stats_teams) correspondant à un match du calendrier : même catégorie (U15F...),
+  // en préférant l'équipe dont le nom porte la saison du match (ex. "2026/2027").
+  const findOurTeamForUpcoming = (u: any) => {
+    const labels = [u.category, u.our_team_name, u.division_label];
+    const candidates = savedTeams.filter(t => sameCategory(t.name, labels));
+    if (candidates.length <= 1) return candidates[0];
+    const season = getSeasonLabel(u.match_date);
+    return candidates.find(t => t.name.includes(season) || t.name.includes(season.replace('-', '/'))) || candidates[0];
+  };
+
+  // PRÉ-REMPLIR UN NOUVEAU MATCH DEPUIS UN MATCH DU CALENDRIER (à venir)
+  const handleSelectUpcomingMatch = (u: any) => {
+    const team = findOurTeamForUpcoming(u);
+    if (team) handleLoadTeamFromSelect(team.id);
+    setHomeAway(String(u.home_away || '').toLowerCase().startsWith('ext') ? 'EXTERIEUR' : 'DOMICILE');
+    setMatchType('OFFICIEL');
+    setMatchConfig(prev => ({
+      ...prev,
+      teamAway: u.opponent || prev.teamAway,
+      matchDate: u.match_date ? new Date(u.match_date).toLocaleDateString('sv-SE') : prev.matchDate,
+      ffbbMatchId: String(u.ffbb_rencontre_id || '').slice(0, 20)
+    }));
+    setFfbbLookupStatus('found');
+    setShowFfbbPicker(false);
+    setActiveTab('MATCH');
   };
 
   // SUPPRIMER DÉFINITIVEMENT UN MATCH (infos + événements + statistiques)
@@ -327,7 +392,12 @@ export default function App() {
 
       setGame({
         config: newConfig,
-        period: parseInt(String(matchRow.current_period || 'Q1').replace(/\D/g, ''), 10) || 1,
+        period: (() => {
+          const label = String(matchRow.current_period || 'Q1');
+          const n = parseInt(label.replace(/\D/g, ''), 10) || 1;
+          // "OT1" = première prolongation = période (nombre de périodes + 1)
+          return /^OT/i.test(label) ? (matchRow.period_count || 4) + n : n;
+        })(),
         clockSeconds: matchRow.current_timer ?? matchRow.period_minutes * 60,
         isClockRunning: false,
         scoreHome: (weAreAway ? matchRow.score_away : matchRow.score_home) || 0,
@@ -593,6 +663,7 @@ export default function App() {
   }, [game.isClockRunning, game.clockSeconds, game.onCourtPlayerIds, game.period]);
 
   const getPeriodLabel = (pNum: number, totalPeriods: number) => {
+    if (pNum > totalPeriods) return `OT${pNum - totalPeriods}`;
     return totalPeriods === 4 ? `Q${pNum}` : `P${pNum}`;
   };
 
@@ -644,10 +715,25 @@ export default function App() {
   // Changer de période : mémorise le 5 sur le terrain comme "5 de départ" de cette période
   // (une seule fois, la première fois que la période est atteinte). Stocké en base dans la
   // table par joueuse et par période (colonne is_starter), jamais affiché à l'écran.
+  // Prolongation possible : U13 et +, fin de match (dernière période ou prolongation en cours) et égalité.
+  const overtimeAllowed = categoryAllowsOvertime(matchConfig.teamHome);
+  const isTied = game.scoreHome === game.scoreAway;
+  const atLastPeriod = game.period >= game.config.periodCount;
+  const canStartOvertime = overtimeAllowed && isTied && atLastPeriod;
+
   const changePeriod = (newPeriod: number) => {
-    const clamped = Math.min(game.config.periodCount, Math.max(1, newPeriod));
-    setStartingFiveByPeriod(sf => (sf[clamped] ? sf : { ...sf, [clamped]: game.onCourtPlayerIds }));
-    setGame(prev => ({ ...prev, period: clamped }));
+    const target = Math.max(1, newPeriod);
+    const goesBeyondRegular = target > game.period && target > game.config.periodCount;
+    // Au-delà du temps réglementaire : une prolongation à la fois, seulement si autorisée et à égalité.
+    if (goesBeyondRegular && !(canStartOvertime && target === game.period + 1)) return;
+    const startsNewOvertime = goesBeyondRegular && !game.events.some(e => e.period === target);
+    setStartingFiveByPeriod(sf => (sf[target] ? sf : { ...sf, [target]: game.onCourtPlayerIds }));
+    setGame(prev => ({
+      ...prev,
+      period: target,
+      // Une prolongation dure OVERTIME_MINUTES : le chrono est remis à ce temps à son démarrage.
+      ...(startsNewOvertime ? { clockSeconds: OVERTIME_MINUTES * 60, isClockRunning: false } : {})
+    }));
   };
 
   // RÉINITIALISER LE QUART-TEMPS EN COURS : remet le chrono à fond et efface le temps de jeu
@@ -656,7 +742,7 @@ export default function App() {
     const p = game.period;
     setGame(prev => ({
       ...prev,
-      clockSeconds: prev.config.periodMinutes * 60,
+      clockSeconds: (p > prev.config.periodCount ? OVERTIME_MINUTES : prev.config.periodMinutes) * 60,
       isClockRunning: false,
       events: prev.events.filter(e => e.period !== p)
     }));
@@ -1039,16 +1125,37 @@ export default function App() {
 
   const selectedPlayer = game.matchRoster.find(p => p.id === selectedPlayerId);
 
-  const availableSeasons = Array.from(new Set(existingMatches.map(m => getSeasonLabel(m.match_date)))).filter(Boolean).sort().reverse();
+  // Dernière période à afficher : périodes du match + prolongations jouées.
+  const lastPeriodShown = Math.max(
+    game.config.periodCount,
+    game.period,
+    ...game.events.map(e => e.period),
+    ...Object.keys(game.scoreByPeriod).map(Number)
+  );
+
+  const availableSeasons = Array.from(new Set([...existingMatches, ...upcomingMatches].map(m => getSeasonLabel(m.match_date)))).filter(Boolean).sort().reverse();
   const pickerTeamNames = Array.from(new Set(savedTeams.map(t => t.name)));
-  const filteredExistingMatches = existingMatches.filter(m => {
-    const isAmical = String(m.ffbb_match_id || '').startsWith('AMICAL-');
-    if (pickerTypeFilter === 'OFFICIEL' && isAmical) return false;
-    if (pickerTypeFilter === 'AMICAL' && !isAmical) return false;
-    if (pickerTeamFilter !== 'ALL' && m.team_home !== pickerTeamFilter && m.team_away !== pickerTeamFilter) return false;
-    if (pickerSeasonFilter !== 'ALL' && getSeasonLabel(m.match_date) !== pickerSeasonFilter) return false;
-    return true;
-  });
+
+  // Seuls les matchs OFFICIELS sont listés. JOUÉ = matchs enregistrés (stats_matches, du plus récent
+  // au plus ancien) ; À VENIR = calendrier de l'appli principale pas encore enregistré (du plus proche
+  // au plus lointain). TOUS = à venir puis joués : une frise autour d'aujourd'hui.
+  const recordedFfbbIds = new Set(existingMatches.map(m => String(m.ffbb_match_id || '')));
+  const playedEntries = existingMatches
+    .filter(m => !String(m.ffbb_match_id || '').startsWith('AMICAL-'))
+    .filter(m => pickerTeamFilter === 'ALL' || m.team_home === pickerTeamFilter || m.team_away === pickerTeamFilter)
+    .filter(m => pickerSeasonFilter === 'ALL' || getSeasonLabel(m.match_date) === pickerSeasonFilter)
+    .sort((a, b) => String(b.match_date || '').localeCompare(String(a.match_date || '')))
+    .map(m => ({ kind: 'JOUE' as const, key: `p-${m.id}`, m }));
+  const upcomingEntries = upcomingMatches
+    .filter(u => !recordedFfbbIds.has(String(u.ffbb_rencontre_id || '')))
+    .filter(u => pickerTeamFilter === 'ALL' || sameCategory(pickerTeamFilter, [u.category, u.our_team_name, u.division_label]))
+    .filter(u => pickerSeasonFilter === 'ALL' || getSeasonLabel(u.match_date) === pickerSeasonFilter)
+    .sort((a, b) => String(a.match_date || '').localeCompare(String(b.match_date || '')))
+    .map(u => ({ kind: 'A_VENIR' as const, key: `u-${u.ffbb_rencontre_id}`, u }));
+  const pickerEntries: any[] =
+    pickerStatusFilter === 'JOUE' ? playedEntries
+    : pickerStatusFilter === 'A_VENIR' ? upcomingEntries
+    : [...upcomingEntries, ...playedEntries];
 
   return (
     <div className="max-w-3xl mx-auto min-h-screen pb-12 pt-4 px-2">
@@ -1243,7 +1350,7 @@ export default function App() {
                       onBlur={e => fetchFfbbMatchInfo(e.target.value)}
                       className="flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none"
                     />
-                    <button onClick={openFfbbPicker} title="Rechercher un match déjà enregistré" className="shrink-0 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 text-lg">🔍</button>
+                    <button onClick={openFfbbPicker} title="Rechercher un match (joué ou à venir)" className="shrink-0 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 text-lg">🔍</button>
                   </div>
                   {ffbbLookupStatus === 'error' && (
                     <p className="text-[10px] text-rose-400 mt-1 break-words">{ffbbLookupError} (as-tu exécuté sql/ffbb_lookup.sql ?)</p>
@@ -1296,14 +1403,18 @@ export default function App() {
           <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setShowFfbbPicker(false)}>
             <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-md max-h-[85vh] overflow-y-auto space-y-3" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                <h3 className="text-sm font-bold text-amber-400">Matchs déjà enregistrés</h3>
+                <h3 className="text-sm font-bold text-amber-400">Matchs</h3>
                 <button onClick={() => setShowFfbbPicker(false)} className="text-xs text-slate-400 hover:text-white font-bold">Fermer ✖</button>
               </div>
 
-              <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-1 text-[10px] font-black w-fit">
-                <button onClick={() => setPickerTypeFilter('OFFICIEL')} className={`px-2.5 py-1 rounded-full transition ${pickerTypeFilter === 'OFFICIEL' ? 'bg-amber-600 text-white shadow' : 'text-slate-400'}`}>OFFICIEL</button>
-                <button onClick={() => setPickerTypeFilter('AMICAL')} className={`px-2.5 py-1 rounded-full transition ${pickerTypeFilter === 'AMICAL' ? 'bg-blue-600 text-white shadow' : 'text-slate-400'}`}>AMICAL</button>
-                <button onClick={() => setPickerTypeFilter('ALL')} className={`px-2.5 py-1 rounded-full transition ${pickerTypeFilter === 'ALL' ? 'bg-slate-600 text-white shadow' : 'text-slate-400'}`}>TOUS</button>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-1 text-[10px] font-black w-fit">
+                  <button onClick={() => setPickerStatusFilter('JOUE')} className={`px-2.5 py-1 rounded-full transition ${pickerStatusFilter === 'JOUE' ? 'bg-amber-600 text-white shadow' : 'text-slate-400'}`}>JOUÉ</button>
+                  <button onClick={() => setPickerStatusFilter('A_VENIR')} className={`px-2.5 py-1 rounded-full transition ${pickerStatusFilter === 'A_VENIR' ? 'bg-blue-600 text-white shadow' : 'text-slate-400'}`}>À VENIR</button>
+                  <button onClick={() => setPickerStatusFilter('ALL')} className={`px-2.5 py-1 rounded-full transition ${pickerStatusFilter === 'ALL' ? 'bg-slate-600 text-white shadow' : 'text-slate-400'}`}>TOUS</button>
+                </div>
+                {/* Indicateur (non cliquable) : seuls les matchs officiels sont listés. */}
+                <span title="Seuls les matchs officiels sont listés" className="px-2.5 py-1 rounded-full bg-amber-600/20 border border-amber-500/40 text-amber-400 text-[10px] font-black select-none">OFFICIEL</span>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -1317,33 +1428,59 @@ export default function App() {
                 </select>
               </div>
 
+              {upcomingError && pickerStatusFilter !== 'JOUE' && (
+                <p className="text-[10px] text-rose-400 break-words">Calendrier à venir indisponible : {upcomingError} (as-tu exécuté sql/ffbb_upcoming.sql ?)</p>
+              )}
+
               {isLoadingExistingMatches ? (
                 <p className="text-xs text-slate-400 text-center py-4">Chargement...</p>
-              ) : filteredExistingMatches.length === 0 ? (
+              ) : pickerEntries.length === 0 ? (
                 <p className="text-xs text-slate-400 text-center py-4">Aucun match ne correspond à ces filtres.</p>
               ) : (
                 <div className="space-y-2">
-                  {filteredExistingMatches.map(m => (
-                    <div key={m.id} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-amber-500 transition flex items-center space-x-2">
-                      <button onClick={() => handleSelectExistingMatch(m)} className="flex-1 text-left min-w-0">
+                  {pickerEntries.map(entry => entry.kind === 'JOUE' ? (
+                    <div key={entry.key} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-amber-500 transition flex items-center space-x-2">
+                      <button onClick={() => handleSelectExistingMatch(entry.m)} className="flex-1 text-left min-w-0">
                         <div className="flex justify-between items-start gap-2 text-xs">
-                          <span className="font-bold text-white break-words">{m.team_home} vs {m.team_away}</span>
-                          <span className="font-bold text-slate-300 shrink-0">{m.score_home} - {m.score_away}</span>
+                          <span className="font-bold text-white break-words">{entry.m.team_home} vs {entry.m.team_away}</span>
+                          <span className="font-bold text-slate-300 shrink-0">{entry.m.score_home} - {entry.m.score_away}</span>
                         </div>
                         <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1">
                           <span className="truncate">
-                            {m.match_date ? new Date(m.match_date).toLocaleDateString('fr-FR') : 'Date inconnue'}
+                            {entry.m.match_date ? new Date(entry.m.match_date).toLocaleDateString('fr-FR') : 'Date inconnue'}
                             {' · '}
-                            {String(m.ffbb_match_id || '').startsWith('AMICAL-') ? 'Amical' : `ID : ${m.ffbb_match_id}`}
-                            {m.created_at && (
-                              <span className="text-slate-600"> (enregistré le {new Date(m.created_at).toLocaleDateString('fr-FR')} à {new Date(m.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})</span>
+                            {`ID : ${entry.m.ffbb_match_id}`}
+                            {entry.m.created_at && (
+                              <span className="text-slate-600"> (enregistré le {new Date(entry.m.created_at).toLocaleDateString('fr-FR')} à {new Date(entry.m.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})</span>
                             )}
                           </span>
                         </div>
                       </button>
-                      <button onClick={() => setMatchToDelete(m)} title="Supprimer ce match" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 hover:bg-rose-900/60 text-rose-400 transition">🗑️</button>
+                      <button onClick={() => setMatchToDelete(entry.m)} title="Supprimer ce match" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 hover:bg-rose-900/60 text-rose-400 transition">🗑️</button>
                     </div>
-                  ))}
+                  ) : (() => {
+                    const u = entry.u;
+                    const ours = findOurTeamForUpcoming(u)?.name || u.our_team_name || u.category || 'Notre équipe';
+                    const weAreAway = String(u.home_away || '').toLowerCase().startsWith('ext');
+                    const d = u.match_date ? new Date(u.match_date) : null;
+                    const hasTime = !!d && (d.getHours() !== 0 || d.getMinutes() !== 0);
+                    return (
+                      <div key={entry.key} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-blue-500 transition">
+                        <button onClick={() => handleSelectUpcomingMatch(u)} className="w-full text-left min-w-0">
+                          <div className="flex justify-between items-start gap-2 text-xs">
+                            <span className="font-bold text-white break-words">{weAreAway ? `${u.opponent} vs ${ours}` : `${ours} vs ${u.opponent}`}</span>
+                            <span className="shrink-0 text-[9px] font-black px-2 py-0.5 rounded-full bg-blue-600/80 text-white">À VENIR</span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 mt-1 truncate">
+                            {d ? d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Date inconnue'}
+                            {hasTime && d ? ` à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}
+                            {u.numero_journee ? ` · J${u.numero_journee}` : ''}
+                            {` · ID : ${u.ffbb_rencontre_id}`}
+                          </div>
+                        </button>
+                      </div>
+                    );
+                  })())}
                 </div>
               )}
             </div>
@@ -1370,7 +1507,7 @@ export default function App() {
             <div className="bg-slate-900 border border-rose-600/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
               <h3 className="text-sm font-bold text-rose-400">Réinitialiser {getPeriodLabel(game.period, game.config.periodCount)} ?</h3>
               <p className="text-xs text-slate-300">
-                Le chrono repart à <span className="font-bold text-white">{formatTime(game.config.periodMinutes * 60)}</span> et toutes les actions déjà enregistrées pour cette période (temps de jeu inclus) seront effacées de l'historique. Les autres périodes ne sont pas concernées. Cette action est irréversible.
+                Le chrono repart à <span className="font-bold text-white">{formatTime((game.period > game.config.periodCount ? OVERTIME_MINUTES : game.config.periodMinutes) * 60)}</span> et toutes les actions déjà enregistrées pour cette période (temps de jeu inclus) seront effacées de l'historique. Les autres périodes ne sont pas concernées. Cette action est irréversible.
               </p>
               <div className="flex space-x-2">
                 <button onClick={() => setConfirmResetPeriod(false)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
@@ -1402,8 +1539,16 @@ export default function App() {
                     <span className="bg-slate-800 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
                       {getPeriodLabel(game.period, game.config.periodCount)}
                     </span>
-                    <button onClick={() => changePeriod(game.period + 1)} className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30">+</button>
+                    <button
+                      onClick={() => changePeriod(game.period + 1)}
+                      disabled={atLastPeriod && !canStartOvertime}
+                      title={atLastPeriod && !canStartOvertime ? (overtimeAllowed ? "Prolongation possible seulement en cas d'égalité" : 'Pas de prolongation en dessous de U13') : undefined}
+                      className="w-5 h-5 rounded-full bg-slate-800 text-amber-400 font-black text-xs border border-amber-500/30 disabled:opacity-30"
+                    >+</button>
                   </div>
+                  {canStartOvertime && game.scoreHome + game.scoreAway > 0 && (
+                    <p className="text-[9px] font-bold text-amber-400 mt-1">Égalité : + pour OT{game.period - game.config.periodCount + 1}</p>
+                  )}
                   {isEditingClock ? (
                     <input
                       type="text"
@@ -1688,7 +1833,7 @@ export default function App() {
               <h2 className="text-base font-bold text-amber-400">Statistiques Joueuses</h2>
               <div className="flex space-x-1 bg-slate-800 p-1 rounded-xl text-xs font-bold">
                 <button onClick={() => setSelectedPeriodFilter('ALL')} className={`px-2.5 py-1 rounded-lg transition ${selectedPeriodFilter === 'ALL' ? 'bg-amber-500 text-slate-950 font-black' : 'text-slate-400 hover:text-white'}`}>TOUT</button>
-                {Array.from({ length: game.config.periodCount }, (_, i) => i + 1).map(pNum => (
+                {Array.from({ length: lastPeriodShown }, (_, i) => i + 1).map(pNum => (
                   <button key={pNum} onClick={() => setSelectedPeriodFilter(pNum)} className={`px-2.5 py-1 rounded-lg transition ${selectedPeriodFilter === pNum ? 'bg-amber-500 text-slate-950 font-black' : 'text-slate-400 hover:text-white'}`}>
                     {getPeriodLabel(pNum, game.config.periodCount)}
                   </button>
