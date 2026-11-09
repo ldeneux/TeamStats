@@ -1,6 +1,7 @@
 -- Matchs à venir de NOS équipes (calendrier tenu dans l'appli principale), lisibles par l'appli de
 -- suivi de match sans ouvrir la table basketball_matches (RLS) en lecture.
--- À exécuter dans l'éditeur SQL de Supabase (CREATE OR REPLACE : on peut le relancer sans risque).
+-- À exécuter dans l'éditeur SQL de Supabase APRÈS sql/security_01_profiles_and_rls.sql (cette fonction s'appuie sur
+-- is_admin() et team_access : un analyste ne voit que les matchs à venir des catégories de ses équipes autorisées).
 --
 -- IMPORTANT : l'appli principale synchronise TOUTE la poule (les matchs des autres équipes aussi).
 -- us_is_team1 n'est renseigné (true/false) QUE pour les matchs qui nous concernent : sans ce filtre,
@@ -54,6 +55,20 @@ AS $$
       AND m.match_date IS NOT NULL
       AND m.match_date >= now() - interval '1 day'
       AND COALESCE(CASE WHEN m.us_is_team1 THEN m.team2_name ELSE m.team1_name END, '') <> ''
+      -- Admin : tout. Analyst : seulement les catégories (ex. U15F) présentes dans le nom de ses équipes autorisées.
+      AND (
+        multisports.is_admin()
+        OR (
+          ps.category IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM multisports.team_access a
+            JOIN multisports.stats_teams t ON t.id = a.team_id
+            WHERE a.user_id = auth.uid()
+              AND upper(t.name) LIKE '%' || upper(ps.category) || '%'
+          )
+        )
+      )
     ORDER BY m.ffbb_rencontre_id, m.match_date
   ) t
   ORDER BY t.match_date
@@ -61,6 +76,7 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION multisports.list_upcoming_ffbb_matches() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION multisports.list_upcoming_ffbb_matches() TO anon, authenticated;
+REVOKE EXECUTE ON FUNCTION multisports.list_upcoming_ffbb_matches() FROM anon;
+GRANT EXECUTE ON FUNCTION multisports.list_upcoming_ffbb_matches() TO authenticated;
 
 NOTIFY pgrst, 'reload schema';

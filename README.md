@@ -14,9 +14,22 @@ Renseigner dans `.env.local` (en local) ou dans les Environment Variables du pro
 - NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 ## Scripts SQL (à exécuter dans l'éditeur SQL de Supabase)
-- `sql/stats_player_period_stats.sql` : statistiques par joueuse et par période (y compris les prolongations).
-- `sql/ffbb_lookup.sql` : recherche d'un match par ID FFBB.
-- `sql/ffbb_upcoming.sql` : liste des matchs à venir (calendrier de l'appli principale), utilisée par le filtre « À venir ».
+Ordre conseillé pour une base à jour :
+1. `sql/stats_player_period_stats.sql` : statistiques par joueuse et par période.
+2. `sql/security_01_profiles_and_rls.sql` : profils (admin / analyst), accès par équipe, règles RLS. **À lire avant d'exécuter.**
+3. `sql/ffbb_lookup.sql` : recherche d'un match par ID FFBB (comptes connectés uniquement).
+4. `sql/ffbb_upcoming.sql` : matchs à venir de NOS équipes (filtrés selon les équipes autorisées).
+5. `sql/stats_extra_columns.sql` : colonnes des nouvelles statistiques (interceptions, balles perdues, contres, contres subis).
+6. `sql/security_02_lock_main_app_OPTIONAL.sql` : ferme l'appli principale aux comptes sans profil admin (voir ci-dessous).
+
+## Connexion et profils
+- L'appli demande une connexion (Supabase Auth, e-mail + mot de passe) avant tout affichage. Les comptes se créent dans
+  Supabase > Authentication > Users > Add user. Pensez à **désactiver l'inscription libre** (Authentication > Sign In / Providers).
+- `multisports.app_profiles` donne un profil à un compte : `admin` (toutes les équipes) ou `analyst`.
+- `multisports.team_access` liste les équipes ouvertes à un compte. Un analyst ne voit que ces équipes, peut tout faire dessus
+  (joueuses, matchs, statistiques) sauf créer ou supprimer une équipe. Un compte sans profil n'a accès à rien.
+- Les règles sont appliquées par la base (RLS) : une simple page de login ne protégerait pas des appels directs à l'API.
+- Le compte Supabase est partagé avec l'appli principale : voir `security_02_lock_main_app_OPTIONAL.sql`.
 
 ## Prolongations (U13 et +)
 En plus de Q1…Q4, un match d'une équipe U13 ou plus (ou sans « U » dans le nom : senior) peut passer à une

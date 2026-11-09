@@ -77,7 +77,10 @@ const sameCategory = (teamName: string, labels: (string | null | undefined)[]) =
 
 const sortPlayersAlpha = (players: Player[]) => [...players].sort((a, b) => a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }));
 
-export default function App() {
+type Role = 'admin' | 'analyst';
+
+function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role: Role; onSignOut: () => void }) {
+  const isAdmin = role === 'admin';
   const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS'>('MATCH');
   const [selectedPeriodFilter, setSelectedPeriodFilter] = useState<number | 'ALL'>('ALL');
 
@@ -438,6 +441,20 @@ export default function App() {
     const check = (res: { error: any }, step: string) => {
       if (res.error) throw new Error(`${step} : ${res.error.message}`);
     };
+    // Les colonnes des nouvelles statistiques viennent de sql/stats_extra_columns.sql : si ce script n'a pas
+    // encore été exécuté, on enregistre quand même tout le reste (elles se recalculent à partir de l'historique).
+    const EXTRA_STAT_KEYS = ['steals', 'turnovers', 'blocks', 'blocks_against'];
+    const insertStatsRows = async (table: string, rows: any[], step: string) => {
+      let res = await supabase.from(table).insert(rows);
+      if (res.error && /steals|turnovers|blocks|schema cache/i.test(res.error.message)) {
+        res = await supabase.from(table).insert(rows.map(r => {
+          const copy = { ...r };
+          EXTRA_STAT_KEYS.forEach(k => delete copy[k]);
+          return copy;
+        }));
+      }
+      check(res, step);
+    };
     try {
       let ffbbId = matchConfig.ffbbMatchId.trim();
       if (!ffbbId) {
@@ -516,7 +533,7 @@ export default function App() {
 
       check(await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId), 'stats_player_game_stats (suppression)');
       if (game.matchRoster.length > 0) {
-        check(await supabase.from('stats_player_game_stats').insert(
+        await insertStatsRows('stats_player_game_stats',
           game.matchRoster.map(p => {
             const st = getPlayerStats(p.id, 'ALL');
             return {
@@ -534,12 +551,17 @@ export default function App() {
               reb_off: st.rebOff,
               reb_def: st.rebDef,
               assists: st.assists,
+              steals: st.steals,
+              turnovers: st.turnovers,
+              blocks: st.blocks,
+              blocks_against: st.blocksAgainst,
               fouls: st.fouls,
               fouls_drawn: st.foulsDrawn,
               playing_time_seconds: st.totalSecs
             };
-          })
-        ), 'stats_player_game_stats (totaux)');
+          }),
+          'stats_player_game_stats (totaux)'
+        );
       }
 
       // Statistiques par joueuse ET par période (table dédiée stats_player_period_stats)
@@ -570,6 +592,10 @@ export default function App() {
             reb_off: st.rebOff,
             reb_def: st.rebDef,
             assists: st.assists,
+            steals: st.steals,
+            turnovers: st.turnovers,
+            blocks: st.blocks,
+            blocks_against: st.blocksAgainst,
             fouls: st.fouls,
             fouls_drawn: st.foulsDrawn
           });
@@ -577,7 +603,7 @@ export default function App() {
       });
       check(await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId), 'stats_player_period_stats (suppression)');
       if (periodRows.length > 0) {
-        check(await supabase.from('stats_player_period_stats').insert(periodRows), 'stats_player_period_stats (insertion)');
+        await insertStatsRows('stats_player_period_stats', periodRows, 'stats_player_period_stats (insertion)');
       }
 
       setSaveStatus('saved');
@@ -597,6 +623,12 @@ export default function App() {
 
     try {
       let targetTeamId = selectedTeamId;
+
+      if (!targetTeamId && !isAdmin) {
+        // Seul l'admin crée des équipes (l'analyste modifie celles qui lui sont ouvertes).
+        setTeamSaveStatus('error');
+        return;
+      }
 
       if (targetTeamId) {
         // UPDATE ÉQUIPE
@@ -788,6 +820,8 @@ export default function App() {
   const getFoulsCount = (playerId: string) => {
     const playerFouls = game.events.filter(e => e.playerId === playerId && e.actionType.includes('FAUTE') && !e.actionType.includes('SUBIE'));
     if (playerFouls.some(e => e.actionType.includes('DISQUALIFIANTE'))) return 5;
+    // Règle FIBA : deux fautes antisportives = disqualification.
+    if (playerFouls.filter(e => e.actionType.includes('ANTISPORTIVE')).length >= 2) return 5;
     return playerFouls.length;
   };
 
@@ -832,7 +866,8 @@ export default function App() {
     let updatedOnCourt = [...game.onCourtPlayerIds];
     let alertFoul = false;
 
-    if (action.includes('DISQUALIFIANTE')) {
+    const previousUnsportsmanlike = game.events.filter(e => e.playerId === playerId && e.actionType.includes('ANTISPORTIVE')).length;
+    if (action.includes('DISQUALIFIANTE') || (action.includes('ANTISPORTIVE') && previousUnsportsmanlike + 1 >= 2)) {
       updatedOnCourt = updatedOnCourt.filter(id => id !== playerId);
       alertFoul = true;
     } else if (action.includes('FAUTE') && !action.includes('SUBIE')) {
@@ -976,9 +1011,15 @@ export default function App() {
 
     let points = 0, fouls = 0, foulsDrawn = 0, ftMade = 0, ftAttempted = 0, pts2Made = 0, pts2Att = 0, pts3Made = 0, pts3Att = 0;
     let rebOff = 0, rebDef = 0, assists = 0;
+    let steals = 0, turnovers = 0, blocks = 0, blocksAgainst = 0;
 
     eventsToAnalyze.forEach(ev => {
       const act = ev.actionType;
+      // Comparaisons exactes : 'CONTRE' est contenu dans 'CONTRE SUBI'.
+      if (act === 'INTERCEPTION') steals++;
+      else if (act === 'PERTE DE BALLE') turnovers++;
+      else if (act === 'CONTRE') blocks++;
+      else if (act === 'CONTRE SUBI') blocksAgainst++;
       if (act.includes('FAUTE SUBIE')) foulsDrawn++;
       else if (act.includes('FAUTE')) fouls++;
       if (act.includes('PASSE DÉCISIVE')) assists++;
@@ -1012,14 +1053,14 @@ export default function App() {
       }
     }
 
-    // Évaluation (formule FIBA) = (points + rebonds + passes décisives + fautes subies)
-    //                            - (tirs manqués + lancers francs manqués + fautes commises).
-    // Interceptions, contres et balles perdues ne sont pas saisis dans l'application : ils ne comptent pas ici.
+    // Évaluation (formule FIBA) = (points + rebonds + passes décisives + interceptions + contres + fautes subies)
+    //                            - (tirs manqués + lancers francs manqués + balles perdues + fautes commises + contres subis).
     const missedShots = (pts2Att - pts2Made) + (pts3Att - pts3Made);
     const missedFt = ftAttempted - ftMade;
-    const evaluation = points + rebOff + rebDef + assists + foulsDrawn - missedShots - missedFt - fouls;
+    const evaluation = points + rebOff + rebDef + assists + steals + blocks + foulsDrawn
+      - missedShots - missedFt - turnovers - fouls - blocksAgainst;
 
-    return { points, totalSecs, fouls, foulsDrawn, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists, evaluation };
+    return { points, totalSecs, fouls, foulsDrawn, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists, steals, turnovers, blocks, blocksAgainst, evaluation };
   };
 
   const handleAddOrUpdatePlayer = () => {
@@ -1298,25 +1339,27 @@ export default function App() {
       doc.text(best('Évaluation', s => s.evaluation), cardX + 6, 82.5);
 
       // ---- Tableau principal
-      const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'FT', 'FS', 'ÉVAL', 'Temps']];
+      const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'INT', 'BP', 'CT', 'CTS', 'FT', 'FS', 'ÉVAL', 'Temps']];
       const rowOf = (p: Player, st: ReturnType<typeof getPlayerStats>) => [
         `#${p.number}`, p.name, String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
         pct(st.pts2Made + st.pts3Made, st.pts2Att + st.pts3Att), String(st.rebOff), String(st.rebDef), String(st.rebOff + st.rebDef),
-        String(st.assists), String(st.fouls), String(st.foulsDrawn), String(st.evaluation), mmss(st.totalSecs)
+        String(st.assists), String(st.steals), String(st.turnovers), String(st.blocks), String(st.blocksAgainst),
+        String(st.fouls), String(st.foulsDrawn), String(st.evaluation), mmss(st.totalSecs)
       ];
       const sum = (f: (s: ReturnType<typeof getPlayerStats>) => number) => withStats.reduce((t, x) => t + f(x.st), 0);
       const totals = [
         '', 'ÉQUIPE', String(sum(s => s.points)), `${sum(s => s.pts2Made)}/${sum(s => s.pts2Att)}`, `${sum(s => s.pts3Made)}/${sum(s => s.pts3Att)}`,
         `${sum(s => s.ftMade)}/${sum(s => s.ftAttempted)}`, pct(sum(s => s.pts2Made + s.pts3Made), sum(s => s.pts2Att + s.pts3Att)),
         String(sum(s => s.rebOff)), String(sum(s => s.rebDef)), String(sum(s => s.rebOff + s.rebDef)), String(sum(s => s.assists)),
+        String(sum(s => s.steals)), String(sum(s => s.turnovers)), String(sum(s => s.blocks)), String(sum(s => s.blocksAgainst)),
         String(sum(s => s.fouls)), String(sum(s => s.foulsDrawn)), String(sum(s => s.evaluation)), mmss(sum(s => s.totalSecs))
       ];
       const tableStyles = {
-        styles: { font: 'helvetica', fontSize: 10, cellPadding: withStats.length <= 9 ? 3.3 : 2.5, textColor: TEXT, halign: 'center' as const, lineColor: [226, 232, 240] },
+        styles: { font: 'helvetica', fontSize: 9, cellPadding: { top: withStats.length <= 9 ? 3.3 : 2.5, bottom: withStats.length <= 9 ? 3.3 : 2.5, left: 1.2, right: 1.2 }, textColor: TEXT, halign: 'center' as const, lineColor: [226, 232, 240] },
         headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold' as const },
         alternateRowStyles: { fillColor: LIGHT },
         footStyles: { fillColor: [254, 243, 199], textColor: NAVY, fontStyle: 'bold' as const },
-        columnStyles: { 0: { fontStyle: 'bold' as const, textColor: AMBER_D, cellWidth: 14 }, 1: { halign: 'left' as const, fontStyle: 'bold' as const, cellWidth: 56 }, 2: { fontStyle: 'bold' as const }, 13: { fontStyle: 'bold' as const, textColor: [5, 150, 105] as [number, number, number] } },
+        columnStyles: { 0: { fontStyle: 'bold' as const, textColor: AMBER_D, cellWidth: 14 }, 1: { halign: 'left' as const, fontStyle: 'bold' as const, cellWidth: 46 }, 2: { fontStyle: 'bold' as const }, 17: { fontStyle: 'bold' as const, textColor: [5, 150, 105] as [number, number, number] } },
         theme: 'grid' as const
       };
       autoTable(doc, {
@@ -1354,6 +1397,7 @@ export default function App() {
               '', 'ÉQUIPE', String(tot(s => s.points)), `${tot(s => s.pts2Made)}/${tot(s => s.pts2Att)}`, `${tot(s => s.pts3Made)}/${tot(s => s.pts3Att)}`,
               `${tot(s => s.ftMade)}/${tot(s => s.ftAttempted)}`, pct(tot(s => s.pts2Made + s.pts3Made), tot(s => s.pts2Att + s.pts3Att)),
               String(tot(s => s.rebOff)), String(tot(s => s.rebDef)), String(tot(s => s.rebOff + s.rebDef)), String(tot(s => s.assists)),
+              String(tot(s => s.steals)), String(tot(s => s.turnovers)), String(tot(s => s.blocks)), String(tot(s => s.blocksAgainst)),
               String(tot(s => s.fouls)), String(tot(s => s.foulsDrawn)), String(tot(s => s.evaluation)), mmss(tot(s => s.totalSecs))
             ]],
             showFoot: 'lastPage'
@@ -1366,7 +1410,7 @@ export default function App() {
       doc.setTextColor(...MUTED);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8);
-      const legend = 'PTS : points | 2PTS / 3PTS / LF : réussis sur tentés | TIR % : réussite aux tirs à 2 et 3 points | REB O / D : rebonds offensifs / défensifs | AST : passes décisives | FT : fautes commises | FS : fautes subies | ÉVAL : évaluation = (points + rebonds + passes décisives + fautes subies) - (tirs et lancers francs manqués + fautes commises), sans interceptions, contres ni balles perdues (non saisis) | Temps : temps de jeu';
+      const legend = 'PTS : points | 2PTS / 3PTS / LF : réussis sur tentés | TIR % : réussite aux tirs à 2 et 3 points | REB O / D : rebonds offensifs / défensifs | AST : passes décisives | INT : interceptions | BP : balles perdues | CT : contres | CTS : contres subis | FT : fautes commises (techniques, antisportives et disqualifiantes comprises) | FS : fautes subies | ÉVAL : évaluation = (points + rebonds + passes décisives + interceptions + contres + fautes subies) - (tirs et lancers francs manqués + balles perdues + fautes commises + contres subis) | Temps : temps de jeu';
       doc.text(doc.splitTextToSize(legend, pageW - 2 * M), M, Math.min(lastY + 8, pageH - 22));
 
       const pages: number = doc.getNumberOfPages();
@@ -1436,6 +1480,13 @@ export default function App() {
         <div className="flex justify-between items-center px-4 py-2.5">
           <div className="flex items-center space-x-2.5">
             <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Olympic Sathonay</span>
+            <span title={userEmail} className={`px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide ${isAdmin ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' : 'border-blue-400/50 text-blue-300 bg-blue-500/10'}`}>{role}</span>
+            <button
+              onClick={onSignOut}
+              title={`Se déconnecter (${userEmail})`}
+              aria-label="Se déconnecter"
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 text-xs transition"
+            >⏻</button>
           </div>
           
           <nav className="flex space-x-1.5 bg-slate-800 p-1 rounded-xl text-base font-semibold border border-slate-700/60">
@@ -1504,7 +1555,7 @@ export default function App() {
                 <div className="flex-1">
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Choisir une équipe</label>
                   <select value={selectedTeamId} onChange={e => handleLoadTeamFromSelect(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none">
-                    <option value="">-- Créer une nouvelle équipe --</option>
+                    <option value="">{isAdmin ? '-- Créer une nouvelle équipe --' : '-- Choisir une équipe --'}</option>
                     {savedTeams.map(t => (
                       <option key={t.id} value={t.id}>{t.name} ({t.roster.length} joueuses)</option>
                     ))}
@@ -1513,7 +1564,7 @@ export default function App() {
                 <button onClick={() => setIsEditingTeamForm(v => !v)} title="Créer / modifier l'effectif de l'équipe" className={`shrink-0 w-10 h-10 flex items-center justify-center rounded-xl border transition ${isEditingTeamForm ? 'bg-amber-600 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'}`}>✏️</button>
               </div>
 
-              {(isEditingTeamForm || !selectedTeamId) && (
+              {(isEditingTeamForm || !selectedTeamId) && (isAdmin || !!selectedTeamId) && (
                 <div className="space-y-3">
                   <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 space-y-3">
                     <p className="text-xs font-bold text-slate-300">{editingPlayerId ? 'Modifier la joueuse sélectionnée' : 'Ajouter une joueuse dans l\'effectif actuel'}</p>
@@ -2052,10 +2103,18 @@ export default function App() {
                   <button onClick={() => recordEvent('PASSE DÉCISIVE', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🎯 Assist</button>
                 </div>
 
-                <div className="grid grid-cols-4 gap-2 border-t border-slate-800 pt-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <button onClick={() => recordEvent('INTERCEPTION', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">✋ Interception</button>
+                  <button onClick={() => recordEvent('PERTE DE BALLE', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">💨 Perte de balles</button>
+                  <button onClick={() => recordEvent('CONTRE', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🚫 Contre</button>
+                  <button onClick={() => recordEvent('CONTRE SUBI', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🧱 Contre subi</button>
+                </div>
+
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 border-t border-slate-800 pt-2">
                   <button onClick={() => recordEvent('FAUTE SUBIE', panelPlayer.id)} className="bg-blue-950/60 hover:bg-blue-900 border border-blue-800/80 text-blue-200 text-xs font-bold py-2 rounded-xl">🛡️ Faute Subie</button>
                   <button onClick={() => recordEvent('FAUTE PERSONNELLE', panelPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Perso</button>
                   <button onClick={() => recordEvent('FAUTE TECHNIQUE', panelPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Tech.</button>
+                  <button onClick={() => recordEvent('FAUTE ANTISPORTIVE', panelPlayer.id)} className="bg-rose-950/80 hover:bg-rose-900 border border-rose-700 text-rose-100 text-xs font-bold py-2 rounded-xl">⚠️ Faute Antisp.</button>
                   <button onClick={() => recordEvent('FAUTE DISQUALIFIANTE', panelPlayer.id)} className="bg-rose-900 hover:bg-rose-800 text-white text-xs font-bold py-2 rounded-xl">🟥 Disqual.</button>
                 </div>
               </div>
@@ -2167,9 +2226,13 @@ export default function App() {
                     <th className="py-2 px-1 text-center">REB O</th>
                     <th className="py-2 px-1 text-center">REB D</th>
                     <th className="py-2 px-1 text-center">AST</th>
+                    <th className="py-2 px-1 text-center" title="Interceptions">INT</th>
+                    <th className="py-2 px-1 text-center" title="Pertes de balle">BP</th>
+                    <th className="py-2 px-1 text-center" title="Contres">CT</th>
+                    <th className="py-2 px-1 text-center" title="Contres subis">CTS</th>
                     <th className="py-2 px-1 text-center">FT</th>
                     <th className="py-2 px-1 text-center text-blue-400">FS</th>
-                    <th className="py-2 px-1 text-center text-emerald-400" title="Évaluation = (points + rebonds + passes + fautes subies) - (tirs et lancers francs manqués + fautes commises)">ÉVAL</th>
+                    <th className="py-2 px-1 text-center text-emerald-400" title="Évaluation = (points + rebonds + passes + interceptions + contres + fautes subies) - (tirs et lancers francs manqués + balles perdues + fautes commises + contres subis)">ÉVAL</th>
                     <th className="py-2 px-1 text-right">Tps</th>
                   </tr>
                 </thead>
@@ -2187,6 +2250,10 @@ export default function App() {
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.rebOff}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.rebDef}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.assists}</td>
+                        <td className="py-2.5 px-1 text-center text-slate-300">{st.steals}</td>
+                        <td className="py-2.5 px-1 text-center text-slate-300">{st.turnovers}</td>
+                        <td className="py-2.5 px-1 text-center text-slate-300">{st.blocks}</td>
+                        <td className="py-2.5 px-1 text-center text-slate-300">{st.blocksAgainst}</td>
                         <td className="py-2.5 px-1 text-center text-rose-400 font-bold">{st.fouls}</td>
                         <td className="py-2.5 px-1 text-center text-blue-400 font-bold">{st.foulsDrawn}</td>
                         <td className={`py-2.5 px-1 text-center font-black ${st.evaluation < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{st.evaluation}</td>
@@ -2232,4 +2299,163 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// CONNEXION : page affichée avant toute l'application.
+// Profils : "admin" (toutes les équipes) et "analyst" (équipes de team_access uniquement).
+// La vraie protection est dans Supabase (RLS, voir sql/security_01_profiles_and_rls.sql) :
+// cette page ne fait que demander un compte, la base refuse tout à qui n'est pas connecté.
+// ---------------------------------------------------------------------------
+function LoginScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    setError('');
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (signInError) {
+      setError(/invalid login credentials/i.test(signInError.message) ? 'E-mail ou mot de passe incorrect.' : signInError.message);
+      setSubmitting(false);
+    }
+    // En cas de succès, la passerelle détecte la session et affiche l'application.
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm bg-slate-900/90 backdrop-blur-md border border-white/10 rounded-3xl shadow-2xl p-6 space-y-4 text-white">
+        <div className="flex flex-col items-center space-y-2">
+          <img src="/logo-stats.png" alt="Statistiques basket" className="w-24 h-24 rounded-2xl object-cover" />
+          <h1 className="font-extrabold tracking-wider text-amber-500 text-lg uppercase">Olympic Sathonay</h1>
+          <p className="text-xs text-slate-400">Suivi de match et statistiques - connexion</p>
+        </div>
+
+        <div>
+          <label htmlFor="login-email" className="block text-xs font-semibold text-slate-400 mb-1">Adresse e-mail</label>
+          <input
+            id="login-email"
+            type="email"
+            autoComplete="email"
+            inputMode="email"
+            required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="login-password" className="block text-xs font-semibold text-slate-400 mb-1">Mot de passe</label>
+          <div className="flex space-x-2">
+            <input
+              id="login-password"
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded-xl p-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+            />
+            <button type="button" onClick={() => setShowPassword(v => !v)} className="shrink-0 px-3 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-slate-300 hover:text-white">
+              {showPassword ? 'Masquer' : 'Afficher'}
+            </button>
+          </div>
+        </div>
+
+        {error && <p className="text-xs text-rose-400 break-words">{error}</p>}
+
+        <button type="submit" disabled={submitting} className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-60 text-white font-bold py-3 rounded-xl shadow-lg transition">
+          {submitting ? 'Connexion...' : 'Se connecter'}
+        </button>
+        <p className="text-[10px] text-slate-500 text-center">Les comptes sont créés par l'administrateur.</p>
+      </form>
+    </div>
+  );
+}
+
+function CenteredMessage({ title, children, onSignOut }: { title: string; children: React.ReactNode; onSignOut?: () => void }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="w-full max-w-sm bg-slate-900/90 border border-white/10 rounded-3xl shadow-2xl p-6 space-y-3 text-white text-center">
+        <h1 className="font-bold text-amber-400">{title}</h1>
+        <div className="text-xs text-slate-300 break-words">{children}</div>
+        {onSignOut && (
+          <button onClick={onSignOut} className="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-sm font-bold py-2.5 rounded-xl transition">Se déconnecter</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState<any>(null);
+  const [role, setRole] = useState<Role | null>(null);
+  const [status, setStatus] = useState<'loading' | 'signed_out' | 'no_profile' | 'error' | 'ready'>('loading');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    let active = true;
+
+    // Lit le profil (admin / analyst) du compte connecté ; sans profil, pas d'accès.
+    const resolveSession = async (s: any) => {
+      if (!active) return;
+      if (!s) {
+        setSession(null);
+        setRole(null);
+        setStatus('signed_out');
+        return;
+      }
+      setSession(s);
+      const { data, error } = await supabase.from('app_profiles').select('role').eq('user_id', s.user.id).maybeSingle();
+      if (!active) return;
+      if (error) {
+        setErrorMessage(error.message);
+        setStatus('error');
+      } else if (data?.role === 'admin' || data?.role === 'analyst') {
+        setRole(data.role);
+        setStatus('ready');
+      } else {
+        setRole(null);
+        setStatus('no_profile');
+      }
+    };
+
+    supabase.auth.getSession().then(({ data }: any) => resolveSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event: any, s: any) => {
+      // Reporté d'un tick : on n'appelle pas Supabase directement depuis ce rappel (risque de blocage).
+      setTimeout(() => { void resolveSession(s); }, 0);
+    });
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+  };
+
+  if (status === 'loading') return <CenteredMessage title="Chargement...">Vérification de la connexion.</CenteredMessage>;
+  if (status === 'signed_out' || !session) return <LoginScreen />;
+  if (status === 'no_profile') {
+    return (
+      <CenteredMessage title="Accès non autorisé" onSignOut={signOut}>
+        Votre compte ({session.user.email}) n'a pas encore de profil. Demandez à l'administrateur de vous donner accès.
+      </CenteredMessage>
+    );
+  }
+  if (status === 'error' || !role) {
+    return (
+      <CenteredMessage title="Connexion impossible" onSignOut={signOut}>
+        Le profil n'a pas pu être lu : {errorMessage || 'erreur inconnue'}. Vérifiez que sql/security_01_profiles_and_rls.sql a été exécuté.
+      </CenteredMessage>
+    );
+  }
+  return <TeamStatsApp key={session.user.id} userEmail={session.user.email || ''} role={role} onSignOut={signOut} />;
 }

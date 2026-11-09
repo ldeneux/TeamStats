@@ -16,6 +16,7 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION multisports.lookup_ffbb_match(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION multisports.lookup_ffbb_match(text) TO anon, authenticated;
+REVOKE EXECUTE ON FUNCTION multisports.lookup_ffbb_match(text) FROM anon;
+GRANT EXECUTE ON FUNCTION multisports.lookup_ffbb_match(text) TO authenticated;
 
 NOTIFY pgrst, 'reload schema';
