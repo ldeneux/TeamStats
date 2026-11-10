@@ -1,0 +1,16 @@
+{
+  "name": "Olympic Sathonay - Statistiques basket",
+  "short_name": "Stats Basket",
+  "description": "Suivi de match en direct et statistiques des joueuses, utilisable sans réseau.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#020617",
+  "theme_color": "#0b1b3a",
+  "lang": "fr",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

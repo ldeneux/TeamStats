@@ -31,6 +31,18 @@ Ordre conseillé pour une base à jour :
 - Les règles sont appliquées par la base (RLS) : une simple page de login ne protégerait pas des appels directs à l'API.
 - Le compte Supabase est partagé avec l'appli principale : voir `security_02_lock_main_app_OPTIONAL.sql`.
 
+## Mode hors ligne (salles sans réseau)
+- Préparer avec du réseau : équipes, joueuses, matchs à venir et clubs sont synchronisés à chaque ouverture et avec le bouton
+  « Synchroniser » (copie locale par compte). Le match en préparation et en cours est gardé en continu sur l'appareil (brouillon
+  local, repris automatiquement après une fermeture). Bouton « Nouveau » (Configuration > Match) pour repartir de zéro.
+- Enregistrer sans réseau : la disquette met le match de côté sur l'appareil (file d'envoi). L'envoi est automatique au retour du
+  réseau (événement « online », puis toutes les 30 s), ou à la demande en touchant la pastille d'état. Chaque envoi réécrit
+  tout le match : il est sans risque de le rejouer.
+- Ouverture sans réseau : `public/sw.js` (service worker) garde l'application ; `public/manifest.webmanifest` permet de l'installer
+  sur l'écran d'accueil. Ouvrir l'appli une fois avec du réseau après chaque mise à jour. Le service worker n'est actif qu'en production.
+- Le profil (admin / analyst) est mémorisé sur l'appareil pour pouvoir entrer sans réseau ; il est relu à chaque ouverture avec du réseau.
+- Nécessite du réseau : créer ou modifier une équipe, chercher un match par ID FFBB, rouvrir un match déjà enregistré.
+
 ## Prolongations (U13 et +)
 En plus de Q1…Q4, un match d'une équipe U13 ou plus (ou sans « U » dans le nom : senior) peut passer à une
 prolongation OT1 de 5 minutes, puis OT2, etc., uniquement en cas d'égalité à la fin de la période (bouton « + »

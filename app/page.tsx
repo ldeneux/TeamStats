@@ -1,14 +1,24 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // Configuration Supabase
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://votre-projet.supabase.co';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'votre-cle-anon';
 
+// Chaque requête réseau est abandonnée au bout de 20 s : avec un réseau faible dans une salle, mieux vaut
+// échouer vite (et basculer sur l'enregistrement local) que rester bloqué sans fin.
+const fetchWithTimeout: typeof fetch = (input, init) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  if (init?.signal) init.signal.addEventListener('abort', () => controller.abort());
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+};
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  db: { schema: 'multisports' }
+  db: { schema: 'multisports' },
+  global: { fetch: fetchWithTimeout }
 });
 
 export interface Player { id: string; number: number; name: string; }
@@ -77,9 +87,311 @@ const sameCategory = (teamName: string, labels: (string | null | undefined)[]) =
 
 const sortPlayersAlpha = (players: Player[]) => [...players].sort((a, b) => a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }));
 
+
+// ---------------------------------------------------------------------------
+// MODE HORS LIGNE : stockage local, file d'envoi, enregistrement d'un match complet
+// ---------------------------------------------------------------------------
+type PlayingTimeMap = { [playerId: string]: { [period: number]: number } };
+
+const periodLabelOf = (pNum: number, totalPeriods: number) => {
+  if (pNum > totalPeriods) return `OT${pNum - totalPeriods}`;
+  return totalPeriods === 4 ? `Q${pNum}` : `P${pNum}`;
+};
+const formatClock = (secs: number) => {
+  const m = Math.floor(secs / 60);
+  const r = secs % 60;
+  return `${m.toString().padStart(2, '0')}:${r.toString().padStart(2, '0')}`;
+};
+
+const LS_OFFLINE_USER = 'teamstats:offline-user:v1';
+const LS_PENDING = 'teamstats:pending:v1';
+const lsKey = (base: string, userId: string) => `teamstats:${base}:v1:${userId}`;
+const lsRead = <T,>(key: string, fallback: T): T => {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem(key) : null;
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const lsWrite = (key: string, value: unknown) => {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false; // stockage plein ou indisponible
+  }
+};
+const lsRemove = (key: string) => {
+  try { window.localStorage.removeItem(key); } catch { /* rien */ }
+};
+
+// Erreur due au réseau (hors ligne, coupure, délai dépassé) : on bascule alors sur l'enregistrement local.
+const isNetworkError = (err: any) => {
+  const msg = String(err?.message ?? err ?? '');
+  return (typeof navigator !== 'undefined' && navigator.onLine === false)
+    || err?.name === 'AbortError'
+    || /failed to fetch|networkerror|network request failed|load failed|fetch failed|abort|timed? ?out|err_internet|err_network/i.test(msg);
+};
+
+// Tout ce qu'il faut pour (ré)écrire un match en base, figé au moment où on appuie sur Enregistrer.
+interface MatchSnapshot {
+  ffbbId: string;
+  matchConfig: GameConfig;
+  homeAway: 'DOMICILE' | 'EXTERIEUR';
+  game: GameState;
+  playingTime: PlayingTimeMap;
+  startingFiveByPeriod: { [period: number]: string[] };
+  savedAt: number;
+}
+interface PendingItem { userId: string; snap: MatchSnapshot; lastError?: string; }
+
+const readPending = (): PendingItem[] => lsRead<PendingItem[]>(LS_PENDING, []);
+const writePending = (items: PendingItem[]) => lsWrite(LS_PENDING, items);
+// Un seul envoi en attente par match : chaque enregistrement réécrit tout le match, le plus récent suffit.
+const enqueuePending = (userId: string, snap: MatchSnapshot) => {
+  const others = readPending().filter(i => !(i.userId === userId && i.snap.ffbbId === snap.ffbbId));
+  return writePending([...others, { userId, snap }]);
+};
+const removePending = (userId: string, ffbbId: string, savedAt?: number) => {
+  writePending(readPending().filter(i => !(i.userId === userId && i.snap.ffbbId === ffbbId && (savedAt === undefined || i.snap.savedAt === savedAt))));
+};
+
+const fingerprintOf = (g: GameState) => [g.events.length, g.scoreHome, g.scoreAway, g.period, Object.keys(g.scoreByPeriod).length].join('|');
+
+function computePlayerStats(gameEvents: GameEvent[], playingTime: PlayingTimeMap, playerId: string, periodFilter: number | 'ALL') {
+    const eventsToAnalyze = gameEvents.filter(e => {
+      const matchPlayer = e.playerId === playerId;
+      const matchPeriod = periodFilter === 'ALL' ? true : e.period === periodFilter;
+      return matchPlayer && matchPeriod;
+    });
+
+    let points = 0, fouls = 0, foulsDrawn = 0, ftMade = 0, ftAttempted = 0, pts2Made = 0, pts2Att = 0, pts3Made = 0, pts3Att = 0;
+    let rebOff = 0, rebDef = 0, assists = 0;
+    let steals = 0, turnovers = 0, blocks = 0, blocksAgainst = 0;
+
+    eventsToAnalyze.forEach(ev => {
+      const act = ev.actionType;
+      // Comparaisons exactes : 'CONTRE' est contenu dans 'CONTRE SUBI'.
+      if (act === 'INTERCEPTION') steals++;
+      else if (act === 'PERTE DE BALLE') turnovers++;
+      else if (act === 'CONTRE') blocks++;
+      else if (act === 'CONTRE SUBI') blocksAgainst++;
+      if (act.includes('FAUTE SUBIE')) foulsDrawn++;
+      else if (act.includes('FAUTE')) fouls++;
+      if (act.includes('PASSE DÉCISIVE')) assists++;
+      if (act.includes('REBOND OFFENSIF')) rebOff++;
+      if (act.includes('REBOND DÉFENSIF')) rebDef++;
+      if (act.includes('TIR 2PTS')) {
+        pts2Att++;
+        if (!act.includes('Manqué')) { pts2Made++; points += 2; }
+      }
+      if (act.includes('TIR 3PTS')) {
+        pts3Att++;
+        if (!act.includes('Manqué')) { pts3Made++; points += 3; }
+      }
+      if (act.includes('LANCERS FRANCS')) {
+        const match = act.match(/\((\d+)\/(\d+)\)/);
+        if (match) {
+          const made = parseInt(match[1], 10);
+          ftMade += made;
+          ftAttempted += parseInt(match[2], 10);
+          points += made;
+        }
+      }
+    });
+
+    let totalSecs = 0;
+    if (playingTime[playerId]) {
+      if (periodFilter === 'ALL') {
+        totalSecs = Object.values(playingTime[playerId]).reduce((a, b) => a + b, 0);
+      } else {
+        totalSecs = playingTime[playerId][periodFilter] || 0;
+      }
+    }
+
+    // Évaluation (formule FIBA) = (points + rebonds + passes décisives + interceptions + contres + fautes subies)
+    //                            - (tirs manqués + lancers francs manqués + balles perdues + fautes commises + contres subis).
+    const missedShots = (pts2Att - pts2Made) + (pts3Att - pts3Made);
+    const missedFt = ftAttempted - ftMade;
+    const evaluation = points + rebOff + rebDef + assists + steals + blocks + foulsDrawn
+      - missedShots - missedFt - turnovers - fouls - blocksAgainst;
+
+    return { points, totalSecs, fouls, foulsDrawn, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists, steals, turnovers, blocks, blocksAgainst, evaluation };
+  }
+
+// Écrit (ou réécrit entièrement) un match, ses événements et ses statistiques. Idempotent : on peut le relancer
+// après une coupure, il repart de zéro pour ce match. Renvoie l'identifiant du match en base.
+async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
+  const check = (res: { error: any }, step: string) => {
+    if (res.error) throw new Error(`${step} : ${res.error.message}`);
+  };
+  // Les colonnes des nouvelles statistiques viennent de sql/stats_extra_columns.sql : si ce script n'a pas
+  // encore été exécuté, on enregistre quand même tout le reste (elles se recalculent à partir de l'historique).
+  const EXTRA_STAT_KEYS = ['steals', 'turnovers', 'blocks', 'blocks_against'];
+  const insertStatsRows = async (table: string, rows: any[], step: string) => {
+    let res = await supabase.from(table).insert(rows);
+    if (res.error && /steals|turnovers|blocks|schema cache/i.test(res.error.message)) {
+      res = await supabase.from(table).insert(rows.map(r => {
+        const copy = { ...r };
+        EXTRA_STAT_KEYS.forEach(k => delete copy[k]);
+        return copy;
+      }));
+    }
+    check(res, step);
+  };
+  const statsOf = (playerId: string, periodFilter: number | 'ALL') =>
+    computePlayerStats(snap.game.events, snap.playingTime, playerId, periodFilter);
+
+  const { data: savedMatch, error: matchErr } = await supabase
+    .from('stats_matches')
+    .upsert({
+      ffbb_match_id: snap.ffbbId,
+      match_date: snap.matchConfig.matchDate,
+      // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT).
+      // On part toujours des valeurs en direct du formulaire (matchConfig), jamais de
+      // l'instantané game.config figé au dernier "Démarrer / Mettre à jour le match" :
+      // sinon un nom d'équipe ou une date corrigés après coup ne seraient pas sauvegardés.
+      team_home: snap.homeAway === 'DOMICILE' ? snap.matchConfig.teamHome : snap.matchConfig.teamAway,
+      team_away: snap.homeAway === 'DOMICILE' ? snap.matchConfig.teamAway : snap.matchConfig.teamHome,
+      score_home: snap.homeAway === 'DOMICILE' ? snap.game.scoreHome : snap.game.scoreAway,
+      score_away: snap.homeAway === 'DOMICILE' ? snap.game.scoreAway : snap.game.scoreHome,
+      period_count: snap.matchConfig.periodCount,
+      period_minutes: snap.matchConfig.periodMinutes,
+      current_period: periodLabelOf(snap.game.period, snap.game.config.periodCount),
+      current_timer: snap.game.clockSeconds
+    }, { onConflict: 'ffbb_match_id' })
+    .select()
+    .single();
+
+  if (matchErr || !savedMatch) throw new Error(`stats_matches : ${matchErr?.message || 'aucune ligne renvoyée'}`);
+  const matchId = savedMatch.id;
+
+  check(await supabase.from('stats_match_events').delete().eq('match_id', matchId), 'stats_match_events (suppression)');
+  if (snap.game.events.length > 0) {
+    check(await supabase.from('stats_match_events').insert(
+      snap.game.events.map(ev => ({
+        match_id: matchId,
+        period: ev.period,
+        clock_time: ev.clockTime,
+        timestamp_str: ev.timestamp,
+        player_id: ev.playerId,
+        action_type: ev.actionType
+      }))
+    ), 'stats_match_events (événements)');
+  }
+  if (snap.game.onCourtPlayerIds.length > 0) {
+    check(await supabase.from('stats_match_events').insert(
+      snap.game.onCourtPlayerIds.map(playerId => ({
+        match_id: matchId,
+        period: snap.game.period,
+        clock_time: formatClock(snap.game.clockSeconds),
+        timestamp_str: new Date().toLocaleTimeString(),
+        player_id: playerId,
+        action_type: 'ETAT:SUR_TERRAIN'
+      }))
+    ), 'stats_match_events (joueuses sur le terrain)');
+  }
+  const scorePeriodEntries = Object.entries(snap.game.scoreByPeriod);
+  if (scorePeriodEntries.length > 0) {
+    check(await supabase.from('stats_match_events').insert(
+      scorePeriodEntries.map(([period, s]) => {
+        // Même convention "vrai domicile/extérieur" que team_home/score_home ci-dessus.
+        const dbHome = snap.homeAway === 'DOMICILE' ? s.home : s.away;
+        const dbAway = snap.homeAway === 'DOMICILE' ? s.away : s.home;
+        return {
+          match_id: matchId,
+          period: Number(period),
+          clock_time: formatClock(snap.game.clockSeconds),
+          timestamp_str: new Date().toLocaleTimeString(),
+          player_id: '',
+          action_type: `ETAT:SCORE_PERIODE:${dbHome}-${dbAway}`
+        };
+      })
+    ), 'stats_match_events (score par période)');
+  }
+
+  check(await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId), 'stats_player_game_stats (suppression)');
+  if (snap.game.matchRoster.length > 0) {
+    await insertStatsRows('stats_player_game_stats',
+      snap.game.matchRoster.map(p => {
+        const st = statsOf(p.id, 'ALL');
+        return {
+          match_id: matchId,
+          player_id: p.id,
+          player_number: p.number,
+          player_name: p.name,
+          points: st.points,
+          pts2_made: st.pts2Made,
+          pts2_att: st.pts2Att,
+          pts3_made: st.pts3Made,
+          pts3_att: st.pts3Att,
+          ft_made: st.ftMade,
+          ft_att: st.ftAttempted,
+          reb_off: st.rebOff,
+          reb_def: st.rebDef,
+          assists: st.assists,
+          steals: st.steals,
+          turnovers: st.turnovers,
+          blocks: st.blocks,
+          blocks_against: st.blocksAgainst,
+          fouls: st.fouls,
+          fouls_drawn: st.foulsDrawn,
+          playing_time_seconds: st.totalSecs
+        };
+      }),
+      'stats_player_game_stats (totaux)'
+    );
+  }
+
+  // Statistiques par joueuse ET par période (table dédiée stats_player_period_stats)
+  const maxPeriod = Math.max(
+    snap.game.period,
+    ...snap.game.events.map(e => e.period),
+    ...Object.values(snap.playingTime).flatMap(pt => Object.keys(pt).map(Number))
+  );
+  const periodRows: any[] = [];
+  snap.game.matchRoster.forEach(p => {
+    for (let per = 1; per <= maxPeriod; per++) {
+      const st = statsOf(p.id, per);
+      periodRows.push({
+        match_id: matchId,
+        player_id: p.id,
+        player_number: p.number,
+        player_name: p.name,
+        period: per,
+        is_starter: (snap.startingFiveByPeriod[per] || []).includes(p.id),
+        playing_time_seconds: st.totalSecs,
+        points: st.points,
+        pts2_made: st.pts2Made,
+        pts2_att: st.pts2Att,
+        pts3_made: st.pts3Made,
+        pts3_att: st.pts3Att,
+        ft_made: st.ftMade,
+        ft_att: st.ftAttempted,
+        reb_off: st.rebOff,
+        reb_def: st.rebDef,
+        assists: st.assists,
+        steals: st.steals,
+        turnovers: st.turnovers,
+        blocks: st.blocks,
+        blocks_against: st.blocksAgainst,
+        fouls: st.fouls,
+        fouls_drawn: st.foulsDrawn
+      });
+    }
+  });
+  check(await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId), 'stats_player_period_stats (suppression)');
+  if (periodRows.length > 0) {
+    await insertStatsRows('stats_player_period_stats', periodRows, 'stats_player_period_stats (insertion)');
+  }
+
+  return matchId;
+}
+
 type Role = 'admin' | 'analyst';
 
-function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role: Role; onSignOut: () => void }) {
+function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReauth }: { userId: string; userEmail: string; role: Role; onSignOut: () => void; needsReauth: boolean; onReauth: () => void }) {
   const isAdmin = role === 'admin';
   const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS'>('MATCH');
   const [selectedPeriodFilter, setSelectedPeriodFilter] = useState<number | 'ALL'>('ALL');
@@ -157,12 +469,27 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
   const [isDeletingMatch, setIsDeletingMatch] = useState(false);
   const [actionToUndo, setActionToUndo] = useState<GameEvent | null>(null);
   const [currentMatchDbId, setCurrentMatchDbId] = useState<string | null>(null);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'queued' | 'error'>('idle');
   const [saveErrorMessage, setSaveErrorMessage] = useState('');
   const [isEditingClock, setIsEditingClock] = useState(false);
   const [confirmResetPeriod, setConfirmResetPeriod] = useState(false);
   const [startingFiveByPeriod, setStartingFiveByPeriod] = useState<{ [period: number]: string[] }>({});
   const [clockEditValue, setClockEditValue] = useState('');
+
+  // --- Mode hors ligne
+  const [isOnline, setIsOnline] = useState(true);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
+  const [dataSyncedAt, setDataSyncedAt] = useState<number | null>(null);
+  const [restoredAt, setRestoredAt] = useState<number | null>(null);
+  const [pickerNotice, setPickerNotice] = useState('');
+  const flushingRef = useRef(false);
+  const draftReadyRef = useRef(false);
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedFpRef = useRef('');
+  const latestRef = useRef<any>(null);
+  const draftKey = lsKey('draft', userId);
 
   // Notre équipe est toujours l'une de celles gérées dans stats_teams (sélectionnée
   // via "Charger une équipe Supabase" plus bas, qui renseigne matchConfig.teamHome).
@@ -177,6 +504,11 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
 
       if (error) {
         console.error("Erreur chargement Supabase:", error);
+        // Hors connexion : on reprend les équipes et joueuses mises de côté lors de la dernière synchronisation.
+        if (isNetworkError(error)) {
+          const cached = lsRead<SavedTeam[] | null>(lsKey('teams', userId), null);
+          if (cached) setSavedTeams(cached);
+        }
       } else if (teamsData) {
         const formatted: SavedTeam[] = teamsData.map((t: any) => ({
           id: t.id,
@@ -188,24 +520,97 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
           })))
         }));
         setSavedTeams(formatted);
+        const now = Date.now();
+        lsWrite(lsKey('teams', userId), formatted);
+        lsWrite(lsKey('syncedAt', userId), now);
+        setDataSyncedAt(now);
       }
     } catch (err) {
       console.error(err);
+      if (isNetworkError(err)) {
+        const cached = lsRead<SavedTeam[] | null>(lsKey('teams', userId), null);
+        if (cached) setSavedTeams(cached);
+      }
     } finally {
       setIsLoadingTeams(false);
     }
   };
 
-  useEffect(() => {
-    fetchTeamsFromSupabase();
-    (async () => {
-      try {
-        const { data } = await supabase.from('basketball_clubs').select('display_name').order('display_name');
-        if (data) setClubNames(Array.from(new Set(data.map((c: any) => c.display_name).filter(Boolean))));
-      } catch (err) {
-        console.error(err);
+  // Noms de clubs pour l'autocomplétion (mis en cache pour le hors ligne)
+  const fetchClubNames = async () => {
+    try {
+      const { data, error } = await supabase.from('basketball_clubs').select('display_name').order('display_name');
+      if (!error && data) {
+        const names = Array.from(new Set(data.map((c: any) => c.display_name).filter(Boolean))) as string[];
+        setClubNames(names);
+        lsWrite(lsKey('clubs', userId), names);
+      } else if (error && isNetworkError(error)) {
+        setClubNames(lsRead<string[]>(lsKey('clubs', userId), []));
       }
-    })();
+    } catch (err) {
+      console.error(err);
+      if (isNetworkError(err)) setClubNames(lsRead<string[]>(lsKey('clubs', userId), []));
+    }
+  };
+
+  // Matchs enregistrés + matchs à venir (liste du sélecteur), mis en cache pour le hors ligne.
+  const fetchPickerData = async () => {
+    let offline = false;
+    try {
+      const [playedRes, upcomingRes] = await Promise.all([
+        supabase
+          .from('stats_matches')
+          .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at')
+          .order('match_date', { ascending: false })
+          .limit(200),
+        // Calendrier des matchs à venir tenu dans l'appli principale (voir sql/ffbb_upcoming.sql).
+        supabase.rpc('list_upcoming_ffbb_matches')
+      ]);
+      if (!playedRes.error && playedRes.data) {
+        setExistingMatches(playedRes.data);
+        lsWrite(lsKey('played', userId), playedRes.data);
+      } else if (playedRes.error && isNetworkError(playedRes.error)) {
+        offline = true;
+      }
+      if (upcomingRes.error) {
+        if (isNetworkError(upcomingRes.error)) {
+          offline = true;
+        } else {
+          setUpcomingMatches([]);
+          setUpcomingError(upcomingRes.error.message);
+        }
+      } else {
+        const rows = Array.isArray(upcomingRes.data) ? upcomingRes.data : [];
+        setUpcomingMatches(rows);
+        setUpcomingError('');
+        lsWrite(lsKey('upcoming', userId), rows);
+      }
+    } catch (err) {
+      console.error(err);
+      offline = isNetworkError(err);
+    }
+    if (offline) {
+      setExistingMatches(lsRead<any[]>(lsKey('played', userId), []));
+      setUpcomingMatches(lsRead<any[]>(lsKey('upcoming', userId), []));
+      setUpcomingError('');
+    }
+  };
+
+  // SYNCHRONISER : récupère équipes, joueuses, matchs à venir et clubs (et les garde pour le hors ligne).
+  // Hors connexion, chaque lecture retombe toute seule sur la dernière copie locale.
+  const syncOfflineData = async () => {
+    await Promise.all([fetchTeamsFromSupabase(), fetchPickerData(), fetchClubNames()]);
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      // Précharge le module PDF pour que l'export des statistiques marche aussi sans réseau.
+      void import('jspdf').catch(() => undefined);
+      void import('jspdf-autotable').catch(() => undefined);
+    }
+  };
+
+  useEffect(() => {
+    const cachedAt = lsRead<number | null>(lsKey('syncedAt', userId), null);
+    if (cachedAt) setDataSyncedAt(cachedAt);
+    void syncOfflineData();
   }, []);
 
   // RECHERCHE DES INFOS D'UN MATCH OFFICIEL VIA L'ID FFBB
@@ -220,7 +625,7 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
       const row: any = Array.isArray(data) ? data[0] : data;
 
       if (error) {
-        setFfbbLookupError(error.message);
+        setFfbbLookupError(isNetworkError(error) ? 'Hors connexion : choisissez le match dans la liste « À VENIR » (loupe).' : error.message);
         setFfbbLookupStatus('error');
       } else if (!row) {
         setFfbbLookupStatus('notfound');
@@ -253,27 +658,10 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
   const openFfbbPicker = async () => {
     setShowFfbbPicker(true);
     setIsLoadingExistingMatches(true);
+    setPickerNotice('');
     setPickerSeasonFilter(getSeasonLabel(new Date().toISOString().split('T')[0]));
     try {
-      const [playedRes, upcomingRes] = await Promise.all([
-        supabase
-          .from('stats_matches')
-          .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at')
-          .order('match_date', { ascending: false })
-          .limit(200),
-        // Calendrier des matchs à venir tenu dans l'appli principale (voir sql/ffbb_upcoming.sql).
-        supabase.rpc('list_upcoming_ffbb_matches')
-      ]);
-      if (!playedRes.error && playedRes.data) setExistingMatches(playedRes.data);
-      if (upcomingRes.error) {
-        setUpcomingMatches([]);
-        setUpcomingError(upcomingRes.error.message);
-      } else {
-        setUpcomingMatches(Array.isArray(upcomingRes.data) ? upcomingRes.data : []);
-        setUpcomingError('');
-      }
-    } catch (err) {
-      console.error(err);
+      await fetchPickerData();
     } finally {
       setIsLoadingExistingMatches(false);
     }
@@ -326,17 +714,25 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
 
   // CHARGER UN MATCH EXISTANT (infos + statistiques) DEPUIS SUPABASE
   const handleSelectExistingMatch = async (matchRow: any) => {
+    setPickerNotice('');
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setPickerNotice("Hors connexion : ce match enregistré ne peut pas être rouvert maintenant. Réessayez quand le réseau est revenu.");
+      return;
+    }
     try {
-      const { data: eventsData } = await supabase
+      const { data: eventsData, error: eventsError } = await supabase
         .from('stats_match_events')
         .select('*')
         .eq('match_id', matchRow.id)
         .order('created_at', { ascending: true });
 
-      const { data: statsData } = await supabase
+      const { data: statsData, error: statsError } = await supabase
         .from('stats_player_game_stats')
         .select('*')
         .eq('match_id', matchRow.id);
+
+      // Ne jamais remplacer le match affiché par un chargement incomplet.
+      if (eventsError || statsError) throw new Error((eventsError || statsError)?.message || 'Lecture impossible');
 
       const loadedRoster: Player[] = (statsData || []).map((s: any) => ({
         id: s.player_id,
@@ -429,192 +825,192 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
 
       setShowFfbbPicker(false);
       setActiveTab('MATCH');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setPickerNotice(isNetworkError(err)
+        ? "Hors connexion : ce match enregistré ne peut pas être rouvert maintenant. Réessayez quand le réseau est revenu."
+        : `Impossible de charger ce match : ${err?.message || err}`);
     }
   };
 
-  // ENREGISTRER LE MATCH EN COURS (infos + statistiques) DANS SUPABASE
+  // ---------------------------------------------------------------------------
+  // ENREGISTRER LE MATCH EN COURS
+  // En ligne : directement en base. Hors ligne (ou réseau défaillant) : sur l'appareil, puis envoi
+  // automatique au retour du réseau. Chaque enregistrement réécrit tout le match : on peut donc
+  // enregistrer plusieurs fois, et un envoi interrompu se rejoue sans risque.
+  // ---------------------------------------------------------------------------
+  const refreshPending = () => setPendingCount(readPending().filter(i => i.userId === userId).length);
+
+  const writeDraftNow = () => {
+    if (!draftReadyRef.current || !latestRef.current) return;
+    const L = latestRef.current;
+    lsWrite(draftKey, { v: 1, userId, savedAt: Date.now(), savedFp: lastSavedFpRef.current, ...L, game: { ...L.game, isClockRunning: false } });
+  };
+
+  const buildSnapshot = (ffbbId: string): MatchSnapshot => ({
+    ffbbId,
+    matchConfig: { ...matchConfig, ffbbMatchId: ffbbId },
+    homeAway,
+    game: JSON.parse(JSON.stringify(game)),
+    playingTime: JSON.parse(JSON.stringify(playingTime)),
+    startingFiveByPeriod: JSON.parse(JSON.stringify(startingFiveByPeriod)),
+    savedAt: Date.now()
+  });
+
   const handleSaveMatch = async () => {
+    if (saveStatus === 'saving') return;
     setSaveStatus('saving');
     setSaveErrorMessage('');
-    const check = (res: { error: any }, step: string) => {
-      if (res.error) throw new Error(`${step} : ${res.error.message}`);
-    };
-    // Les colonnes des nouvelles statistiques viennent de sql/stats_extra_columns.sql : si ce script n'a pas
-    // encore été exécuté, on enregistre quand même tout le reste (elles se recalculent à partir de l'historique).
-    const EXTRA_STAT_KEYS = ['steals', 'turnovers', 'blocks', 'blocks_against'];
-    const insertStatsRows = async (table: string, rows: any[], step: string) => {
-      let res = await supabase.from(table).insert(rows);
-      if (res.error && /steals|turnovers|blocks|schema cache/i.test(res.error.message)) {
-        res = await supabase.from(table).insert(rows.map(r => {
-          const copy = { ...r };
-          EXTRA_STAT_KEYS.forEach(k => delete copy[k]);
-          return copy;
-        }));
-      }
-      check(res, step);
-    };
+
+    let ffbbId = matchConfig.ffbbMatchId.trim();
+    if (!ffbbId) {
+      ffbbId = `AMICAL-${Date.now()}`;
+      setMatchConfig(prev => ({ ...prev, ffbbMatchId: ffbbId }));
+    }
+    const snap = buildSnapshot(ffbbId);
+    const fp = fingerprintOf(snap.game);
+
     try {
-      let ffbbId = matchConfig.ffbbMatchId.trim();
-      if (!ffbbId) {
-        ffbbId = `AMICAL-${Date.now()}`;
-        setMatchConfig(prev => ({ ...prev, ffbbMatchId: ffbbId }));
-      }
-
-      const { data: savedMatch, error: matchErr } = await supabase
-        .from('stats_matches')
-        .upsert({
-          ffbb_match_id: ffbbId,
-          match_date: matchConfig.matchDate,
-          // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT).
-          // On part toujours des valeurs en direct du formulaire (matchConfig), jamais de
-          // l'instantané game.config figé au dernier "Démarrer / Mettre à jour le match" :
-          // sinon un nom d'équipe ou une date corrigés après coup ne seraient pas sauvegardés.
-          team_home: homeAway === 'DOMICILE' ? matchConfig.teamHome : matchConfig.teamAway,
-          team_away: homeAway === 'DOMICILE' ? matchConfig.teamAway : matchConfig.teamHome,
-          score_home: homeAway === 'DOMICILE' ? game.scoreHome : game.scoreAway,
-          score_away: homeAway === 'DOMICILE' ? game.scoreAway : game.scoreHome,
-          period_count: matchConfig.periodCount,
-          period_minutes: matchConfig.periodMinutes,
-          current_period: getPeriodLabel(game.period, game.config.periodCount),
-          current_timer: game.clockSeconds
-        }, { onConflict: 'ffbb_match_id' })
-        .select()
-        .single();
-
-      if (matchErr || !savedMatch) throw new Error(`stats_matches : ${matchErr?.message || 'aucune ligne renvoyée'}`);
-      const matchId = savedMatch.id;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('Failed to fetch (hors connexion)');
+      const matchId = await persistMatchSnapshot(snap);
       setCurrentMatchDbId(matchId);
-
-      check(await supabase.from('stats_match_events').delete().eq('match_id', matchId), 'stats_match_events (suppression)');
-      if (game.events.length > 0) {
-        check(await supabase.from('stats_match_events').insert(
-          game.events.map(ev => ({
-            match_id: matchId,
-            period: ev.period,
-            clock_time: ev.clockTime,
-            timestamp_str: ev.timestamp,
-            player_id: ev.playerId,
-            action_type: ev.actionType
-          }))
-        ), 'stats_match_events (événements)');
-      }
-      if (game.onCourtPlayerIds.length > 0) {
-        check(await supabase.from('stats_match_events').insert(
-          game.onCourtPlayerIds.map(playerId => ({
-            match_id: matchId,
-            period: game.period,
-            clock_time: formatTime(game.clockSeconds),
-            timestamp_str: new Date().toLocaleTimeString(),
-            player_id: playerId,
-            action_type: 'ETAT:SUR_TERRAIN'
-          }))
-        ), 'stats_match_events (joueuses sur le terrain)');
-      }
-      const scorePeriodEntries = Object.entries(game.scoreByPeriod);
-      if (scorePeriodEntries.length > 0) {
-        check(await supabase.from('stats_match_events').insert(
-          scorePeriodEntries.map(([period, s]) => {
-            // Même convention "vrai domicile/extérieur" que team_home/score_home ci-dessus.
-            const dbHome = homeAway === 'DOMICILE' ? s.home : s.away;
-            const dbAway = homeAway === 'DOMICILE' ? s.away : s.home;
-            return {
-              match_id: matchId,
-              period: Number(period),
-              clock_time: formatTime(game.clockSeconds),
-              timestamp_str: new Date().toLocaleTimeString(),
-              player_id: '',
-              action_type: `ETAT:SCORE_PERIODE:${dbHome}-${dbAway}`
-            };
-          })
-        ), 'stats_match_events (score par période)');
-      }
-
-      check(await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId), 'stats_player_game_stats (suppression)');
-      if (game.matchRoster.length > 0) {
-        await insertStatsRows('stats_player_game_stats',
-          game.matchRoster.map(p => {
-            const st = getPlayerStats(p.id, 'ALL');
-            return {
-              match_id: matchId,
-              player_id: p.id,
-              player_number: p.number,
-              player_name: p.name,
-              points: st.points,
-              pts2_made: st.pts2Made,
-              pts2_att: st.pts2Att,
-              pts3_made: st.pts3Made,
-              pts3_att: st.pts3Att,
-              ft_made: st.ftMade,
-              ft_att: st.ftAttempted,
-              reb_off: st.rebOff,
-              reb_def: st.rebDef,
-              assists: st.assists,
-              steals: st.steals,
-              turnovers: st.turnovers,
-              blocks: st.blocks,
-              blocks_against: st.blocksAgainst,
-              fouls: st.fouls,
-              fouls_drawn: st.foulsDrawn,
-              playing_time_seconds: st.totalSecs
-            };
-          }),
-          'stats_player_game_stats (totaux)'
-        );
-      }
-
-      // Statistiques par joueuse ET par période (table dédiée stats_player_period_stats)
-      const maxPeriod = Math.max(
-        game.period,
-        ...game.events.map(e => e.period),
-        ...Object.values(playingTime).flatMap(pt => Object.keys(pt).map(Number))
-      );
-      const periodRows: any[] = [];
-      game.matchRoster.forEach(p => {
-        for (let per = 1; per <= maxPeriod; per++) {
-          const st = getPlayerStats(p.id, per);
-          periodRows.push({
-            match_id: matchId,
-            player_id: p.id,
-            player_number: p.number,
-            player_name: p.name,
-            period: per,
-            is_starter: (startingFiveByPeriod[per] || []).includes(p.id),
-            playing_time_seconds: st.totalSecs,
-            points: st.points,
-            pts2_made: st.pts2Made,
-            pts2_att: st.pts2Att,
-            pts3_made: st.pts3Made,
-            pts3_att: st.pts3Att,
-            ft_made: st.ftMade,
-            ft_att: st.ftAttempted,
-            reb_off: st.rebOff,
-            reb_def: st.rebDef,
-            assists: st.assists,
-            steals: st.steals,
-            turnovers: st.turnovers,
-            blocks: st.blocks,
-            blocks_against: st.blocksAgainst,
-            fouls: st.fouls,
-            fouls_drawn: st.foulsDrawn
-          });
-        }
-      });
-      check(await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId), 'stats_player_period_stats (suppression)');
-      if (periodRows.length > 0) {
-        await insertStatsRows('stats_player_period_stats', periodRows, 'stats_player_period_stats (insertion)');
-      }
-
+      removePending(userId, ffbbId); // l'enregistrement en ligne remplace un envoi en attente pour ce match
+      refreshPending();
+      lastSavedFpRef.current = fp;
+      writeDraftNow();
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2500);
     } catch (err: any) {
       console.error(err);
-      setSaveErrorMessage(err?.message || String(err));
-      setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 15000);
+      if (isNetworkError(err)) {
+        if (enqueuePending(userId, snap)) {
+          lastSavedFpRef.current = fp;
+          refreshPending();
+          writeDraftNow();
+          setSaveStatus('queued');
+          setTimeout(() => setSaveStatus('idle'), 6000);
+        } else {
+          setSaveErrorMessage("Hors connexion, et la mémoire de l'appareil est pleine : le match n'a pas pu être mis de côté.");
+          setSaveStatus('error');
+          setTimeout(() => setSaveStatus('idle'), 15000);
+        }
+      } else {
+        setSaveErrorMessage(err?.message || String(err));
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 15000);
+      }
     }
   };
+
+  // Envoie les matchs mis de côté hors ligne (un à un, du plus ancien au plus récent).
+  const flushPending = async (manual = false) => {
+    if (flushingRef.current) return;
+    const items = readPending().filter(i => i.userId === userId);
+    if (items.length === 0) {
+      if (manual) setSyncMessage('Rien à envoyer.');
+      return;
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      if (manual) setSyncMessage('Toujours hors connexion : envoi dès que le réseau revient.');
+      return;
+    }
+    flushingRef.current = true;
+    setIsSyncing(true);
+    let sent = 0;
+    let failure = '';
+    try {
+      for (const item of items) {
+        try {
+          const matchId = await persistMatchSnapshot(item.snap);
+          removePending(userId, item.snap.ffbbId, item.snap.savedAt); // garde une version plus récente si elle existe
+          sent++;
+          if (latestRef.current?.matchConfig?.ffbbMatchId === item.snap.ffbbId) setCurrentMatchDbId(matchId);
+        } catch (err: any) {
+          if (isNetworkError(err)) { failure = 'Réseau instable : nouvel essai automatique.'; break; }
+          failure = `Envoi refusé : ${err?.message || err}`;
+        }
+      }
+    } finally {
+      flushingRef.current = false;
+      setIsSyncing(false);
+      refreshPending();
+      setSyncMessage(sent > 0 ? `${sent} match${sent > 1 ? 's envoyés' : ' envoyé'} en base.${failure ? ' ' + failure : ''}` : failure);
+      if (sent > 0 || failure) setTimeout(() => setSyncMessage(''), 8000);
+    }
+  };
+
+  // Nouveau match : efface le brouillon local et repart d'un écran vide (les envois en attente sont conservés).
+  const handleNewMatch = () => {
+    const unsaved = game.events.length > 0 && fingerprintOf(game) !== lastSavedFpRef.current;
+    const message = unsaved
+      ? "Des actions de ce match ne sont pas encore enregistrées. Un nouveau match les effacera de cet écran. Continuer ?"
+      : "Démarrer un nouveau match ? Le match affiché sera fermé (ce qui est enregistré est conservé).";
+    if (!window.confirm(message)) return;
+    lsRemove(draftKey);
+    window.location.reload();
+  };
+
+  // Brouillon : l'état du match est gardé sur l'appareil, il survit à un rechargement ou à une fermeture de la page.
+  latestRef.current = { matchConfig, homeAway, matchType, selectedTeamId, newTeamName, editingRoster, selectedMatchPlayerIds, matchNumbers, game, playingTime, startingFiveByPeriod, currentMatchDbId, activeTab };
+
+  useEffect(() => {
+    const d = lsRead<any>(draftKey, null);
+    if (d && d.v === 1 && d.userId === userId && Date.now() - d.savedAt < 48 * 3600 * 1000 && d.game && d.matchConfig) {
+      setMatchConfig(d.matchConfig);
+      setHomeAway(d.homeAway);
+      setMatchType(d.matchType);
+      setSelectedTeamId(d.selectedTeamId || '');
+      setNewTeamName(d.newTeamName || '');
+      setEditingRoster(d.editingRoster || []);
+      setSelectedMatchPlayerIds(d.selectedMatchPlayerIds || []);
+      setMatchNumbers(d.matchNumbers || {});
+      setGame({ ...d.game, isClockRunning: false });
+      setPlayingTime(d.playingTime || {});
+      setStartingFiveByPeriod(d.startingFiveByPeriod || {});
+      setCurrentMatchDbId(d.currentMatchDbId || null);
+      if (d.activeTab) setActiveTab(d.activeTab);
+      lastSavedFpRef.current = d.savedFp || '';
+      if (d.game.events?.length > 0 || d.game.matchRoster?.length > 0) setRestoredAt(d.savedAt);
+    }
+    draftReadyRef.current = true;
+  }, []);
+
+  // Écriture du brouillon : au plus une fois toutes les 1,5 s (le chrono modifie l'état chaque seconde).
+  useEffect(() => {
+    if (!draftReadyRef.current || draftTimerRef.current) return;
+    draftTimerRef.current = setTimeout(() => {
+      draftTimerRef.current = null;
+      writeDraftNow();
+    }, 1500);
+  });
+
+  // Réseau : état en ligne / hors ligne, envoi automatique au retour du réseau, nouvel essai toutes les 30 s.
+  useEffect(() => {
+    refreshPending();
+    setIsOnline(typeof navigator === 'undefined' ? true : navigator.onLine);
+    const handleOnline = () => {
+      setIsOnline(true);
+      void flushPending();
+      void syncOfflineData();
+    };
+    const handleOffline = () => setIsOnline(false);
+    const handleHide = () => { if (document.visibilityState === 'hidden') writeDraftNow(); };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    document.addEventListener('visibilitychange', handleHide);
+    window.addEventListener('pagehide', writeDraftNow);
+    const timer = setInterval(() => {
+      if (navigator.onLine && readPending().some(i => i.userId === userId)) void flushPending();
+    }, 30000);
+    if (navigator.onLine) void flushPending();
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('visibilitychange', handleHide);
+      window.removeEventListener('pagehide', writeDraftNow);
+      clearInterval(timer);
+    };
+  }, []);
 
   // SAUVEGARDE / MODIFICATION DANS SUPABASE
   const handleSaveTeamToSupabase = async () => {
@@ -1002,66 +1398,7 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
     });
   };
 
-  const getPlayerStats = (playerId: string, periodFilter: number | 'ALL') => {
-    const eventsToAnalyze = game.events.filter(e => {
-      const matchPlayer = e.playerId === playerId;
-      const matchPeriod = periodFilter === 'ALL' ? true : e.period === periodFilter;
-      return matchPlayer && matchPeriod;
-    });
-
-    let points = 0, fouls = 0, foulsDrawn = 0, ftMade = 0, ftAttempted = 0, pts2Made = 0, pts2Att = 0, pts3Made = 0, pts3Att = 0;
-    let rebOff = 0, rebDef = 0, assists = 0;
-    let steals = 0, turnovers = 0, blocks = 0, blocksAgainst = 0;
-
-    eventsToAnalyze.forEach(ev => {
-      const act = ev.actionType;
-      // Comparaisons exactes : 'CONTRE' est contenu dans 'CONTRE SUBI'.
-      if (act === 'INTERCEPTION') steals++;
-      else if (act === 'PERTE DE BALLE') turnovers++;
-      else if (act === 'CONTRE') blocks++;
-      else if (act === 'CONTRE SUBI') blocksAgainst++;
-      if (act.includes('FAUTE SUBIE')) foulsDrawn++;
-      else if (act.includes('FAUTE')) fouls++;
-      if (act.includes('PASSE DÉCISIVE')) assists++;
-      if (act.includes('REBOND OFFENSIF')) rebOff++;
-      if (act.includes('REBOND DÉFENSIF')) rebDef++;
-      if (act.includes('TIR 2PTS')) {
-        pts2Att++;
-        if (!act.includes('Manqué')) { pts2Made++; points += 2; }
-      }
-      if (act.includes('TIR 3PTS')) {
-        pts3Att++;
-        if (!act.includes('Manqué')) { pts3Made++; points += 3; }
-      }
-      if (act.includes('LANCERS FRANCS')) {
-        const match = act.match(/\((\d+)\/(\d+)\)/);
-        if (match) {
-          const made = parseInt(match[1], 10);
-          ftMade += made;
-          ftAttempted += parseInt(match[2], 10);
-          points += made;
-        }
-      }
-    });
-
-    let totalSecs = 0;
-    if (playingTime[playerId]) {
-      if (periodFilter === 'ALL') {
-        totalSecs = Object.values(playingTime[playerId]).reduce((a, b) => a + b, 0);
-      } else {
-        totalSecs = playingTime[playerId][periodFilter] || 0;
-      }
-    }
-
-    // Évaluation (formule FIBA) = (points + rebonds + passes décisives + interceptions + contres + fautes subies)
-    //                            - (tirs manqués + lancers francs manqués + balles perdues + fautes commises + contres subis).
-    const missedShots = (pts2Att - pts2Made) + (pts3Att - pts3Made);
-    const missedFt = ftAttempted - ftMade;
-    const evaluation = points + rebOff + rebDef + assists + steals + blocks + foulsDrawn
-      - missedShots - missedFt - turnovers - fouls - blocksAgainst;
-
-    return { points, totalSecs, fouls, foulsDrawn, ftMade, ftAttempted, pts2Made, pts2Att, pts3Made, pts3Att, rebOff, rebDef, assists, steals, turnovers, blocks, blocksAgainst, evaluation };
-  };
+  const getPlayerStats = (playerId: string, periodFilter: number | 'ALL') => computePlayerStats(game.events, playingTime, playerId, periodFilter);
 
   const handleAddOrUpdatePlayer = () => {
     if (newPlayerNumber === '' || !newPlayerName.trim()) return;
@@ -1259,39 +1596,48 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
       const pct = (made: number, att: number) => (att > 0 ? `${Math.round((made * 100) / att)}%` : '-');
       const mmss = (secs: number) => formatTime(secs);
 
-      // ---- Bandeau d'en-tête (page 1)
+      // ---- Bandeau d'en-tête compact sur 2 lignes : logo + titre + infos à gauche, club à droite
+      const BAND_H = 19;
       doc.setFillColor(...NAVY);
-      doc.rect(0, 0, pageW, 32, 'F');
+      doc.rect(0, 0, pageW, BAND_H, 'F');
       doc.setFillColor(...AMBER);
-      doc.rect(0, 32, pageW, 1.4, 'F');
+      doc.rect(0, BAND_H, pageW, 1, 'F');
       let textX = M;
       if (logoData) {
         doc.setFillColor(255, 255, 255);
-        doc.roundedRect(M, 4, 24, 24, 3, 3, 'F');
-        doc.addImage(logoData, 'PNG', M + 1, 5, 22, 22);
-        textX = M + 30;
+        doc.roundedRect(M, 2.5, 14, 14, 2, 2, 'F');
+        doc.addImage(logoData, 'PNG', M + 0.7, 3.2, 12.6, 12.6);
+        textX = M + 18;
       }
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.text('Statistiques des joueuses', textX, 9.2);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(191, 219, 254);
+      doc.text(`${dateLabel ? dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1) + '   |   ' : ''}Match ${matchType === 'OFFICIEL' ? 'officiel' : 'amical'}   |   Vue : ${viewLabel}`, textX, 14.6);
       doc.setTextColor(...AMBER);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      doc.text('OLYMPIC SATHONAY', textX, 11);
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(21);
-      doc.text('Statistiques des joueuses', textX, 20.5);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(191, 219, 254);
-      doc.text(`${dateLabel ? dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1) + '   |   ' : ''}Match ${matchType === 'OFFICIEL' ? 'officiel' : 'amical'}   |   Vue : ${viewLabel}`, textX, 27);
+      doc.setFontSize(11);
+      doc.text('OLYMPIC SATHONAY', pageW - M, 11.5, { align: 'right' });
 
-      // ---- Score
-      doc.setTextColor(...NAVY);
+      // ---- Score : noms à gauche et à droite (sur 2 lignes si besoin), score au centre
+      const nameW = pageW / 2 - 26 - M;
+      const scoreMidY = 31;
+      const lineH = 4.6;
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
-      doc.text(leftName, pageW / 2 - 24, 45, { align: 'right' });
-      doc.text(rightName, pageW / 2 + 24, 45);
-      doc.setFontSize(24);
+      doc.setFontSize(11);
+      doc.setTextColor(...NAVY);
+      const leftLines: string[] = (doc.splitTextToSize(leftName, nameW) as string[]).slice(0, 2);
+      const rightLines: string[] = (doc.splitTextToSize(rightName, nameW) as string[]).slice(0, 2);
+      const drawLines = (lines: string[], x: number, align: 'left' | 'right') =>
+        lines.forEach((ln, i) => doc.text(ln, x, scoreMidY + 1.4 - ((lines.length - 1) * lineH) / 2 + i * lineH, { align }));
+      drawLines(leftLines, pageW / 2 - 26, 'right');
+      drawLines(rightLines, pageW / 2 + 26, 'left');
+      doc.setFontSize(22);
       doc.setTextColor(...AMBER_D);
-      doc.text(`${leftScore}  -  ${rightScore}`, pageW / 2, 46, { align: 'center' });
+      doc.text(`${leftScore}  -  ${rightScore}`, pageW / 2, scoreMidY + 3.2, { align: 'center' });
 
       // ---- Score par période (à gauche) et meilleures performances (à droite)
       const periodsShown = Array.from({ length: lastPeriodShown }, (_, i) => i + 1);
@@ -1300,7 +1646,7 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
         return s ? String(s[side]) : '-';
       };
       autoTable(doc, {
-        startY: 53,
+        startY: 40,
         margin: { left: M, right: pageW - M - 150, top: 24, bottom: 16 },
         head: [['', ...periodsShown.map(p => getPeriodLabel(p, game.config.periodCount)), 'Total']],
         body: [
@@ -1308,9 +1654,9 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
           [theirs, ...periodsShown.map(p => periodScore('away', p)), String(game.scoreAway)]
         ],
         theme: 'grid',
-        styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.2, textColor: TEXT, halign: 'center', lineColor: [226, 232, 240] },
+        styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 1.8, textColor: TEXT, halign: 'center', lineColor: [226, 232, 240] },
         headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold' },
-        columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 48 } },
+        columnStyles: { 0: { halign: 'left', fontStyle: 'bold', cellWidth: 72 } },
         didParseCell: (d: any) => { if (d.section === 'body' && d.column.index === periodsShown.length + 1) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.fillColor = [254, 243, 199]; } }
       });
       const periodsBottom: number = doc.lastAutoTable.finalY;
@@ -1322,23 +1668,24 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
       };
       const cardX = M + 156;
       const cardW = pageW - M - cardX;
+      const cardY = 40;
       doc.setFillColor(...LIGHT);
-      doc.roundedRect(cardX, 52, cardW, 33, 3, 3, 'F');
+      doc.roundedRect(cardX, cardY, cardW, 29, 3, 3, 'F');
       doc.setFillColor(...AMBER);
-      doc.rect(cardX, 52, 1.6, 33, 'F');
+      doc.rect(cardX, cardY, 1.6, 29, 'F');
       doc.setTextColor(...NAVY);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
-      doc.text('Meilleures performances', cardX + 6, 59);
+      doc.text('Meilleures performances', cardX + 6, cardY + 6);
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9.5);
+      doc.setFontSize(9);
       doc.setTextColor(...TEXT);
-      doc.text(best('Points', s => s.points), cardX + 6, 66);
-      doc.text(best('Rebonds', s => s.rebOff + s.rebDef), cardX + 6, 71.5);
-      doc.text(best('Passes décisives', s => s.assists), cardX + 6, 77);
-      doc.text(best('Évaluation', s => s.evaluation), cardX + 6, 82.5);
+      doc.text(best('Points', s => s.points), cardX + 6, cardY + 11.5);
+      doc.text(best('Rebonds', s => s.rebOff + s.rebDef), cardX + 6, cardY + 16.3);
+      doc.text(best('Passes décisives', s => s.assists), cardX + 6, cardY + 21.1);
+      doc.text(best('Évaluation', s => s.evaluation), cardX + 6, cardY + 25.9);
 
-      // ---- Tableau principal
+      // ---- Tableau principal : tient TOUJOURS sur la page 1 (la hauteur des lignes s'adapte à l'espace libre)
       const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'INT', 'BP', 'CT', 'CTS', 'FT', 'FS', 'ÉVAL', 'Temps']];
       const rowOf = (p: Player, st: ReturnType<typeof getPlayerStats>) => [
         `#${p.number}`, p.name, String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
@@ -1354,8 +1701,12 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
         String(sum(s => s.steals)), String(sum(s => s.turnovers)), String(sum(s => s.blocks)), String(sum(s => s.blocksAgainst)),
         String(sum(s => s.fouls)), String(sum(s => s.foulsDrawn)), String(sum(s => s.evaluation)), mmss(sum(s => s.totalSecs))
       ];
+      const mainStartY = Math.max(periodsBottom, cardY + 29) + 5;
+      const rowsCount = withStats.length + 2; // + ligne d'en-tête + ligne ÉQUIPE
+      const rowH = Math.min(10.5, (pageH - 18 - mainStartY) / rowsCount);
+      const padV = Math.max(1, (rowH - 3.7) / 2);
       const tableStyles = {
-        styles: { font: 'helvetica', fontSize: 9, cellPadding: { top: withStats.length <= 9 ? 3.3 : 2.5, bottom: withStats.length <= 9 ? 3.3 : 2.5, left: 1.2, right: 1.2 }, textColor: TEXT, halign: 'center' as const, lineColor: [226, 232, 240] },
+        styles: { font: 'helvetica', fontSize: 9, cellPadding: { top: padV, bottom: padV, left: 1.2, right: 1.2 }, textColor: TEXT, halign: 'center' as const, lineColor: [226, 232, 240] },
         headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold' as const },
         alternateRowStyles: { fillColor: LIGHT },
         footStyles: { fillColor: [254, 243, 199], textColor: NAVY, fontStyle: 'bold' as const },
@@ -1364,7 +1715,7 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
       };
       autoTable(doc, {
         ...tableStyles,
-        startY: Math.max(periodsBottom, 85) + 7,
+        startY: mainStartY,
         margin: { left: M, right: M, top: 24, bottom: 16 },
         head,
         body: withStats.map(({ p, st }) => rowOf(p, st)),
@@ -1480,7 +1831,15 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
         <div className="flex justify-between items-center px-4 py-2.5">
           <div className="flex items-center space-x-2.5">
             <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Olympic Sathonay</span>
-            <span title={userEmail} className={`px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide ${isAdmin ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' : 'border-blue-400/50 text-blue-300 bg-blue-500/10'}`}>{role}</span>
+            <button
+              onClick={() => { void flushPending(true); void syncOfflineData(); }}
+              title={!isOnline ? "Hors connexion : les saisies sont gardées sur l'appareil" : pendingCount > 0 ? 'Toucher pour envoyer maintenant' : 'Toucher pour synchroniser les données'}
+              className={`flex items-center space-x-1 px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide ${!isOnline ? 'border-amber-400/60 text-amber-300 bg-amber-500/10' : pendingCount > 0 ? 'border-blue-400/60 text-blue-300 bg-blue-500/10' : 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${!isOnline ? 'bg-amber-400' : pendingCount > 0 ? 'bg-blue-400' : 'bg-emerald-400'}`} />
+              <span>{!isOnline ? `Hors ligne${pendingCount > 0 ? ` · ${pendingCount}` : ''}` : isSyncing ? 'Envoi…' : pendingCount > 0 ? `${pendingCount} à envoyer` : 'En ligne'}</span>
+            </button>
+            <span title={userEmail} className={`hidden sm:inline px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide ${isAdmin ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' : 'border-blue-400/50 text-blue-300 bg-blue-500/10'}`}>{role}</span>
             <button
               onClick={onSignOut}
               title={`Se déconnecter (${userEmail})`}
@@ -1501,11 +1860,12 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
               title="Enregistrer le match et les statistiques"
               className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
                 saveStatus === 'saved' ? 'bg-emerald-600 text-white' :
+                saveStatus === 'queued' ? 'bg-blue-600 text-white' :
                 saveStatus === 'error' ? 'bg-rose-600 text-white' :
                 saveStatus === 'saving' ? 'bg-slate-700 text-slate-400' :
                 'text-slate-400 hover:text-white'
               }`}
-            >{saveStatus === 'saving' ? '⏳' : saveStatus === 'saved' ? '✅' : saveStatus === 'error' ? '⚠️' : '💾'}</button>
+            >{saveStatus === 'saving' ? '⏳' : saveStatus === 'saved' ? '✅' : saveStatus === 'queued' ? '📥' : saveStatus === 'error' ? '⚠️' : '💾'}</button>
           </nav>
         </div>
         {saveStatus === 'error' && (
@@ -1513,6 +1873,31 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
         )}
         {saveStatus === 'saved' && (
           <p className="text-center text-[10px] text-emerald-400 pb-1">Match et statistiques enregistrés.</p>
+        )}
+        {saveStatus === 'queued' && (
+          <p className="text-center text-[10px] text-blue-300 pb-1 px-2">Enregistré sur l'appareil (pas de réseau). Envoi automatique dès le retour de la connexion.</p>
+        )}
+        {!isOnline && saveStatus !== 'queued' && (
+          <p className="text-center text-[10px] text-amber-300 pb-1 px-2">Mode hors ligne : vos saisies restent sur l'appareil et partiront au retour du réseau.</p>
+        )}
+        {isOnline && pendingCount > 0 && !isSyncing && (
+          <p className="text-center text-[10px] text-blue-300 pb-1 px-2">{pendingCount} match{pendingCount > 1 ? 's' : ''} en attente d'envoi : touchez la pastille pour réessayer.</p>
+        )}
+        {syncMessage && (
+          <p className="text-center text-[10px] text-emerald-300 pb-1 px-2 break-words">{syncMessage}</p>
+        )}
+        {needsReauth && (
+          <p className="text-center text-[10px] text-rose-300 pb-1 px-2">
+            Session expirée : reconnectez-vous pour envoyer vos données.{' '}
+            <button onClick={onReauth} className="underline font-bold">Se reconnecter</button>
+          </p>
+        )}
+        {restoredAt && (
+          <p className="text-center text-[10px] text-slate-300 pb-1.5 px-2">
+            Match repris depuis cet appareil (sauvegarde locale de {new Date(restoredAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}).{' '}
+            <button onClick={handleNewMatch} className="underline font-bold text-amber-300">Nouveau match</button>
+            <button onClick={() => setRestoredAt(null)} className="ml-2 text-slate-500 hover:text-white" aria-label="Masquer">✕</button>
+          </p>
         )}
       </header>
 
@@ -1524,9 +1909,14 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
             <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
               <div className="flex justify-between items-center border-b border-slate-700 pb-3">
                 <h2 className="text-xl font-bold text-amber-400 uppercase">Équipes &amp; Joueuses</h2>
-                <button onClick={fetchTeamsFromSupabase} disabled={isLoadingTeams} className="text-xs text-slate-400 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-slate-700">
-                  {isLoadingTeams ? 'Chargement...' : '🔄 Rafraîchir'}
-                </button>
+                <div className="flex items-center space-x-2">
+                  <span className="hidden sm:inline text-[10px] text-slate-500" title="Dernière synchronisation des équipes, joueuses et matchs à venir">
+                    {dataSyncedAt ? `Synchro : ${new Date(dataSyncedAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : 'Jamais synchronisé'}
+                  </span>
+                  <button onClick={() => { void syncOfflineData(); }} disabled={isLoadingTeams} title="Récupère équipes, joueuses et matchs à venir (et les garde pour le hors ligne)" className="text-xs text-slate-400 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-slate-700">
+                    {isLoadingTeams ? 'Chargement...' : '🔄 Synchroniser'}
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-4">
@@ -1609,7 +1999,10 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
             {/* 2. MATCH */}
             <div className="bg-slate-900/90 text-white p-6 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
               <div className="flex justify-between items-center border-b border-slate-700 pb-3">
-                <h2 className="text-xl font-bold text-amber-400">Match</h2>
+                <div className="flex items-center space-x-3">
+                  <h2 className="text-xl font-bold text-amber-400">Match</h2>
+                  <button onClick={handleNewMatch} title="Effacer l'écran et repartir sur un nouveau match" className="text-[11px] font-bold text-slate-300 hover:text-white bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700">🆕 Nouveau</button>
+                </div>
                 <div className="flex items-center bg-slate-800 border border-slate-700 rounded-full p-1 text-xs font-black">
                   <button onClick={() => setMatchType('OFFICIEL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'OFFICIEL' ? 'bg-amber-600 text-white shadow' : 'text-slate-400'}`}>OFFICIEL</button>
                   <button onClick={() => setMatchType('AMICAL')} className={`px-3 py-1.5 rounded-full transition ${matchType === 'AMICAL' ? 'bg-blue-600 text-white shadow' : 'text-slate-400'}`}>AMICAL</button>
@@ -1765,6 +2158,9 @@ function TeamStatsApp({ userEmail, role, onSignOut }: { userEmail: string; role:
                   {availableSeasons.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
+
+              {pickerNotice && <p className="text-[11px] text-amber-300 break-words">{pickerNotice}</p>}
+              {!isOnline && !pickerNotice && <p className="text-[10px] text-slate-400">Hors connexion : listes de la dernière synchronisation. Un match « À VENIR » reste utilisable ; rouvrir un match enregistré demande le réseau.</p>}
 
               {upcomingError && pickerStatusFilter !== 'JOUE' && (
                 <p className="text-[10px] text-rose-400 break-words">Calendrier à venir indisponible : {upcomingError} (as-tu exécuté sql/ffbb_upcoming.sql ?)</p>
@@ -2398,16 +2794,35 @@ export default function App() {
   const [role, setRole] = useState<Role | null>(null);
   const [status, setStatus] = useState<'loading' | 'signed_out' | 'no_profile' | 'error' | 'ready'>('loading');
   const [errorMessage, setErrorMessage] = useState('');
+  // Hors connexion, on laisse entrer un compte déjà connu de l'appareil (profil gardé en mémoire locale).
+  const [offlineIdentity, setOfflineIdentity] = useState(false);
+  const [needsReauth, setNeedsReauth] = useState(false);
+  const offlineIdentityRef = useRef(false);
 
   useEffect(() => {
     let active = true;
+    const setOffline = (value: boolean) => {
+      offlineIdentityRef.current = value;
+      setOfflineIdentity(value);
+    };
 
     // Lit le profil (admin / analyst) du compte connecté ; sans profil, pas d'accès.
     const resolveSession = async (s: any) => {
       if (!active) return;
       if (!s) {
+        // Sans réseau, la session ne peut pas être renouvelée : on garde l'accès pour le compte déjà connu sur cet appareil.
+        const known = lsRead<any>(LS_OFFLINE_USER, null);
+        if (known && typeof navigator !== 'undefined' && !navigator.onLine) {
+          setSession({ user: { id: known.userId, email: known.email } });
+          setRole(known.role);
+          setOffline(true);
+          setStatus('ready');
+          return;
+        }
         setSession(null);
         setRole(null);
+        setOffline(false);
+        setNeedsReauth(false);
         setStatus('signed_out');
         return;
       }
@@ -2415,12 +2830,23 @@ export default function App() {
       const { data, error } = await supabase.from('app_profiles').select('role').eq('user_id', s.user.id).maybeSingle();
       if (!active) return;
       if (error) {
+        const known = lsRead<any>(LS_OFFLINE_USER, null);
+        if (isNetworkError(error) && known && known.userId === s.user.id) {
+          setRole(known.role);
+          setOffline(true);
+          setStatus('ready');
+          return;
+        }
         setErrorMessage(error.message);
         setStatus('error');
       } else if (data?.role === 'admin' || data?.role === 'analyst') {
+        lsWrite(LS_OFFLINE_USER, { userId: s.user.id, email: s.user.email || '', role: data.role });
         setRole(data.role);
+        setOffline(false);
+        setNeedsReauth(false);
         setStatus('ready');
       } else {
+        lsRemove(LS_OFFLINE_USER);
         setRole(null);
         setStatus('no_profile');
       }
@@ -2431,14 +2857,36 @@ export default function App() {
       // Reporté d'un tick : on n'appelle pas Supabase directement depuis ce rappel (risque de blocage).
       setTimeout(() => { void resolveSession(s); }, 0);
     });
+
+    // Retour du réseau alors qu'on est entré sur le profil mémorisé : on retente de retrouver la vraie session.
+    const handleOnline = async () => {
+      if (!offlineIdentityRef.current) return;
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      if (data.session) await resolveSession(data.session);
+      else setNeedsReauth(true);
+    };
+    window.addEventListener('online', handleOnline);
+
     return () => {
       active = false;
       listener.subscription.unsubscribe();
+      window.removeEventListener('online', handleOnline);
     };
   }, []);
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    const pending = readPending().filter(i => session && i.userId === session.user.id).length;
+    if (pending > 0 && !window.confirm(`${pending} match${pending > 1 ? 's' : ''} ${pending > 1 ? 'ne sont pas encore envoyés' : "n'est pas encore envoyé"} en base. Se déconnecter maintenant empêchera l'envoi tant que vous ne serez pas reconnecté. Continuer ?`)) return;
+    lsRemove(LS_OFFLINE_USER);
+    await supabase.auth.signOut({ scope: 'local' });
+    // La déconnexion locale ne dépend pas du réseau : on affiche la connexion tout de suite.
+    setSession(null);
+    setRole(null);
+    setNeedsReauth(false);
+    offlineIdentityRef.current = false;
+    setOfflineIdentity(false);
+    setStatus('signed_out');
   };
 
   if (status === 'loading') return <CenteredMessage title="Chargement...">Vérification de la connexion.</CenteredMessage>;
@@ -2457,5 +2905,15 @@ export default function App() {
       </CenteredMessage>
     );
   }
-  return <TeamStatsApp key={session.user.id} userEmail={session.user.email || ''} role={role} onSignOut={signOut} />;
+  return (
+    <TeamStatsApp
+      key={session.user.id}
+      userId={session.user.id}
+      userEmail={session.user.email || ''}
+      role={role}
+      onSignOut={signOut}
+      needsReauth={needsReauth && offlineIdentity}
+      onReauth={signOut}
+    />
+  );
 }
