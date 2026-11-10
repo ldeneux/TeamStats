@@ -695,21 +695,77 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   };
 
   // SUPPRIMER DÉFINITIVEMENT UN MATCH (infos + événements + statistiques)
+  // Le match supprimé est-il celui affiché à l'écran (même enregistrement, ou même numéro de match) ?
+  const isDisplayedMatch = (m: any) =>
+    !!m && (currentMatchDbId === m.id || (!!matchConfig.ffbbMatchId.trim() && matchConfig.ffbbMatchId.trim() === String(m.ffbb_match_id || '')));
+
   const handleDeleteMatch = async () => {
     if (!matchToDelete) return;
     setIsDeletingMatch(true);
+    setPickerNotice('');
     try {
-      await supabase.from('stats_match_events').delete().eq('match_id', matchToDelete.id);
-      await supabase.from('stats_player_game_stats').delete().eq('match_id', matchToDelete.id);
-      await supabase.from('stats_matches').delete().eq('id', matchToDelete.id);
+      // Les statistiques par période référencent le match : elles doivent partir en premier, sinon la suppression est refusée.
+      for (const table of ['stats_match_events', 'stats_player_game_stats', 'stats_player_period_stats']) {
+        const { error } = await supabase.from(table).delete().eq('match_id', matchToDelete.id);
+        if (error) throw new Error(`${table} : ${error.message}`);
+      }
+      const { error: matchError } = await supabase.from('stats_matches').delete().eq('id', matchToDelete.id);
+      if (matchError) throw new Error(`stats_matches : ${matchError.message}`);
+
       setExistingMatches(prev => prev.filter(m => m.id !== matchToDelete.id));
-      if (currentMatchDbId === matchToDelete.id) setCurrentMatchDbId(null);
-    } catch (err) {
+      // Un envoi en attente de ce match ne doit pas le recréer plus tard.
+      removePending(userId, String(matchToDelete.ffbb_match_id || ''));
+      refreshPending();
+      // Si c'est le match affiché, l'écran est remis à zéro aussi (actions, score, temps de jeu, chrono).
+      if (isDisplayedMatch(matchToDelete)) resetMatchLocally(false);
+    } catch (err: any) {
       console.error(err);
+      setPickerNotice(isNetworkError(err)
+        ? "Hors connexion : la suppression est impossible maintenant. Réessayez quand le réseau est revenu."
+        : `Suppression impossible : ${err?.message || err}`);
     } finally {
       setIsDeletingMatch(false);
       setMatchToDelete(null);
     }
+  };
+
+  // REMISE À ZÉRO du match affiché : actions, score (global et par période), temps de jeu de toutes les joueuses,
+  // chrono, période et cinq de départ. L'équipe, l'adversaire, la date et la feuille de match sont conservés.
+  const resetMatchLocally = (keepDbId: boolean) => {
+    const starters = startingFiveByPeriod[1] && startingFiveByPeriod[1].length > 0 ? startingFiveByPeriod[1] : game.onCourtPlayerIds;
+    setGame(prev => ({
+      ...prev,
+      period: 1,
+      clockSeconds: prev.config.periodMinutes * 60,
+      isClockRunning: false,
+      scoreHome: 0,
+      scoreAway: 0,
+      scoreByPeriod: {},
+      onCourtPlayerIds: starters,
+      events: []
+    }));
+    setPlayingTime({});
+    setStartingFiveByPeriod({ 1: starters });
+    setSelectedPlayerId(null);
+    setIsSubbing(false);
+    setSelectedOutIds([]);
+    setSelectedInIds([]);
+    setConfirmResetPeriod(false);
+    setSelectedPeriodFilter('ALL');
+    if (!keepDbId) setCurrentMatchDbId(null);
+    lastSavedFpRef.current = '';
+  };
+
+  const handleResetAll = () => {
+    const ok = window.confirm(
+      "Tout remettre à zéro ?\n\nLes actions, le score, les temps de jeu et le chrono de CE match seront effacés de l'écran. "
+      + "Un envoi en attente pour ce match sera annulé. Ce qui est déjà enregistré en base n'est modifié que si vous enregistrez ensuite."
+    );
+    if (!ok) return;
+    resetMatchLocally(true);
+    const ffbbId = matchConfig.ffbbMatchId.trim();
+    if (ffbbId) removePending(userId, ffbbId);
+    refreshPending();
   };
 
   // CHARGER UN MATCH EXISTANT (infos + statistiques) DEPUIS SUPABASE
@@ -2228,6 +2284,9 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               <p className="text-xs text-slate-300">
                 <span className="font-bold text-white">{matchToDelete.team_home} vs {matchToDelete.team_away}</span> ({matchToDelete.match_date || 'date inconnue'}) sera définitivement supprimé, avec tous ses événements et statistiques. Cette action est irréversible.
               </p>
+              {isDisplayedMatch(matchToDelete) && (
+                <p className="text-[11px] text-amber-300">C'est le match affiché à l'écran : il sera aussi remis à zéro (actions, score, temps de jeu).</p>
+              )}
               <div className="flex space-x-2">
                 <button onClick={() => setMatchToDelete(null)} disabled={isDeletingMatch} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
                 <button onClick={handleDeleteMatch} disabled={isDeletingMatch} className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-xl text-sm transition">{isDeletingMatch ? 'Suppression...' : 'Supprimer'}</button>
@@ -2665,7 +2724,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
         {activeTab === 'LOGS' && (
           <div className="bg-slate-900/90 text-white p-4 rounded-3xl space-y-4 border border-white/10 shadow-2xl">
-            <h2 className="text-base font-bold text-amber-400 border-b border-slate-800 pb-3">Historique du Match</h2>
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h2 className="text-base font-bold text-amber-400">Historique du Match</h2>
+              <button onClick={handleResetAll} title="Efface actions, score, temps de jeu et chrono de ce match" className="text-[11px] font-bold text-rose-300 hover:text-white bg-rose-950/60 hover:bg-rose-700 border border-rose-800 px-2.5 py-1 rounded-lg transition">Tout remettre à zéro</button>
+            </div>
             {(() => {
               const visibleEvents = game.events.filter(ev => !ev.actionType.startsWith('ETAT:'));
               return visibleEvents.length === 0 ? (
