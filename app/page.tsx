@@ -1291,22 +1291,6 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     p => !game.onCourtPlayerIds.includes(p.id) && getFoulsCount(p.id) < 5
   );
 
-  // Règle : tant qu'il reste des joueuses disponibles sur le banc, on joue à 5.
-  const matchHasStarted = game.events.length > 0 || game.period > 1 || game.clockSeconds !== game.config.periodMinutes * 60;
-  const vacantSlots = Math.max(0, 5 - game.onCourtPlayerIds.length);
-  // Nombre d'entrantes à choisir : places vacantes + sorties choisies, plafonné par le banc disponible
-  const requiredIn = Math.min(vacantSlots + selectedOutIds.length, availableBenchPlayers.length);
-  // Remplacement obligatoire (non annulable) : match commencé, terrain incomplet, banc disponible
-  const isSubForced = matchHasStarted && vacantSlots > 0 && availableBenchPlayers.length > 0;
-
-  // Rouvre automatiquement le module si le terrain est incomplet alors qu'il reste des joueuses sur le banc
-  useEffect(() => {
-    if (isSubForced && !isSubbing) {
-      setSelectedPlayerId(null);
-      setIsSubbing(true);
-    }
-  }, [isSubForced, isSubbing]);
-
   // Ajustement manuel du score (+/-) : garde le score par période synchronisé
   const bumpScore = (side: 'home' | 'away', delta: number) => {
     setGame(prev => {
@@ -1361,13 +1345,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setFtAttempts([null, null, null]);
 
     if (alertFoul) {
-      // La joueuse exclue a déjà quitté le terrain : on ouvre le module seulement s'il reste quelqu'un sur le banc.
-      const benchLeft = game.matchRoster.filter(
-        p => p.id !== playerId && !updatedOnCourt.includes(p.id) && getFoulsCount(p.id) < 5
-      );
-      setSelectedOutIds([]);
-      setSelectedInIds([]);
-      if (benchLeft.length > 0) setIsSubbing(true);
+      setSelectedOutIds([playerId]);
+      setIsSubbing(true);
     }
   };
 
@@ -1403,28 +1382,20 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
   const toggleSelectOut = (id: string) => {
     if (getFoulsCount(id) >= 5) return;
-    if (selectedOutIds.includes(id)) {
-      const newOut = selectedOutIds.filter(i => i !== id);
-      setSelectedOutIds(newOut);
-      // Garde le nombre d'entrantes cohérent avec les places à pourvoir
-      const maxIn = vacantSlots + newOut.length;
-      setSelectedInIds(prev => prev.slice(0, maxIn));
-    } else if (selectedOutIds.length < availableBenchPlayers.length) {
-      setSelectedOutIds([...selectedOutIds, id]);
-    }
+    setSelectedOutIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
 
   const toggleSelectIn = (id: string) => {
     if (getFoulsCount(id) >= 5) return;
     if (selectedInIds.includes(id)) {
       setSelectedInIds(selectedInIds.filter(i => i !== id));
-    } else if (selectedInIds.length < vacantSlots + selectedOutIds.length) {
+    } else if (selectedInIds.length < selectedOutIds.length) {
       setSelectedInIds([...selectedInIds, id]);
     }
   };
 
   const validateSubstitutions = () => {
-    if (requiredIn === 0 || selectedInIds.length !== requiredIn) return;
+    if (selectedOutIds.length !== selectedInIds.length || selectedOutIds.length === 0) return;
 
     const matchNotStarted = game.period === 1 && game.clockSeconds === game.config.periodMinutes * 60 && game.events.length === 0;
 
@@ -1438,9 +1409,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         return { ...prev, onCourtPlayerIds: updatedOnCourt };
       }
 
-      const pOutNames = selectedOutIds.length > 0
-        ? selectedOutIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ')
-        : '-';
+      const pOutNames = selectedOutIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
       const pInNames = selectedInIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
 
       const subEvent: GameEvent = {
@@ -1448,7 +1417,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         timestamp: new Date().toLocaleTimeString(),
         period: prev.period,
         clockTime: formatTime(prev.clockSeconds),
-        actionType: `REMPLACEMENT (${selectedInIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
+        actionType: `REMPLACEMENT (${selectedOutIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
         playerId: selectedInIds[0]
       };
 
@@ -1751,7 +1720,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       const withStats = game.matchRoster.map(p => ({ p, st: getPlayerStats(p.id, selectedPeriodFilter) }));
       const best = (label: string, value: (s: ReturnType<typeof getPlayerStats>) => number) => {
         const top = [...withStats].sort((a, b) => value(b.st) - value(a.st))[0];
-        return top && value(top.st) > 0 ? `${label} : ${top.p.name} (${value(top.st)})` : `${label} : -`;
+        // Même affichage que pour la saisie : prénom seul (avec l'initiale du nom en cas d'homonyme).
+        return top && value(top.st) > 0 ? `${label} : ${getShortDisplayName(top.p, game.matchRoster)} (${value(top.st)})` : `${label} : -`;
       };
       const cardX = M + 156;
       const cardW = pageW - M - cardX;
@@ -2422,11 +2392,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Joueuses sur le terrain</h3>
                 <button
                   onClick={() => {
-                    if (isSubForced) return;
                     if (isSubbing) { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }
                     else { setSelectedPlayerId(null); setIsSubbing(true); }
                   }}
-                  disabled={isSubForced || (!isSubbing && availableBenchPlayers.length === 0)}
+                  disabled={!isSubbing && availableBenchPlayers.length === 0}
                   title="Faire un ou plusieurs changements"
                   className={`px-3 py-1 rounded-full text-[11px] font-black tracking-wide border transition disabled:opacity-40 ${isSubbing ? 'bg-indigo-500 border-indigo-300 text-white shadow' : 'bg-indigo-600/80 hover:bg-indigo-600 border-indigo-400/30 text-white'}`}
                 >🔄 CHANGEMENTS</button>
@@ -2611,16 +2580,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               <div className="bg-slate-900/95 backdrop-blur-md border border-indigo-500/50 p-4 rounded-3xl shadow-xl space-y-4 text-white">
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                   <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Changements de joueuses</h3>
-                  {!isSubForced && (
-                    <button onClick={() => { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }} className="text-xs text-rose-400 font-bold">ANNULER</button>
-                  )}
+                  <button onClick={() => { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }} className="text-xs text-rose-400 font-bold">ANNULER</button>
                 </div>
-
-                {isSubForced && (
-                  <div className="bg-amber-500/10 border border-amber-500/40 text-amber-200 text-xs font-bold rounded-xl px-3 py-2">
-                    ⚠️ Il faut {5} joueuses sur le terrain : choisissez {requiredIn} entrante{requiredIn > 1 ? 's' : ''} pour compléter l'équipe.
-                  </div>
-                )}
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -2648,7 +2609,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   </div>
 
                   <div>
-                    <p className="text-xs text-emerald-400 font-bold mb-2">2. Entrée(s) ({selectedInIds.length}/{requiredIn}) :</p>
+                    <p className="text-xs text-emerald-400 font-bold mb-2">2. Entrée(s) ({selectedInIds.length}) :</p>
                     <div className="space-y-2">
                       {game.matchRoster.filter(p => !game.onCourtPlayerIds.includes(p.id) && !selectedOutIds.includes(p.id)).map(p => {
                         const fouls = getFoulsCount(p.id);
@@ -2671,7 +2632,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                     </div>
                   </div>
 
-                  {requiredIn > 0 && selectedInIds.length === requiredIn && (
+                  {selectedInIds.length > 0 && selectedOutIds.length === selectedInIds.length && (
                     <button onClick={validateSubstitutions} className="col-span-2 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl shadow-lg transition">Valider le(s) remplacement(s)</button>
                   )}
                 </div>
