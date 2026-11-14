@@ -1745,7 +1745,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       // ---- Tableau principal : tient TOUJOURS sur la page 1 (la hauteur des lignes s'adapte à l'espace libre)
       const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'INT', 'BP', 'CT', 'CTS', 'FT', 'FS', 'ÉVAL', 'Temps']];
       const rowOf = (p: Player, st: ReturnType<typeof getPlayerStats>) => [
-        `#${p.number}`, p.name, String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
+        `#${p.number}`, getShortDisplayName(p, game.matchRoster), String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
         pct(st.pts2Made + st.pts3Made, st.pts2Att + st.pts3Att), String(st.rebOff), String(st.rebDef), String(st.rebOff + st.rebDef),
         String(st.assists), String(st.steals), String(st.turnovers), String(st.blocks), String(st.blocksAgainst),
         String(st.fouls), String(st.foulsDrawn), String(st.evaluation), mmss(st.totalSecs)
