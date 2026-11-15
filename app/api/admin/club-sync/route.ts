@@ -3,7 +3,7 @@
 // ses phases, son calendrier et son classement. Appelée par lots de quelques poules (voir AdminPanel).
 import { NextResponse } from 'next/server';
 import { authenticate, fail, HttpError, type DB } from '@/lib/serverAuth';
-import { pouleFromPages, type FfbbPoule } from '@/lib/ffbbPoule';
+import { findAssetCandidates, pouleFromPages, type AssetCandidate, type FfbbPoule } from '@/lib/ffbbPoule';
 import {
   clubEngagementsIn, competitionUrl, currentSeason, identifyTeam, normName, phaseNumberOf, seasonOfIso, statsTeamName,
 } from '@/lib/clubTeams';
@@ -160,6 +160,27 @@ export async function POST(req: Request) {
       const { data, error } = await caller.db.from('ffbb_poule_cache').select('poule_id, fetched_at').order('poule_id');
       if (error) throw new HttpError(500, `Lecture du cache impossible : ${error.message}`);
       return NextResponse.json({ season, poules: data ?? [] });
+    }
+
+    // Images (assets) présentes dans les pages FFBB des poules données : l'admin choisit celle du niveau.
+    if (body.action === 'assets') {
+      const ids: string[] = Array.isArray(body.pouleIds) ? body.pouleIds.map(String).slice(0, 4) : [];
+      if (ids.length === 0) throw new HttpError(400, 'Aucune poule demandée.');
+      const { data: cached, error } = await caller.db.from('ffbb_poule_cache').select('poule_id, data').in('poule_id', ids);
+      if (error) throw new HttpError(500, `Lecture du cache impossible : ${error.message}`);
+      const merged = new Map<string, AssetCandidate>();
+      for (const row of cached ?? []) {
+        for (const html of Array.isArray((row as any).data?.pages) ? (row as any).data.pages : []) {
+          if (typeof html !== 'string') continue;
+          for (const c of findAssetCandidates(html)) {
+            const m = merged.get(c.id);
+            if (!m) merged.set(c.id, c);
+            else { m.count += c.count; m.score = Math.max(m.score, c.score); for (const p of c.paths) if (m.paths.length < 3 && !m.paths.includes(p)) m.paths.push(p); }
+          }
+        }
+      }
+      const candidates = Array.from(merged.values()).sort((a, b) => b.score - a.score || a.count - b.count).slice(0, 16);
+      return NextResponse.json({ candidates });
     }
 
     if (body.action === 'process') {

@@ -69,6 +69,44 @@ const sameCategory = (teamName: string, labels: (string | null | undefined)[]) =
   });
 };
 
+// Heures du calendrier : enregistrées « telles quelles » (heure de Paris) avec un suffixe UTC. On retire ce
+// suffixe pour que le navigateur les relise comme une heure locale (14:00 reste 14:00).
+const naiveLocal = (iso: string | null | undefined) => (iso ? String(iso).replace(/(\.\d+)?(Z|\+00(:?00)?)$/, '') : null);
+
+// Rencontres du calendrier chargé dans TeamStats (tables stats_club_*, voir Administration > Équipes & calendriers).
+// La RLS limite déjà le résultat aux équipes auxquelles le compte a accès.
+const CLUB_MATCH_SELECT =
+  'ffbb_rencontre_id, match_date, status, numero_journee, us_is_team1, team1_name, team2_name, location, ' +
+  'stats_club_phases!inner(our_team_name, competition_name, stats_club_teams!inner(code, label, season, stats_team_id))';
+const mapClubMatch = (m: any) => {
+  const ph = m.stats_club_phases || {};
+  const ct = ph.stats_club_teams || {};
+  const opponent = m.us_is_team1 ? m.team2_name : m.team1_name;
+  return {
+    ffbb_rencontre_id: m.ffbb_rencontre_id,
+    match_date: naiveLocal(m.match_date),
+    status: m.status,
+    opponent,
+    home_away: m.us_is_team1 ? 'domicile' : 'exterieur',
+    location: m.location,
+    division_label: ph.competition_name,
+    numero_journee: m.numero_journee,
+    season: ct.season,
+    our_team_name: ph.our_team_name,
+    category: ct.code,
+    stats_team_id: ct.stats_team_id || null,
+  };
+};
+const hasOpponent = (r: any) => !!r.opponent && String(r.opponent).trim().toLowerCase() !== 'exempt';
+const loadUpcomingFromCalendar = async () => {
+  const since = new Date(Date.now() - 7 * 86400000).toISOString();
+  const res = await supabase.from('stats_club_matches').select(CLUB_MATCH_SELECT)
+    .eq('status', 'a_venir').not('us_is_team1', 'is', null).gte('match_date', since)
+    .order('match_date', { ascending: true }).limit(500);
+  if (res.error) return { data: null as any[] | null, error: res.error };
+  return { data: ((res.data ?? []) as any[]).map(mapClubMatch).filter(hasOpponent), error: null };
+};
+
 const sortPlayersAlpha = (players: Player[]) => [...players].sort((a, b) => a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }));
 
 
@@ -446,6 +484,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const [pickerStatusFilter, setPickerStatusFilter] = useState<'JOUE' | 'A_VENIR' | 'ALL'>('JOUE');
   const [upcomingMatches, setUpcomingMatches] = useState<any[]>([]);
   const [upcomingError, setUpcomingError] = useState('');
+  const [showPastConfirm, setShowPastConfirm] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isSheetExpanded, setIsSheetExpanded] = useState(false);
   const [pdfError, setPdfError] = useState('');
@@ -547,8 +587,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at')
           .order('match_date', { ascending: false })
           .limit(200),
-        // Calendrier des matchs à venir tenu dans l'appli principale (voir sql/ffbb_upcoming.sql).
-        supabase.rpc('list_upcoming_ffbb_matches')
+        // Calendrier des équipes du club chargé dans TeamStats (Administration > Équipes & calendriers).
+        loadUpcomingFromCalendar()
       ]);
       if (!playedRes.error && playedRes.data) {
         setExistingMatches(playedRes.data);
@@ -603,10 +643,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setIsLookingUpFfbb(true);
     setFfbbLookupError('');
     try {
-      // Fonction SQL dédiée (voir sql/ffbb_lookup.sql) : contourne la RLS de basketball_matches
-      // tout en ne renvoyant que les colonnes utiles pour un ID exact.
-      const { data, error } = await supabase.rpc('lookup_ffbb_match', { p_ffbb_id: ffbbId.trim() });
-      const row: any = Array.isArray(data) ? data[0] : data;
+      // Recherche dans le calendrier chargé dans TeamStats (toutes les équipes du club auxquelles ce compte a accès).
+      const { data: found, error } = await supabase.from('stats_club_matches').select(CLUB_MATCH_SELECT).eq('ffbb_rencontre_id', ffbbId.trim());
+      const rows = ((found ?? []) as any[]).map(mapClubMatch);
+      // Si plusieurs équipes du club sont dans la même poule, on privilégie l'équipe déjà choisie.
+      const row: any = rows.find(r => r.stats_team_id && r.stats_team_id === selectedTeamId) || rows[0];
 
       if (error) {
         setFfbbLookupError(isNetworkError(error) ? 'Hors connexion : choisissez le match dans la liste « À VENIR » (loupe).' : error.message);
@@ -614,6 +655,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       } else if (!row) {
         setFfbbLookupStatus('notfound');
       } else {
+        if (row.stats_team_id && row.stats_team_id !== selectedTeamId && savedTeams.some(t => t.id === row.stats_team_id)) handleLoadTeamFromSelect(row.stats_team_id);
+        setHomeAway(row.home_away === 'exterieur' ? 'EXTERIEUR' : 'DOMICILE');
         setMatchConfig(prev => ({
           ...prev,
           teamAway: row.opponent || prev.teamAway,
@@ -644,6 +687,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setIsLoadingExistingMatches(true);
     setPickerNotice('');
     setPickerSeasonFilter(getSeasonLabel(new Date().toISOString().split('T')[0]));
+    // Une équipe est déjà choisie dans la configuration : on ne montre d'abord que SES matchs.
+    setPickerTeamFilter(savedTeams.find(t => t.id === selectedTeamId)?.name || 'ALL');
     try {
       await fetchPickerData();
     } finally {
@@ -654,6 +699,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   // Notre équipe (stats_teams) correspondant à un match du calendrier : même catégorie (U15F...),
   // en préférant l'équipe dont le nom porte la saison du match (ex. "2026/2027").
   const findOurTeamForUpcoming = (u: any) => {
+    const linked = u.stats_team_id ? savedTeams.find(t => t.id === u.stats_team_id) : undefined;
+    if (linked) return linked;
     const labels = [u.category, u.our_team_name, u.division_label];
     const candidates = savedTeams.filter(t => sameCategory(t.name, labels));
     if (candidates.length <= 1) return candidates[0];
@@ -896,6 +943,24 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     startingFiveByPeriod: JSON.parse(JSON.stringify(startingFiveByPeriod)),
     savedAt: Date.now()
   });
+
+  // PROTECTION DES STATISTIQUES : un match daté d'avant aujourd'hui est un match joué. Avant de l'enregistrer
+  // (ce qui remplace ses statistiques en base), on demande de taper « confirmation ».
+  // Seul le bouton Enregistrer passe par là : l'envoi différé d'un match mis de côté hors ligne ne redemande rien
+  // (la confirmation a déjà été donnée au moment de l'enregistrement).
+  const todayLocal = () => new Date().toLocaleDateString('sv-SE'); // AAAA-MM-JJ, jour local
+  const isPastMatch = () => !!matchConfig.matchDate && matchConfig.matchDate < todayLocal();
+  const requestSaveMatch = () => {
+    if (saveStatus === 'saving') return;
+    if (isPastMatch()) { setConfirmText(''); setShowPastConfirm(true); return; }
+    void handleSaveMatch();
+  };
+  const confirmPastSave = () => {
+    if (confirmText.trim().toLowerCase() !== 'confirmation') return;
+    setShowPastConfirm(false);
+    setConfirmText('');
+    void handleSaveMatch();
+  };
 
   const handleSaveMatch = async () => {
     if (saveStatus === 'saving') return;
@@ -1857,7 +1922,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     .map(m => ({ kind: 'JOUE' as const, key: `p-${m.id}`, m }));
   const upcomingEntries = upcomingMatches
     .filter(u => !recordedFfbbIds.has(String(u.ffbb_rencontre_id || '')))
-    .filter(u => pickerTeamFilter === 'ALL' || sameCategory(pickerTeamFilter, [u.category, u.our_team_name, u.division_label]))
+    .filter(u => {
+      if (pickerTeamFilter === 'ALL') return true;
+      const t = savedTeams.find(x => x.name === pickerTeamFilter);
+      return u.stats_team_id ? u.stats_team_id === t?.id : sameCategory(pickerTeamFilter, [u.category, u.our_team_name, u.division_label]);
+    })
     .filter(u => pickerSeasonFilter === 'ALL' || getSeasonLabel(u.match_date) === pickerSeasonFilter)
     .sort((a, b) => String(a.match_date || '').localeCompare(String(b.match_date || '')))
     .map(u => ({ kind: 'A_VENIR' as const, key: `u-${u.ffbb_rencontre_id}`, u }));
@@ -1900,7 +1969,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             )}
             <span className="w-px h-6 bg-slate-700 self-center mx-0.5" />
             <button
-              onClick={handleSaveMatch}
+              onClick={requestSaveMatch}
               disabled={saveStatus === 'saving'}
               title="Enregistrer le match et les statistiques"
               className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
@@ -2121,7 +2190,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                     <button onClick={openFfbbPicker} title="Rechercher un match (joué ou à venir)" className="shrink-0 w-10 h-10 flex items-center justify-center bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 text-lg">🔍</button>
                   </div>
                   {ffbbLookupStatus === 'error' && (
-                    <p className="text-[10px] text-rose-400 mt-1 break-words">{ffbbLookupError} (as-tu exécuté sql/ffbb_lookup.sql ?)</p>
+                    <p className="text-[10px] text-rose-400 mt-1 break-words">{ffbbLookupError} (as-tu exécuté sql/admin_01_club_calendar.sql ?)</p>
                   )}
                 </div>
               </div>
@@ -2214,7 +2283,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               {!isOnline && !pickerNotice && <p className="text-[10px] text-slate-400">Hors connexion : listes de la dernière synchronisation. Un match « À VENIR » reste utilisable ; rouvrir un match enregistré demande le réseau.</p>}
 
               {upcomingError && pickerStatusFilter !== 'JOUE' && (
-                <p className="text-[10px] text-rose-400 break-words">Calendrier à venir indisponible : {upcomingError} (as-tu exécuté sql/ffbb_upcoming.sql ?)</p>
+                <p className="text-[10px] text-rose-400 break-words">Calendrier à venir indisponible : {upcomingError} (as-tu exécuté sql/admin_01_club_calendar.sql ?)</p>
               )}
 
               {isLoadingExistingMatches ? (
@@ -2268,6 +2337,33 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   })())}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {showPastConfirm && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => setShowPastConfirm(false)}>
+            <div className="bg-slate-900 border border-amber-500/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-bold text-amber-400">⚠️ Ce match est déjà joué</h3>
+              <p className="text-xs text-slate-300">
+                <span className="font-bold text-white">{matchConfig.matchDate ? new Date(matchConfig.matchDate + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : ''}</span>
+                {' '}est antérieur à aujourd&apos;hui : ce match est considéré comme joué. L&apos;enregistrer <span className="font-bold text-white">remplace les statistiques déjà enregistrées</span> pour ce match.
+              </p>
+              <label className="block text-[11px] font-semibold text-slate-400">
+                Pour valider, écrivez <span className="font-black text-amber-400">confirmation</span> :
+                <input
+                  autoFocus
+                  value={confirmText}
+                  onChange={e => setConfirmText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') confirmPastSave(); }}
+                  autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                  className="mt-1 w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                />
+              </label>
+              <div className="flex space-x-2">
+                <button onClick={() => setShowPastConfirm(false)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
+                <button onClick={confirmPastSave} disabled={confirmText.trim().toLowerCase() !== 'confirmation'} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl text-sm transition disabled:opacity-40 disabled:cursor-not-allowed">Valider</button>
+              </div>
             </div>
           </div>
         )}

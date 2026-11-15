@@ -224,6 +224,8 @@ export function extractPoule(html: string, pouleId: string): Omit<FfbbPoule, 'po
     }
   }
 
+  if (!competitionLogoAsset) competitionLogoAsset = pickCompetitionLogo(html);
+
   return {
     pouleNom: pouleNode?.nom || pouleNom || null,
     competitionId,
@@ -266,4 +268,57 @@ export function pouleFromPages(pages: unknown, pouleId: string): FfbbPoule {
     rencontres,
     classements: meta?.classements ?? [],
   };
+}
+
+
+// ---------------------------------------------------------------------------------------
+// Recherche d'images (assets api.ffbb.com) dans une page : sert à retrouver l'icône du niveau (U15 Dép. F...)
+// quand sa position dans le JSON n'est pas celle attendue. Chaque asset est renvoyé avec son chemin JSON.
+// ---------------------------------------------------------------------------------------
+export interface AssetCandidate {
+  id: string;
+  score: number; // plus c'est haut, plus le chemin ressemble à « logo de la compétition »
+  count: number;
+  paths: string[];
+  labels: string[];
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const scorePath = (p: string) => {
+  let s = 0;
+  if (/ompetition|categor|division|phase|poule|championnat/i.test(p)) s += 2;
+  if (/logo|image|icon|visuel|badge/i.test(p)) s += 1;
+  if (/organisme|club|engagement|equipe|salle|commune|ligue|comite/i.test(p)) s -= 3;
+  return s;
+};
+
+export function findAssetCandidates(html: string): AssetCandidate[] {
+  const found = new Map<string, AssetCandidate>();
+  const add = (id: string, path: string, label: string | null) => {
+    const key = id.toLowerCase();
+    let c = found.get(key);
+    if (!c) { c = { id: key, score: -9, count: 0, paths: [], labels: [] }; found.set(key, c); }
+    c.count++;
+    c.score = Math.max(c.score, scorePath(path));
+    const short = path.split('.').slice(-5).join('.');
+    if (c.paths.length < 3 && !c.paths.includes(short)) c.paths.push(short);
+    if (label && c.labels.length < 2 && !c.labels.includes(label)) c.labels.push(label);
+  };
+  const rec = (node: Json, path: string[], label: string | null, depth: number) => {
+    if (depth > 40 || node == null) return;
+    if (typeof node === 'string') { if (UUID_RE.test(node)) add(node, path.join('.'), label); return; }
+    if (Array.isArray(node)) { for (const x of node.slice(0, 400)) rec(x, path.length && path[path.length - 1] === '[]' ? path : path.concat('[]'), label, depth + 1); return; }
+    if (typeof node === 'object') {
+      const lab = typeof node.nom === 'string' ? node.nom : typeof node.libelle === 'string' ? node.libelle : label;
+      for (const [k, v] of Object.entries(node)) rec(v, path.concat(k), lab, depth + 1);
+    }
+  };
+  for (const blob of jsonBlobs(html)) rec(blob, [], null, 0);
+  for (const m of Array.from(html.matchAll(/api\.ffbb\.com\/assets\/([0-9a-f-]{36})/gi))) add(m[1], 'html:url', null);
+  return Array.from(found.values());
+}
+
+// Meilleur candidat « logo de la compétition » (score >= 3 : chemin de compétition + mot logo, hors clubs).
+export function pickCompetitionLogo(html: string): string | null {
+  const best = findAssetCandidates(html).filter((c) => c.score >= 3).sort((a, b) => b.score - a.score || b.count - a.count)[0];
+  return best?.id ?? null;
 }

@@ -3,10 +3,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ClubCalendar from './ClubCalendar';
 import TeamTile from './TeamTile';
+import RosterPanel from './RosterPanel';
 import { adminApi } from '../lib/adminApi';
 import { supabase } from '../lib/supabase';
 import { ClubPhase, ClubTeam, fmtDateTimeLocal, fmtDay, loadClubTeams, loadPhases, phaseLabels, sortTeams } from '../lib/clubDb';
-import { currentSeason } from '../lib/clubTeams';
+import { currentSeason, ffbbAssetUrl } from '../lib/clubTeams';
 
 // Programme à lancer depuis un PC pour (re)charger le cache FFBB (même fichier que dans l'appli Multisports).
 const EXE_URL = process.env.NEXT_PUBLIC_FFBB_EXE_URL || 'https://multisports-eosin.vercel.app/MiseAJourFFBB_Club.exe';
@@ -21,6 +22,7 @@ export default function AdminTeams() {
   const [teamId, setTeamId] = useState('');
   const [phases, setPhases] = useState<ClubPhase[] | null>(null);
   const [phaseId, setPhaseId] = useState('');
+  const [teamView, setTeamView] = useState<'EFFECTIF' | 'PHASES'>('EFFECTIF');
   const [phaseCounts, setPhaseCounts] = useState<Record<string, number>>({});
 
   // chargement du cache
@@ -171,7 +173,14 @@ export default function AdminTeams() {
             <h2 className="text-sm font-extrabold text-white">{team.label} <span className="font-normal text-slate-400">· {team.season}</span></h2>
             <p className="text-[11px] text-slate-500">Équipe TeamStats liée : {team.stats_team_id ? 'oui' : 'non'} · mise à jour {fmtDateTimeLocal(team.last_sync_at)}</p>
           </div>
-          <ImageEditor team={team} onSaved={refreshTeams} />
+          <ImageEditor team={team} pouleIds={(phases ?? []).map((p) => p.poule_id)} onSaved={refreshTeams} />
+          <div className="flex rounded-xl border border-slate-700 bg-slate-800 p-1 text-sm font-bold">
+            {([['EFFECTIF', '👥 Effectif'], ['PHASES', '🗓 Phases & calendrier']] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setTeamView(k)} className={`flex-1 rounded-lg px-3 py-2 transition ${teamView === k ? 'bg-amber-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>{l}</button>
+            ))}
+          </div>
+          {teamView === 'EFFECTIF' && <RosterPanel team={team} allTeams={teams ?? []} onChanged={refreshTeams} />}
+          {teamView === 'PHASES' && (<>
           {!phases ? <p className="py-3 text-center text-sm text-slate-400">Chargement…</p>
             : phases.length === 0 ? <p className="py-3 text-center text-sm text-slate-400">Aucune phase.</p>
             : (
@@ -202,33 +211,64 @@ export default function AdminTeams() {
               <ClubCalendar phase={phase} />
             </div>
           )}
+          </>)}
         </section>
       )}
     </div>
   );
 }
 
-// Image de l'équipe : normalement lue dans les données FFBB ; ce champ permet de la corriger à la main
-// (coller l'adresse de l'image api.ffbb.com/assets/… ou son identifiant).
-function ImageEditor({ team, onSaved }: { team: ClubTeam; onSaved: () => void | Promise<void> }) {
+// Image de l'équipe : normalement lue dans les données FFBB. Si elle manque, « Chercher » liste les images
+// présentes dans les pages FFBB de l'équipe (avec miniature) : un clic choisit la bonne.
+// On peut aussi coller l'adresse api.ffbb.com/assets/… (ou l'identifiant) à la main.
+interface AssetCandidate { id: string; score: number; count: number; paths: string[]; labels: string[] }
+function ImageEditor({ team, pouleIds, onSaved }: { team: ClubTeam; pouleIds: string[]; onSaved: () => void | Promise<void> }) {
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState('');
-  useEffect(() => { setValue(''); setMsg(''); }, [team.id]);
-  const save = async () => {
+  const [busy, setBusy] = useState(false);
+  const [cands, setCands] = useState<AssetCandidate[] | null>(null);
+  useEffect(() => { setValue(''); setMsg(''); setCands(null); }, [team.id]);
+
+  const saveId = async (id: string) => {
+    const { error } = await supabase.from('stats_club_teams').update({ logo_asset: id }).eq('id', team.id);
+    if (error) { setMsg(error.message); return; }
+    setMsg('Image enregistrée.'); setValue(''); setCands(null); await onSaved();
+  };
+  const saveTyped = () => {
     const m = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(value);
     if (!m) { setMsg('Identifiant d\'image introuvable dans ce texte.'); return; }
-    const { error } = await supabase.from('stats_club_teams').update({ logo_asset: m[0] }).eq('id', team.id);
-    if (error) { setMsg(error.message); return; }
-    setMsg('Image enregistrée.'); setValue(''); await onSaved();
+    void saveId(m[0]);
+  };
+  const search = async () => {
+    setBusy(true); setMsg(''); setCands(null);
+    try {
+      const r = await adminApi<{ candidates: AssetCandidate[] }>('/api/admin/club-sync', 'POST', { action: 'assets', pouleIds: pouleIds.slice(0, 4) });
+      setCands(r.candidates);
+      if (r.candidates.length === 0) setMsg('Aucune image trouvée dans les pages FFBB de cette équipe.');
+    } catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); }
   };
   return (
-    <details className="text-xs text-slate-400">
-      <summary className="cursor-pointer font-semibold">Changer l&apos;image de l&apos;équipe</summary>
-      <div className="mt-2 flex gap-2">
-        <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://api.ffbb.com/assets/9d89f3b3-…" className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-800 p-2 text-xs text-white focus:border-amber-500 focus:outline-none" />
-        <button onClick={save} disabled={!value.trim()} className="shrink-0 rounded-xl bg-amber-600 px-3 text-xs font-bold text-white disabled:opacity-40">Enregistrer</button>
+    <details className="text-xs text-slate-400" open={!team.logo_asset}>
+      <summary className="cursor-pointer font-semibold">{team.logo_asset ? "Changer l'image de l'équipe" : "⚠ Pas d'image : la retrouver"}</summary>
+      <div className="mt-2 space-y-2">
+        <button onClick={search} disabled={busy || pouleIds.length === 0} className="rounded-xl bg-slate-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-40">{busy ? 'Recherche…' : '🔍 Chercher dans les données FFBB'}</button>
+        {cands && cands.length > 0 && (
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {cands.map((c) => (
+              <button key={c.id} onClick={() => saveId(c.id)} title={c.paths.join('\n')} className="rounded-xl border border-slate-700 bg-slate-800/70 p-1.5 text-center hover:border-amber-500">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={ffbbAssetUrl(c.id, { height: 120 }) || ''} alt="" loading="lazy" className="mx-auto h-20 w-full rounded-lg bg-white object-contain" />
+                <span className="mt-1 block truncate text-[9px] text-slate-500">{c.paths[0]}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="ou coller https://api.ffbb.com/assets/9d89f3b3-…" className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-800 p-2 text-xs text-white focus:border-amber-500 focus:outline-none" />
+          <button onClick={saveTyped} disabled={!value.trim()} className="shrink-0 rounded-xl bg-amber-600 px-3 text-xs font-bold text-white disabled:opacity-40">Enregistrer</button>
+        </div>
+        {msg && <p className="text-[11px] text-slate-300">{msg}</p>}
       </div>
-      {msg && <p className="mt-1 text-[11px] text-slate-300">{msg}</p>}
     </details>
   );
 }

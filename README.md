@@ -72,3 +72,31 @@ de la période). Une prolongation est stockée comme une période de numéro sup
     suppression, et affectation des équipes **par saison** d'un clic sur les vignettes (ex. U13F en 2025-2026, U15F en 2026-2027).
     Affecter une équipe = ouvrir l'équipe TeamStats liée (`team_access`) : le coach la retrouve aussi dans le direct et les stats.
 - Réglages du club (nom FFBB, nom court, comité) : `lib/clubTeams.ts`.
+
+## Onglet Match et calendrier
+- La liste « À VENIR » (loupe 🔍) et la recherche par **ID FFBB** lisent désormais le calendrier chargé dans TeamStats
+  (tables `stats_club_*`), et non plus les tables de Multisports : toutes les équipes du club ont leurs rencontres, pas seulement
+  celles des enfants suivis dans Multisports. `sql/ffbb_upcoming.sql` et `sql/ffbb_lookup.sql` ne sont plus utilisés.
+- Quand une équipe est choisie dans la configuration du match, la loupe n'affiche d'abord que les matchs de cette équipe ; la recherche
+  par ID choisit l'équipe, domicile/extérieur, adversaire et date.
+- Un compte ne voit que les rencontres des équipes qui lui sont affectées (admin et superadmin : toutes).
+- Images des équipes : si une vignette n'a pas d'image, Administration > Équipes > l'équipe > « Chercher dans les données FFBB »
+  liste les images trouvées (avec miniature) ; un clic choisit la bonne.
+
+## Protection des statistiques
+Quand la date du match est antérieure à aujourd'hui, le bouton 💾 ouvre d'abord une fenêtre : le match est considéré comme joué et
+l'enregistrement remplace ses statistiques. Le bouton **Valider** ne s'active qu'une fois le mot « confirmation » saisi. Un match daté
+d'aujourd'hui ou du futur s'enregistre directement. Un match mis de côté hors ligne est confirmé au moment où l'on appuie sur 💾 ;
+son envoi automatique au retour du réseau ne redemande rien.
+
+## Effectifs (Administration > Équipes & calendriers > une équipe > 👥 Effectif)
+- Exécuter `sql/admin_03_roster.sql` (après `admin_01`).
+- **📄 Importer un PDF extranet FFBB** : le trombinoscope (ex. `ARA0069106_U11_FILLES_1.pdf`) est lu dans le navigateur, sans envoi du fichier
+  au serveur. Seuls nom, prénom, n° de licence, date de naissance, sexe et infos de licence sont gardés ; **les photos ne sont jamais lues ni
+  enregistrées**.
+- **Affectation** : à l'équipe indiquée dans le PDF (« U11 FILLES », n° 1 → U11F ; n° 2 → U11F-2) pour la saison du PDF. Si l'équipe n'est pas
+  renseignée (ou inconnue), d'après la date de naissance : âge sportif = année de fin de saison − année de naissance, rattaché à la plus petite
+  catégorie Uxx ≥ à cet âge, à sexe égal (10 ou 11 ans → U11, 12-13 → U13...), Seniors à partir de 19 ans.
+- **Aperçu avant import** : chaque ligne peut être décochée, changée d'équipe ou de rôle. Les adultes (≥ 19 ans) d'une équipe de jeunes sont
+  proposés en « encadrement ». Réimporter est sans risque (clé : équipe + n° de licence) ; l'option « retirer les absents du PDF » est décochée par défaut.
+- `public/pdf.worker.min.js` est la copie du worker de `pdfjs-dist@3.11.174` (version à garder identique si vous mettez la bibliothèque à jour).
