@@ -12,6 +12,9 @@ npm run dev
 Renseigner dans `.env.local` (en local) ou dans les Environment Variables du projet Vercel :
 - NEXT_PUBLIC_SUPABASE_URL
 - NEXT_PUBLIC_SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_ROLE_KEY : **serveur uniquement** (ne jamais préfixer par NEXT_PUBLIC_). Sert à lister / créer les comptes dans
+  Administration > Accès (Supabase > Project Settings > API > `service_role`).
+- NEXT_PUBLIC_FFBB_EXE_URL (facultatif) : adresse de téléchargement de MiseAJourFFBB_Club.exe affichée dans l'administration.
 
 ## Scripts SQL (à exécuter dans l'éditeur SQL de Supabase)
 Ordre conseillé pour une base à jour :
@@ -20,7 +23,9 @@ Ordre conseillé pour une base à jour :
 3. `sql/ffbb_lookup.sql` : recherche d'un match par ID FFBB (comptes connectés uniquement).
 4. `sql/ffbb_upcoming.sql` : matchs à venir de NOS équipes (filtrés selon les équipes autorisées).
 5. `sql/stats_extra_columns.sql` : colonnes des nouvelles statistiques (interceptions, balles perdues, contres, contres subis).
-6. `sql/security_02_lock_main_app_OPTIONAL.sql` : ferme l'appli principale aux comptes sans profil admin (voir ci-dessous).
+6. `sql/admin_01_club_calendar.sql` : profil **superadmin**, équipes du club par saison, phases, calendriers, classements (menus
+   Calendrier et Administration). Dernière étape du script : désigner le superadmin.
+7. `sql/security_02_lock_main_app_OPTIONAL.sql` : ferme l'appli principale aux comptes sans profil admin (voir ci-dessous).
 
 ## Connexion et profils
 - L'appli demande une connexion (Supabase Auth, e-mail + mot de passe) avant tout affichage. Les comptes se créent dans
@@ -48,3 +53,21 @@ En plus de Q1…Q4, un match d'une équipe U13 ou plus (ou sans « U » dans le 
 prolongation OT1 de 5 minutes, puis OT2, etc., uniquement en cas d'égalité à la fin de la période (bouton « + »
 de la période). Une prolongation est stockée comme une période de numéro supérieur au nombre de périodes
 (Q4 → OT1 = période 5), donc sans changement de schéma ; `current_period` vaut `OT1`, `OT2`…
+
+
+## Menus Calendrier et Administration
+- **Rôles** : `superadmin` (accès illimité, gère tous les comptes), `admin` (toutes les équipes, gère les comptes `analyst`),
+  `analyst` (uniquement les équipes affectées). Le premier superadmin se désigne en SQL (dernière étape de `admin_01_club_calendar.sql`).
+- **📅 Calendrier** (tous les comptes) : choix de l'équipe par image, saison (en cours par défaut), phase (en cours par défaut), puis
+  « Calendrier & résultats » et « Classement ». Un coach ne voit que les équipes qui lui sont affectées.
+- **🛠️ Administration** (admin et superadmin), bandeau d'icônes :
+  - 🏀 *Équipes & calendriers* : le bouton « Charger les équipes depuis le cache » lit `multisports.ffbb_poule_cache` (rempli par
+    `MiseAJourFFBB_Club.exe` lancé depuis un PC, le site FFBB bloquant les serveurs), garde les poules de la saison en cours, repère
+    les équipes d'« OLYMPIC SATHONAY » (une vignette par équipe : U15F, U13M, U15F · équipe 2...), crée pour chacune une équipe TeamStats
+    « SATHONAY U15F - 2026/2027 » (ou réutilise celle qui existe déjà avec ce nom) et enregistre phases, matchs et classements.
+    Cliquer une équipe affiche ses phases (compétition, poule, n° de phase et de poule FFBB), cliquer une phase affiche son calendrier.
+    Le chargement est rejouable à volonté : les matchs sont mis à jour sans suppression des équipes ni des données TeamStats.
+  - 🔑 *Accès* : liste des comptes Supabase, création (e-mail + mot de passe), changement de rôle / nom / mot de passe, désactivation,
+    suppression, et affectation des équipes **par saison** d'un clic sur les vignettes (ex. U13F en 2025-2026, U15F en 2026-2027).
+    Affecter une équipe = ouvrir l'équipe TeamStats liée (`team_access`) : le coach la retrouve aussi dans le direct et les stats.
+- Réglages du club (nom FFBB, nom court, comité) : `lib/clubTeams.ts`.
