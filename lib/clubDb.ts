@@ -39,7 +39,15 @@ export const sortTeams = (teams: ClubTeam[]) =>
 export async function loadClubTeams(): Promise<ClubTeam[]> {
   const { data, error } = await supabase.from('stats_club_teams').select('*').order('season', { ascending: false });
   if (error) throw new Error(error.message);
-  return (data ?? []) as ClubTeam[];
+  const teams = (data ?? []) as ClubTeam[];
+  // Équipe sans image propre : on reprend celle d'une de ses phases (le logo de la compétition).
+  if (teams.some((t) => !t.logo_asset)) {
+    const { data: ph } = await supabase.from('stats_club_phases').select('club_team_id, logo_asset').not('logo_asset', 'is', null);
+    const byTeam = new Map<string, string>();
+    for (const p of (ph ?? []) as { club_team_id: string; logo_asset: string }[]) if (!byTeam.has(p.club_team_id)) byTeam.set(p.club_team_id, p.logo_asset);
+    for (const t of teams) if (!t.logo_asset) t.logo_asset = byTeam.get(t.id) ?? null;
+  }
+  return teams;
 }
 export async function loadPhases(clubTeamId: string): Promise<ClubPhase[]> {
   const { data, error } = await supabase.from('stats_club_phases').select('*').eq('club_team_id', clubTeamId);

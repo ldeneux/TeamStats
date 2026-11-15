@@ -23,7 +23,7 @@ export default function TeamTile({
           // eslint-disable-next-line @next/next/no-img-element
           <img src={url} alt={team.label} loading="lazy" onError={() => setBroken(true)} className="h-full w-full object-contain p-1" />
         ) : (
-          <span className="text-2xl font-black text-slate-700">{team.code}</span>
+          <span className="px-1 text-center text-sm font-black leading-tight text-slate-600">{team.label}<br /><span className="text-[10px] font-semibold text-slate-400">image FFBB absente</span></span>
         )}
       </div>
       <span className="mt-1.5 text-sm font-extrabold text-white leading-tight">{team.label}</span>

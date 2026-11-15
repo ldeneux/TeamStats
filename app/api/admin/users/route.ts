@@ -1,6 +1,6 @@
 // « Gestion des accès » : liste, création et modification des comptes de l'application.
 // Réservé aux profils admin et superadmin. Règles :
-//   - un admin ne gère que des comptes « analyst » ; seul le superadmin crée / modifie admin et superadmin ;
+//   - un admin gère les comptes « analyst » et « admin » ; seul le superadmin crée / modifie / donne le rôle superadmin ;
 //   - personne ne peut changer son propre rôle, se désactiver ou se supprimer.
 // Les affectations d'équipes (team_access) se font directement depuis le navigateur (RLS admin).
 import { NextResponse } from 'next/server';
@@ -15,11 +15,11 @@ async function targetRole(svc: ReturnType<typeof serviceClient>, userId: string)
   const { data } = await svc.from('app_profiles').select('role').eq('user_id', userId).maybeSingle();
   return isRole(data?.role) ? data.role : null;
 }
-// Un admin ne peut agir que sur un analyst ou un compte sans profil ; le superadmin sur tous.
+// Un admin agit sur analyst, admin ou compte sans profil (jamais sur un superadmin) ; le superadmin sur tous.
 function assertCanManage(caller: Caller, current: Role | null, wanted?: Role | null) {
   if (caller.role === 'superadmin') return;
-  if (current === 'admin' || current === 'superadmin') throw new HttpError(403, 'Seul un superadmin peut modifier un compte admin ou superadmin.');
-  if (wanted && wanted !== 'analyst') throw new HttpError(403, 'Seul un superadmin peut donner le rôle admin ou superadmin.');
+  if (current === 'superadmin') throw new HttpError(403, 'Seul un superadmin peut modifier un compte superadmin.');
+  if (wanted === 'superadmin') throw new HttpError(403, 'Seul un superadmin peut donner le rôle superadmin.');
 }
 
 export async function GET(req: Request) {

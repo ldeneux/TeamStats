@@ -171,6 +171,7 @@ export default function AdminTeams() {
             <h2 className="text-sm font-extrabold text-white">{team.label} <span className="font-normal text-slate-400">· {team.season}</span></h2>
             <p className="text-[11px] text-slate-500">Équipe TeamStats liée : {team.stats_team_id ? 'oui' : 'non'} · mise à jour {fmtDateTimeLocal(team.last_sync_at)}</p>
           </div>
+          <ImageEditor team={team} onSaved={refreshTeams} />
           {!phases ? <p className="py-3 text-center text-sm text-slate-400">Chargement…</p>
             : phases.length === 0 ? <p className="py-3 text-center text-sm text-slate-400">Aucune phase.</p>
             : (
@@ -204,5 +205,30 @@ export default function AdminTeams() {
         </section>
       )}
     </div>
+  );
+}
+
+// Image de l'équipe : normalement lue dans les données FFBB ; ce champ permet de la corriger à la main
+// (coller l'adresse de l'image api.ffbb.com/assets/… ou son identifiant).
+function ImageEditor({ team, onSaved }: { team: ClubTeam; onSaved: () => void | Promise<void> }) {
+  const [value, setValue] = useState('');
+  const [msg, setMsg] = useState('');
+  useEffect(() => { setValue(''); setMsg(''); }, [team.id]);
+  const save = async () => {
+    const m = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(value);
+    if (!m) { setMsg('Identifiant d\'image introuvable dans ce texte.'); return; }
+    const { error } = await supabase.from('stats_club_teams').update({ logo_asset: m[0] }).eq('id', team.id);
+    if (error) { setMsg(error.message); return; }
+    setMsg('Image enregistrée.'); setValue(''); await onSaved();
+  };
+  return (
+    <details className="text-xs text-slate-400">
+      <summary className="cursor-pointer font-semibold">Changer l&apos;image de l&apos;équipe</summary>
+      <div className="mt-2 flex gap-2">
+        <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://api.ffbb.com/assets/9d89f3b3-…" className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-800 p-2 text-xs text-white focus:border-amber-500 focus:outline-none" />
+        <button onClick={save} disabled={!value.trim()} className="shrink-0 rounded-xl bg-amber-600 px-3 text-xs font-bold text-white disabled:opacity-40">Enregistrer</button>
+      </div>
+      {msg && <p className="mt-1 text-[11px] text-slate-300">{msg}</p>}
+    </details>
   );
 }

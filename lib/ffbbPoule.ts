@@ -188,6 +188,21 @@ export function extractPoule(html: string, pouleId: string): Omit<FfbbPoule, 'po
     }
     if (!competitionLogoAsset) competitionLogoAsset = assetId(a.logo);
   }
+  // Secours du logo : un objet « compétition » (id = celui de la phase) ou une rencontre qui le porte.
+  if (!competitionLogoAsset) {
+    for (const r of Array.from(rencontres.values())) {
+      competitionLogoAsset = assetId(r.idCompetition?.logo) || assetId(r.competition?.logo) || competitionLogoAsset;
+      if (competitionLogoAsset) break;
+    }
+  }
+  if (!competitionLogoAsset && competitionId) {
+    for (const blob of jsonBlobs(html)) {
+      walk(blob, [], (node) => {
+        if (!competitionLogoAsset && String(node.id) === competitionId && node.logo) competitionLogoAsset = assetId(node.logo);
+      });
+      if (competitionLogoAsset) break;
+    }
+  }
   // Secours : l'identifiant de compétition porté par une rencontre.
   if (!competitionId) {
     for (const r of Array.from(rencontres.values())) {

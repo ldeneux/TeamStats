@@ -25,7 +25,8 @@ Ordre conseillé pour une base à jour :
 5. `sql/stats_extra_columns.sql` : colonnes des nouvelles statistiques (interceptions, balles perdues, contres, contres subis).
 6. `sql/admin_01_club_calendar.sql` : profil **superadmin**, équipes du club par saison, phases, calendriers, classements (menus
    Calendrier et Administration). Dernière étape du script : désigner le superadmin.
-7. `sql/security_02_lock_main_app_OPTIONAL.sql` : ferme l'appli principale aux comptes sans profil admin (voir ci-dessous).
+7. `sql/admin_02_admin_manage_admins.sql` : uniquement si `admin_01` a déjà été exécuté avant cette mise à jour (un admin peut gérer les autres admin).
+8. `sql/security_02_lock_main_app_OPTIONAL.sql` : ferme l'appli principale aux comptes sans profil admin (voir ci-dessous).
 
 ## Connexion et profils
 - L'appli demande une connexion (Supabase Auth, e-mail + mot de passe) avant tout affichage. Les comptes se créent dans
@@ -56,7 +57,7 @@ de la période). Une prolongation est stockée comme une période de numéro sup
 
 
 ## Menus Calendrier et Administration
-- **Rôles** : `superadmin` (accès illimité, gère tous les comptes), `admin` (toutes les équipes, gère les comptes `analyst`),
+- **Rôles** : `superadmin` (accès illimité, gère tous les comptes), `admin` (toutes les équipes, gère les comptes `analyst` et `admin`, jamais un superadmin),
   `analyst` (uniquement les équipes affectées). Le premier superadmin se désigne en SQL (dernière étape de `admin_01_club_calendar.sql`).
 - **📅 Calendrier** (tous les comptes) : choix de l'équipe par image, saison (en cours par défaut), phase (en cours par défaut), puis
   « Calendrier & résultats » et « Classement ». Un coach ne voit que les équipes qui lui sont affectées.

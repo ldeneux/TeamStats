@@ -53,8 +53,8 @@ export default function AdminAccess() {
   }, []);
   useEffect(() => { void reload(); }, [reload]);
 
-  const canManage = (u: AppUser) => !!data && (data.callerRole === 'superadmin' || u.role === 'analyst' || u.role === null);
-  const roleOptions: Role[] = data?.callerRole === 'superadmin' ? ['analyst', 'admin', 'superadmin'] : ['analyst'];
+  const canManage = (u: AppUser) => !!data && (data.callerRole === 'superadmin' || u.role !== 'superadmin');
+  const roleOptions: Role[] = data?.callerRole === 'superadmin' ? ['analyst', 'admin', 'superadmin'] : ['analyst', 'admin'];
 
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     setError(''); setNotice('');
@@ -69,7 +69,7 @@ export default function AdminAccess() {
             <h2 className="text-sm font-extrabold uppercase tracking-wide text-amber-500">Comptes et accès</h2>
             <p className="text-[11px] text-slate-400">
               Un coach (analyst) ne voit que les équipes qui lui sont affectées, par saison. Les admin et superadmin voient tout.
-              {data?.callerRole === 'admin' && ' Seul un superadmin peut gérer les comptes admin et superadmin.'}
+              {data?.callerRole === 'admin' && ' Seul un superadmin peut gérer les comptes superadmin.'}
             </p>
           </div>
           <button onClick={() => setCreating((v) => !v)} className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-500">{creating ? 'Fermer' : '＋ Nouveau compte'}</button>
@@ -169,7 +169,7 @@ function UserCard({ u, self, open, onToggle, manageable, roleOptions, callerRole
 
       {open && (
         <div className="space-y-4 border-t border-slate-800 p-3">
-          {!manageable && <p className="text-xs text-slate-400">Seul un superadmin peut modifier ce compte.</p>}
+          {!manageable && <p className="text-xs text-slate-400">Seul un superadmin peut modifier un compte superadmin.</p>}
           {manageable && (
             <>
               <div className="grid gap-2 sm:grid-cols-2">

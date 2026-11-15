@@ -5,7 +5,7 @@
 --
 -- Rôles
 --   superadmin : accès illimité (tout ce que fait admin + gestion des comptes admin / superadmin).
---   admin      : voit et gère toutes les équipes ; gère les comptes « analyst » (pas les admin).
+--   admin      : voit et gère toutes les équipes ; gère les comptes « analyst » et « admin » (pas les superadmin).
 --   analyst    : ne voit que les équipes qui lui sont affectées (multisports.team_access).
 -- =====================================================================================
 
@@ -48,14 +48,14 @@ $$;
 REVOKE ALL ON FUNCTION multisports.is_superadmin() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION multisports.is_superadmin() TO authenticated;
 
--- Profils : un admin ne peut créer / modifier / supprimer que des comptes « analyst »
--- (sinon il pourrait se donner le rôle superadmin). Le superadmin peut tout.
+-- Profils : un admin peut créer / modifier / supprimer des comptes « analyst » et « admin », mais jamais
+-- toucher un superadmin ni donner ce rôle. Le superadmin peut tout.
 DROP POLICY IF EXISTS app_profiles_admin_write ON multisports.app_profiles;
 DROP POLICY IF EXISTS app_profiles_write ON multisports.app_profiles;
 CREATE POLICY app_profiles_write ON multisports.app_profiles
   FOR ALL TO authenticated
-  USING (multisports.is_superadmin() OR (multisports.is_admin() AND role = 'analyst'))
-  WITH CHECK (multisports.is_superadmin() OR (multisports.is_admin() AND role = 'analyst'));
+  USING (multisports.is_superadmin() OR (multisports.is_admin() AND role IN ('analyst', 'admin')))
+  WITH CHECK (multisports.is_superadmin() OR (multisports.is_admin() AND role IN ('analyst', 'admin')));
 
 -- 2) Équipes du club, par saison ----------------------------------------------------------
 -- Une ligne par équipe (U15F, U13M, U15F-2...) et par saison. Chaque équipe du club est liée à
