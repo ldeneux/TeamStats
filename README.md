@@ -106,3 +106,9 @@ son envoi automatique au retour du réseau ne redemande rien.
   saisies (mention « joué, stats non saisies », score FFBB) ; cliquer pré-remplit le match (la confirmation « confirmation » sera demandée à l'enregistrement).
 - **À VENIR** : matchs à venir (et ceux des 7 derniers jours non encore mis à jour dans le cache FFBB).
 - Effectif : le code « D11 » de la fiche FFBB est affiché en badge **Surclassement U11** (aucun réimport nécessaire : l'info était déjà enregistrée).
+
+## Statistiques d'un match depuis le calendrier
+Dans le menu 📅 Calendrier (et dans l'administration), un match dont les statistiques ont été saisies affiche l'icône **📊** sous son score ; un clic
+télécharge le PDF des statistiques du match (même document que le bouton « Statistiques (PDF) » de l'onglet Stats). Les données sont relues en base
+(matchs, événements, temps de jeu) : le match éventuellement en cours de saisie n'est pas modifié. Le lien se fait par le n° de rencontre FFBB.
+Un compte ne voit l'icône que pour les matchs de ses équipes. Sans réseau, l'icône n'apparaît pas.

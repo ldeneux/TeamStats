@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import CalendarMenu from '../components/CalendarMenu';
 import AdminPanel from '../components/AdminPanel';
+import { StatsPdfContext } from '../lib/statsPdfContext';
 
 export interface Player { id: string; number: number; name: string; }
 export interface SavedTeam { id: string; name: string; roster: Player[]; }
@@ -1659,11 +1660,14 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   // ---------------------------------------------------------------------------
   // EXPORT PDF DES STATISTIQUES (vue affichée : match complet ou une période)
   // ---------------------------------------------------------------------------
-  const handleExportStatsPdf = async () => {
-    if (isExportingPdf) return;
-    setIsExportingPdf(true);
-    setPdfError('');
-    try {
+  // Génération du PDF à partir d'un contexte explicite : le match affiché (bouton de l'onglet Stats) comme
+  // un match enregistré rechargé depuis la base (icône 📊 du calendrier) passent par ce même dessin.
+  const generateStatsPdf = async (ctx: {
+    game: GameState; matchConfig: GameConfig; homeAway: 'DOMICILE' | 'EXTERIEUR'; matchType: 'OFFICIEL' | 'AMICAL';
+    selectedPeriodFilter: number | 'ALL'; lastPeriodShown: number;
+    getPlayerStats: (playerId: string, periodFilter: number | 'ALL') => ReturnType<typeof computePlayerStats>;
+  }) => {
+      const { game, matchConfig, homeAway, matchType, selectedPeriodFilter, lastPeriodShown, getPlayerStats } = ctx;
       const { jsPDF } = await import('jspdf');
       const autoTable: any = (await import('jspdf-autotable')).default;
       const doc: any = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
@@ -1901,12 +1905,77 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
       const slug = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
       doc.save(`Stats-${slug(ours)}-vs-${slug(theirs)}-${matchConfig.matchDate || 'match'}-${slug(viewLabel)}.pdf`);
+  };
+
+  const handleExportStatsPdf = async () => {
+    if (isExportingPdf) return;
+    setIsExportingPdf(true);
+    setPdfError('');
+    try {
+      await generateStatsPdf({ game, matchConfig, homeAway, matchType, selectedPeriodFilter, lastPeriodShown, getPlayerStats });
     } catch (err) {
       console.error(err);
       setPdfError(err instanceof Error ? err.message : 'Échec de la génération du PDF.');
     } finally {
       setIsExportingPdf(false);
     }
+  };
+
+  // PDF des statistiques d'un match ENREGISTRÉ (icône 📊 du menu Calendrier). Les données sont relues en base
+  // et passent par le même calcul et le même dessin que l'export de l'onglet Stats ; l'état du match
+  // affiché à l'écran n'est jamais modifié.
+  const exportSavedMatchStats = async (ffbbRencontreId: string, usIsHome: boolean | null) => {
+    const { data: row, error } = await supabase.from('stats_matches').select('*').eq('ffbb_match_id', ffbbRencontreId).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!row) throw new Error('Aucune statistique enregistrée pour ce match.');
+    const [ev, st, pr] = await Promise.all([
+      supabase.from('stats_match_events').select('*').eq('match_id', row.id).order('created_at', { ascending: true }),
+      supabase.from('stats_player_game_stats').select('*').eq('match_id', row.id),
+      supabase.from('stats_player_period_stats').select('player_id, period, playing_time_seconds').eq('match_id', row.id)
+    ]);
+    for (const r of [ev, st, pr]) if (r.error) throw new Error(r.error.message);
+
+    const roster: Player[] = sortPlayersAlpha((st.data || []).map((s: any) => ({ id: s.player_id, number: s.player_number || 0, name: s.player_name || '?' })));
+    const pt: PlayingTimeMap = {};
+    (pr.data || []).forEach((r: any) => { (pt[r.player_id] ||= {})[r.period] = r.playing_time_seconds || 0; });
+    (st.data || []).forEach((s: any) => { if (!pt[s.player_id]) pt[s.player_id] = { 0: s.playing_time_seconds || 0 }; });
+
+    const events: GameEvent[] = (ev.data || [])
+      .filter((e: any) => !String(e.action_type).startsWith('ETAT:'))
+      .map((e: any) => ({ id: e.id, timestamp: e.timestamp_str || '', period: e.period, clockTime: e.clock_time, actionType: e.action_type, playerId: e.player_id }))
+      .reverse();
+    const sbp: { [period: number]: { home: number; away: number } } = {};
+    (ev.data || []).filter((e: any) => String(e.action_type).startsWith('ETAT:SCORE_PERIODE:')).forEach((e: any) => {
+      const [h, a] = String(e.action_type).split(':')[2].split('-').map((v: string) => parseInt(v, 10) || 0);
+      sbp[e.period] = { home: h, away: a };
+    });
+
+    // Notre équipe : indiquée par le calendrier (domicile ou non), sinon déduite des équipes TeamStats.
+    const ourNames = savedTeams.map(t => t.name);
+    const weAreAway = usIsHome !== null ? !usIsHome : (!ourNames.includes(row.team_home) && ourNames.includes(row.team_away));
+    const cfg: GameConfig = {
+      teamHome: weAreAway ? row.team_away : row.team_home,
+      teamAway: weAreAway ? row.team_home : row.team_away,
+      matchDate: row.match_date || '',
+      periodCount: row.period_count || 4,
+      periodMinutes: row.period_minutes || 10,
+      ffbbMatchId: row.ffbb_match_id || ''
+    };
+    const swap = (o: { home: number; away: number }) => (weAreAway ? { home: o.away, away: o.home } : o);
+    const g: GameState = {
+      config: cfg, period: 1, clockSeconds: 0, isClockRunning: false,
+      scoreHome: (weAreAway ? row.score_away : row.score_home) || 0,
+      scoreAway: (weAreAway ? row.score_home : row.score_away) || 0,
+      scoreByPeriod: Object.fromEntries(Object.entries(sbp).map(([p, s]) => [p, swap(s)])),
+      matchRoster: roster, onCourtPlayerIds: [], events
+    };
+    const last = Math.max(cfg.periodCount, ...events.map(e => e.period), ...Object.keys(g.scoreByPeriod).map(Number));
+    await generateStatsPdf({
+      game: g, matchConfig: cfg, homeAway: weAreAway ? 'EXTERIEUR' : 'DOMICILE',
+      matchType: String(row.ffbb_match_id || '').startsWith('AMICAL-') ? 'AMICAL' : 'OFFICIEL',
+      selectedPeriodFilter: 'ALL', lastPeriodShown: last,
+      getPlayerStats: (id, pf) => computePlayerStats(events, pt, id, pf)
+    });
   };
 
   const availableSeasons = Array.from(new Set([...existingMatches, ...upcomingMatches].map(m => getSeasonLabel(m.match_date)))).filter(Boolean).sort().reverse();
@@ -2027,6 +2096,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         )}
       </header>
 
+      <StatsPdfContext.Provider value={{ exportMatchStats: exportSavedMatchStats }}>
       <main>
         {activeTab === 'CAL' && (
           <CalendarMenu userId={userId} isAdmin={isAdmin} onOpenAdmin={() => setActiveTab('ADMIN')} />
@@ -2864,6 +2934,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           </div>
         )}
       </main>
+      </StatsPdfContext.Provider>
     </div>
   );
 }

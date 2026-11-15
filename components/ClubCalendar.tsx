@@ -5,6 +5,8 @@ import {
   ClubMatch, ClubPhase, ClubStanding, fmtShortDate, fmtTime, loadPhaseContent,
 } from '../lib/clubDb';
 import { ffbbAssetUrl } from '../lib/clubTeams';
+import { supabase } from '../lib/supabase';
+import { useStatsPdf } from '../lib/statsPdfContext';
 
 // ---------------------------------------------------------------------------------------
 // Petits éléments d'affichage partagés
@@ -40,7 +42,12 @@ function defaultJournee(matches: ClubMatch[], options: string[]): string | null 
   return next ?? options[options.length - 1] ?? null;
 }
 
-function MatchCard({ m }: { m: ClubMatch }) {
+// Icône « statistiques » : visible seulement si des stats ont été saisies pour ce match ; un clic télécharge le PDF.
+interface StatsHook { ids: Set<string>; busyId: string; onOpen: (m: ClubMatch) => void }
+
+function MatchCard({ m, stats }: { m: ClubMatch; stats?: StatsHook }) {
+  const hasStats = !!stats && stats.ids.has(m.ffbb_rencontre_id);
+  const busy = !!stats && stats.busyId === m.ffbb_rencontre_id;
   const played = m.status === 'joue';
   const usLeft = m.us_is_team1 === true;
   const usRight = m.us_is_team1 === false;
@@ -67,6 +74,16 @@ function MatchCard({ m }: { m: ClubMatch }) {
                 <span className={lc}>{ls ?? '–'}</span><span className="text-slate-500"> - </span><span className={rc}>{rs ?? '–'}</span>
               </span>
             ) : <span className="text-sm font-bold text-slate-300">{fmtTime(m.match_date) || '?'}</span>}
+          {hasStats && (
+            <button
+              type="button"
+              onClick={() => stats?.onOpen(m)}
+              disabled={busy}
+              title="Statistiques du match (PDF)"
+              aria-label="Télécharger le PDF des statistiques du match"
+              className="mt-1 flex h-7 w-9 items-center justify-center rounded-lg border border-amber-500/50 bg-amber-500/15 text-base leading-none transition hover:bg-amber-500/30 disabled:opacity-60"
+            >{busy ? '⏳' : '📊'}</button>
+          )}
         </span>
         {rightEx ? <span className="w-8 h-8 shrink-0" /> : <Crest asset={m.team2_logo_asset} name={m.team2_name} />}
         <span className={`min-w-0 flex-1 truncate text-sm ${nameCls(rightEx, usRight)}`} title={m.team2_name || ''}>{rightEx ? 'EXEMPT' : m.team2_name}</span>
@@ -81,7 +98,7 @@ function MatchCard({ m }: { m: ClubMatch }) {
 // ---------------------------------------------------------------------------------------
 // Calendrier & résultats
 // ---------------------------------------------------------------------------------------
-function CalendrierTab({ matches }: { matches: ClubMatch[] }) {
+function CalendrierTab({ matches, stats }: { matches: ClubMatch[]; stats?: StatsHook }) {
   const [scope, setScope] = useState<'us' | 'poule'>('us');
   const [mode, setMode] = useState<'une' | 'toutes'>('toutes');
   const scoped = useMemo(() => (scope === 'poule' ? matches : matches.filter((m) => m.us_is_team1 !== null)), [matches, scope]);
@@ -127,19 +144,19 @@ function CalendrierTab({ matches }: { matches: ClubMatch[] }) {
         ? options.map((j) => (
             <div key={j}>
               <p className="mb-1.5 rounded bg-slate-800/80 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-400">{journeeLabel(j)}</p>
-              <div className="space-y-2">{scoped.filter((m) => m.numero_journee === j).sort(sortByDate).map((m) => <MatchCard key={m.id} m={m} />)}</div>
+              <div className="space-y-2">{scoped.filter((m) => m.numero_journee === j).sort(sortByDate).map((m) => <MatchCard key={m.id} m={m} stats={stats} />)}</div>
             </div>
           ))
         : (
           <div className="space-y-2">
-            {journee && scoped.filter((m) => m.numero_journee === journee).sort(sortByDate).map((m) => <MatchCard key={m.id} m={m} />)}
+            {journee && scoped.filter((m) => m.numero_journee === journee).sort(sortByDate).map((m) => <MatchCard key={m.id} m={m} stats={stats} />)}
           </div>
         )}
 
       {undated.length > 0 && (
         <div>
           <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">Matchs sans journée renseignée</p>
-          <div className="space-y-2">{undated.sort(sortByDate).map((m) => <MatchCard key={m.id} m={m} />)}</div>
+          <div className="space-y-2">{undated.sort(sortByDate).map((m) => <MatchCard key={m.id} m={m} stats={stats} />)}</div>
         </div>
       )}
     </div>
@@ -246,6 +263,39 @@ export default function ClubCalendar({ phase }: { phase: ClubPhase }) {
   const [tab, setTab] = useState<'calendrier' | 'classement'>('calendrier');
   const [data, setData] = useState<{ matches: ClubMatch[]; standings: ClubStanding[] } | null>(null);
   const [error, setError] = useState('');
+  const pdfApi = useStatsPdf();
+  const [statsIds, setStatsIds] = useState<Set<string>>(new Set());
+  const [busyId, setBusyId] = useState('');
+  const [pdfError, setPdfError] = useState('');
+
+  // Quels matchs de la phase ont des statistiques saisies ? (la RLS ne renvoie que ceux auxquels on a accès)
+  useEffect(() => {
+    setStatsIds(new Set());
+    if (!pdfApi || !data) return;
+    const ids = data.matches.filter((m) => m.us_is_team1 !== null).map((m) => m.ffbb_rencontre_id);
+    if (ids.length === 0) return;
+    let alive = true;
+    (async () => {
+      const found = new Set<string>();
+      for (let i = 0; i < ids.length; i += 60) {
+        const { data: rows } = await supabase.from('stats_matches').select('ffbb_match_id').in('ffbb_match_id', ids.slice(i, i + 60));
+        for (const r of (rows ?? []) as { ffbb_match_id: string }[]) found.add(String(r.ffbb_match_id));
+      }
+      if (alive) setStatsIds(found);
+    })().catch(() => undefined); // sans réseau : simplement pas d'icône
+    return () => { alive = false; };
+  }, [data, pdfApi]);
+
+  const openStatsPdf = async (m: ClubMatch) => {
+    if (!pdfApi || busyId) return;
+    setBusyId(m.ffbb_rencontre_id); setPdfError('');
+    try {
+      await pdfApi.exportMatchStats(m.ffbb_rencontre_id, m.us_is_team1);
+    } catch (e: any) {
+      setPdfError(e?.message || 'Échec de la génération du PDF.');
+    } finally { setBusyId(''); }
+  };
+  const statsHook: StatsHook | undefined = pdfApi ? { ids: statsIds, busyId, onOpen: openStatsPdf } : undefined;
 
   useEffect(() => {
     let alive = true;
@@ -263,9 +313,10 @@ export default function ClubCalendar({ phase }: { phase: ClubPhase }) {
         ))}
       </div>
       {error && <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-300 break-words">Lecture impossible : {error}</p>}
+      {pdfError && <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-300 break-words">PDF impossible : {pdfError}</p>}
       {!data && !error && <p className="py-6 text-center text-sm text-slate-400">Chargement…</p>}
       {data && (tab === 'calendrier'
-        ? <CalendrierTab matches={data.matches} />
+        ? <CalendrierTab matches={data.matches} stats={statsHook} />
         : <ClassementTab standings={data.standings} matches={data.matches} ourEngagement={phase.engagement_id} />)}
     </div>
   );
