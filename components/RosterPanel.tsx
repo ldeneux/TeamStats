@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase';
 import { ClubTeam, sortTeams } from '../lib/clubDb';
 import { currentSeason } from '../lib/clubTeams';
 import {
-  ParsedPlayer, ParsedRoster, extractPdfPages, guessRole, parseTrombinoscope, sportAge, teamByBirthdate, teamCodeFromPdf,
+  ParsedPlayer, ParsedRoster, extractPdfPages, guessRole, parseTrombinoscope, sportAge, surclassementOf, teamByBirthdate, teamCodeFromPdf,
 } from '../lib/rosterPdf';
 
 interface RosterRow {
@@ -17,6 +17,13 @@ interface Preview { parsed: ParsedRoster; season: string; headerTeamId: string |
 
 const frDate = (iso: string | null) => (iso ? iso.split('-').reverse().join('/') : '—');
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+// Badge « Surclassée U11 » (fiche FFBB : D11).
+function SurclassBadge({ extra }: { extra: string | null; sexe?: 'F' | 'M' | null }) {
+  const u = surclassementOf(extra);
+  if (!u) return null;
+  return <span className="ml-1.5 rounded-full border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 align-middle text-[9px] font-black uppercase text-amber-300">Surclassement {u}</span>;
+}
+const withoutSurclass = (extra: string | null) => (surclassementOf(extra) ? (extra || '').replace(/(^|\s|·)D\d{1,2}(?=\s|·|$)/, '').replace(/^\s*·\s*|\s*·\s*$/g, '').trim() || null : extra);
 const selCls = 'rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs font-bold text-white focus:border-amber-500 focus:outline-none';
 
 // Effectif d'une équipe : liste + import du trombinoscope PDF de l'extranet FFBB.
@@ -119,10 +126,10 @@ export default function RosterPanel({ team, allTeams, onChanged }: { team: ClubT
     return (
       <li className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-slate-800/60 px-3 py-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm text-white"><span className="font-extrabold">{r.last_name}</span> {r.first_name}</p>
+          <p className="truncate text-sm text-white"><span className="font-extrabold">{r.last_name}</span> {r.first_name}<SurclassBadge extra={r.extra} sexe={r.sexe} /></p>
           <p className="text-[11px] text-slate-500">
             {r.licence_number} · né{r.sexe === 'F' ? 'e' : ''} le {frDate(r.birthdate)}{age !== null ? ` (${age} ans)` : ''}
-            {r.licence_category ? ` · licence ${r.licence_category}` : ''}{r.extra ? ` · ${r.extra}` : ''}
+            {r.licence_category ? ` · licence ${r.licence_category}` : ''}{withoutSurclass(r.extra) ? ` · ${withoutSurclass(r.extra)}` : ''}
           </p>
         </div>
         <select value={team.id} onChange={(e) => run(() => supabase.from('stats_club_roster').update({ club_team_id: e.target.value }).eq('id', r.id))} className={selCls} title="Changer d'équipe">
@@ -165,8 +172,8 @@ export default function RosterPanel({ team, allTeams, onChanged }: { team: ClubT
                 <li key={it.p.licenceNumber} className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg px-2.5 py-2 ${it.include ? 'bg-slate-900/70' : 'bg-slate-900/30 opacity-60'}`}>
                   <input type="checkbox" checked={it.include} disabled={!it.teamId} onChange={(e) => setItem(i, { include: e.target.checked })} className="h-4 w-4 accent-amber-500" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm text-white"><span className="font-extrabold">{it.p.lastName}</span> {it.p.firstName}</p>
-                    <p className="text-[11px] text-slate-500">{it.p.licenceNumber} · {frDate(it.p.birthdate)}{age !== null ? ` (${age} ans)` : ''} · {it.p.sexe === 'F' ? 'F' : it.p.sexe === 'M' ? 'M' : '?'}{it.p.licenceCategory ? ` · ${it.p.licenceCategory}` : ''}{it.p.extra ? ` · ${it.p.extra}` : ''}</p>
+                    <p className="truncate text-sm text-white"><span className="font-extrabold">{it.p.lastName}</span> {it.p.firstName}<SurclassBadge extra={it.p.extra} sexe={it.p.sexe} /></p>
+                    <p className="text-[11px] text-slate-500">{it.p.licenceNumber} · {frDate(it.p.birthdate)}{age !== null ? ` (${age} ans)` : ''} · {it.p.sexe === 'F' ? 'F' : it.p.sexe === 'M' ? 'M' : '?'}{it.p.licenceCategory ? ` · ${it.p.licenceCategory}` : ''}{withoutSurclass(it.p.extra) ? ` · ${withoutSurclass(it.p.extra)}` : ''}</p>
                   </div>
                   <select value={it.teamId} onChange={(e) => setItem(i, { teamId: e.target.value, include: !!e.target.value, role: guessRole(it.p.birthdate, preview.season, allTeams.find((t) => t.id === e.target.value) ?? null) })} className={`${selCls} ${it.teamId ? '' : 'border-rose-500'}`}>
                     <option value="">— à affecter —</option>

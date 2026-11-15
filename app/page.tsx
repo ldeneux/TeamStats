@@ -76,7 +76,7 @@ const naiveLocal = (iso: string | null | undefined) => (iso ? String(iso).replac
 // Rencontres du calendrier chargé dans TeamStats (tables stats_club_*, voir Administration > Équipes & calendriers).
 // La RLS limite déjà le résultat aux équipes auxquelles le compte a accès.
 const CLUB_MATCH_SELECT =
-  'ffbb_rencontre_id, match_date, status, numero_journee, us_is_team1, team1_name, team2_name, location, ' +
+  'ffbb_rencontre_id, match_date, status, numero_journee, us_is_team1, team1_name, team2_name, team1_score, team2_score, location, ' +
   'stats_club_phases!inner(our_team_name, competition_name, stats_club_teams!inner(code, label, season, stats_team_id))';
 const mapClubMatch = (m: any) => {
   const ph = m.stats_club_phases || {};
@@ -86,6 +86,8 @@ const mapClubMatch = (m: any) => {
     ffbb_rencontre_id: m.ffbb_rencontre_id,
     match_date: naiveLocal(m.match_date),
     status: m.status,
+    us_score: m.us_is_team1 ? m.team1_score : m.team2_score,
+    opp_score: m.us_is_team1 ? m.team2_score : m.team1_score,
     opponent,
     home_away: m.us_is_team1 ? 'domicile' : 'exterieur',
     location: m.location,
@@ -98,11 +100,11 @@ const mapClubMatch = (m: any) => {
   };
 };
 const hasOpponent = (r: any) => !!r.opponent && String(r.opponent).trim().toLowerCase() !== 'exempt';
-const loadUpcomingFromCalendar = async () => {
-  const since = new Date(Date.now() - 7 * 86400000).toISOString();
+// Tous les matchs de nos équipes, TOUTES les phases de la saison, joués (status 'joue') comme à venir.
+const loadCalendarMatches = async () => {
   const res = await supabase.from('stats_club_matches').select(CLUB_MATCH_SELECT)
-    .eq('status', 'a_venir').not('us_is_team1', 'is', null).gte('match_date', since)
-    .order('match_date', { ascending: true }).limit(500);
+    .not('us_is_team1', 'is', null)
+    .order('match_date', { ascending: true }).limit(1500);
   if (res.error) return { data: null as any[] | null, error: res.error };
   return { data: ((res.data ?? []) as any[]).map(mapClubMatch).filter(hasOpponent), error: null };
 };
@@ -588,7 +590,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           .order('match_date', { ascending: false })
           .limit(200),
         // Calendrier des équipes du club chargé dans TeamStats (Administration > Équipes & calendriers).
-        loadUpcomingFromCalendar()
+        loadCalendarMatches()
       ]);
       if (!playedRes.error && playedRes.data) {
         setExistingMatches(playedRes.data);
@@ -1920,20 +1922,30 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     .filter(m => pickerSeasonFilter === 'ALL' || getSeasonLabel(m.match_date) === pickerSeasonFilter)
     .sort((a, b) => String(b.match_date || '').localeCompare(String(a.match_date || '')))
     .map(m => ({ kind: 'JOUE' as const, key: `p-${m.id}`, m }));
-  const upcomingEntries = upcomingMatches
+  // Matchs du calendrier pas encore enregistrés, filtrés par équipe et par saison.
+  const calendarFiltered = upcomingMatches
     .filter(u => !recordedFfbbIds.has(String(u.ffbb_rencontre_id || '')))
     .filter(u => {
       if (pickerTeamFilter === 'ALL') return true;
       const t = savedTeams.find(x => x.name === pickerTeamFilter);
       return u.stats_team_id ? u.stats_team_id === t?.id : sameCategory(pickerTeamFilter, [u.category, u.our_team_name, u.division_label]);
     })
-    .filter(u => pickerSeasonFilter === 'ALL' || getSeasonLabel(u.match_date) === pickerSeasonFilter)
+    .filter(u => pickerSeasonFilter === 'ALL' || getSeasonLabel(u.match_date) === pickerSeasonFilter);
+  const weekAgo = Date.now() - 7 * 86400000;
+  const upcomingEntries = calendarFiltered
+    .filter(u => (u.status ?? 'a_venir') === 'a_venir' && (!u.match_date || new Date(u.match_date).getTime() >= weekAgo))
     .sort((a, b) => String(a.match_date || '').localeCompare(String(b.match_date || '')))
     .map(u => ({ kind: 'A_VENIR' as const, key: `u-${u.ffbb_rencontre_id}`, u }));
+  // Matchs joués d'après le calendrier (toutes les phases), dont les stats ne sont pas encore saisies.
+  const calendarPlayedEntries = calendarFiltered
+    .filter(u => u.status === 'joue')
+    .map(u => ({ kind: 'JOUE_CAL' as const, key: `c-${u.ffbb_rencontre_id}-${u.stats_team_id || ''}`, u }));
+  const entryDate = (e: any) => String(e.m?.match_date || e.u?.match_date || '');
+  const playedAll: any[] = [...playedEntries, ...calendarPlayedEntries].sort((a, b) => entryDate(b).localeCompare(entryDate(a)));
   const pickerEntries: any[] =
-    pickerStatusFilter === 'JOUE' ? playedEntries
+    pickerStatusFilter === 'JOUE' ? playedAll
     : pickerStatusFilter === 'A_VENIR' ? upcomingEntries
-    : [...upcomingEntries, ...playedEntries];
+    : [...upcomingEntries, ...playedAll];
 
   return (
     <div className="max-w-3xl mx-auto min-h-screen pb-12 pt-4 px-2">
@@ -2318,18 +2330,24 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                     const weAreAway = String(u.home_away || '').toLowerCase().startsWith('ext');
                     const d = u.match_date ? new Date(u.match_date) : null;
                     const hasTime = !!d && (d.getHours() !== 0 || d.getMinutes() !== 0);
+                    const playedCal = entry.kind === 'JOUE_CAL';
+                    const scoreHome = weAreAway ? u.opp_score : u.us_score;
+                    const scoreAway = weAreAway ? u.us_score : u.opp_score;
                     return (
                       <div key={entry.key} className="w-full text-left p-3 rounded-xl bg-slate-800 border border-slate-700 hover:border-blue-500 transition">
                         <button onClick={() => handleSelectUpcomingMatch(u)} className="w-full text-left min-w-0">
                           <div className="flex justify-between items-start gap-2 text-xs">
                             <span className="font-bold text-white break-words">{weAreAway ? `${u.opponent} vs ${ours}` : `${ours} vs ${u.opponent}`}</span>
-                            <span className="shrink-0 text-[9px] font-black px-2 py-0.5 rounded-full bg-blue-600/80 text-white">À VENIR</span>
+                            {playedCal
+                              ? <span className="shrink-0 font-bold text-slate-300">{scoreHome ?? '–'} - {scoreAway ?? '–'}</span>
+                              : <span className="shrink-0 text-[9px] font-black px-2 py-0.5 rounded-full bg-blue-600/80 text-white">À VENIR</span>}
                           </div>
                           <div className="text-[10px] text-slate-500 mt-1 truncate">
                             {d ? d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Date inconnue'}
                             {hasTime && d ? ` à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}
                             {u.numero_journee ? ` · J${u.numero_journee}` : ''}
                             {` · ID : ${u.ffbb_rencontre_id}`}
+                            {playedCal && <span className="text-emerald-400"> · joué, stats non saisies</span>}
                           </div>
                         </button>
                       </div>

@@ -100,3 +100,9 @@ son envoi automatique au retour du réseau ne redemande rien.
 - **Aperçu avant import** : chaque ligne peut être décochée, changée d'équipe ou de rôle. Les adultes (≥ 19 ans) d'une équipe de jeunes sont
   proposés en « encadrement ». Réimporter est sans risque (clé : équipe + n° de licence) ; l'option « retirer les absents du PDF » est décochée par défaut.
 - `public/pdf.worker.min.js` est la copie du worker de `pdfjs-dist@3.11.174` (version à garder identique si vous mettez la bibliothèque à jour).
+
+## Sélecteur de matchs (loupe 🔍)
+- **JOUÉ** liste les matchs enregistrés **et** les matchs déjà joués du calendrier, de **toutes les phases** de la saison, dont les stats ne sont pas encore
+  saisies (mention « joué, stats non saisies », score FFBB) ; cliquer pré-remplit le match (la confirmation « confirmation » sera demandée à l'enregistrement).
+- **À VENIR** : matchs à venir (et ceux des 7 derniers jours non encore mis à jour dans le cache FFBB).
+- Effectif : le code « D11 » de la fiche FFBB est affiché en badge **Surclassement U11** (aucun réimport nécessaire : l'info était déjà enregistrée).

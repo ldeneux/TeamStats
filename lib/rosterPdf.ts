@@ -149,6 +149,12 @@ export function teamByBirthdate(birthdate: string | null, sexe: 'F' | 'M' | null
   return best(young.filter((x) => x.n === minN).map((x) => x.t));
 }
 
+// Surclassement : la fiche porte « D11 » = joueuse jouant en U11 alors que sa catégorie d'âge est plus jeune (U9).
+export function surclassementOf(extra: string | null | undefined): string | null {
+  const m = /(?:^|\s|·)D(\d{1,2})(?:\s|·|$)/.exec(extra || '');
+  return m ? `U${parseInt(m[1], 10)}` : null;
+}
+
 // Adulte (>= 19 ans) dans une équipe de jeunes : encadrement (entraîneur, parent...) et non joueur.
 export function guessRole(birthdate: string | null, season: string, team: TeamLite | null): 'joueur' | 'encadrement' {
   const age = sportAge(birthdate, season);
