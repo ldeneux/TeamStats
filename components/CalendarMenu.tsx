@@ -6,7 +6,7 @@ import TeamTile from './TeamTile';
 import {
   ClubPhase, ClubTeam, defaultPhase, loadClubTeams, loadPhases, phaseLabels, sortTeams,
 } from '../lib/clubDb';
-import { currentSeason } from '../lib/clubTeams';
+import { currentSeason, displayCompetitionName } from '../lib/clubTeams';
 
 const LS_SEL = 'teamstats:calendar-selection:v1';
 const readSel = (userId: string): { team?: string; season?: string } => {
@@ -118,7 +118,7 @@ export default function CalendarMenu({ userId, isAdmin, onOpenAdmin }: { userId:
           {phase && (
             <>
               <p className="text-xs text-slate-400">
-                <span className="font-bold text-slate-200">{phase.competition_name || 'Compétition'}</span>
+                <span className="font-bold text-slate-200">{displayCompetitionName(phase.competition_name, phase.competition_code)}</span>
                 {phase.poule_label ? ` · ${phase.poule_label}` : ''}
               </p>
               <ClubCalendar phase={phase} />

@@ -126,3 +126,10 @@ Un compte ne voit l'icône que pour les matchs de ses équipes. Sans réseau, l'
 `public/mode-emploi-teamstats.pdf` est généré par `docs/build_mode_emploi.py` à partir de `docs/mode-emploi-base-v1.pdf` (pages d'origine conservées,
 trois passages retouchés, nouvelles pages : programme, étape 12 Calendrier, annexe A administrateur) :
 `cd docs && python3 build_mode_emploi.py mode-emploi-base-v1.pdf ../public/mode-emploi-teamstats.pdf` (polices Poppins et Carlito requises).
+
+## Mise à jour de MiseAJourFFBB_Club.exe (correctifs du 16/11/2026)
+Fichier fourni à part : `push_ffbb_club.py`, à remplacer dans le dépôt Multisports (`scripts/push_ffbb_club.py`). Le workflow GitHub « Construire les .exe FFBB »
+(.github/workflows/build-exe.yml) se lance au push ; l'exe est à télécharger dans « Artifacts » puis à remplacer dans `public/MiseAJourFFBB_Club.exe`.
+- Compétitions régionales (RM2...) : le chemin du lien est conservé (ligue ou comité) au lieu de forcer le comité, et plusieurs adresses sont essayées (fin des « HTTP 404 »).
+- Phases manquantes : à partir d'une poule lue, le programme retrouve les autres phases de la même compétition et y dépose les poules où joue le club.
+  Si la structure de la page ne le permet pas, une copie de la page est écrite dans le dossier « diagnostic » (à transmettre).

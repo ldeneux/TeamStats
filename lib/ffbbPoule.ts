@@ -37,6 +37,8 @@ export interface FfbbPoule {
   competitionId: string | null;
   competitionName: string | null;
   competitionCode: string | null;
+  phaseLabel: string | null; // « Saison régulière », « Phase 2 » quand le site nomme ainsi la phase d'une compétition
+  competitionPrefix: string | null; // « /ligues/ara/comites/0069 » (comité) ou « /ligues/ara » (compétition régionale)
   competitionLogoAsset: string | null;
   rencontres: FfbbRencontre[];
   classements: FfbbClassement[];
@@ -179,6 +181,8 @@ export function extractPoule(html: string, pouleId: string): Omit<FfbbPoule, 'po
   let competitionId: string | null = null;
   let competitionName: string | null = null;
   let competitionCode: string | null = null;
+  let competitionPrefix: string | null = null;
+  let phaseLabel: string | null = null;
   let competitionLogoAsset: string | null = null;
   for (const a of pouleChain) {
     if (Array.isArray(a.poules)) {
@@ -187,6 +191,16 @@ export function extractPoule(html: string, pouleId: string): Omit<FfbbPoule, 'po
       if (!competitionCode && typeof a.code === 'string' && a.code && !/^\d+$/.test(a.code)) competitionCode = a.code;
     }
     if (!competitionLogoAsset) competitionLogoAsset = assetId(a.logo);
+  }
+  // Une compétition à plusieurs phases (ex. DFU13-3) : le nœud qui porte les poules s'appelle « Saison régulière » ou « Phase 2 » ;
+  // le nom de la compétition est alors celui de son parent (celui qui liste les phases).
+  if (competitionName && /^\s*(saison r[ée]guli[eè]re|phase\s*\d+)\s*$/i.test(competitionName)) {
+    phaseLabel = competitionName;
+    const parent = pouleChain.find((a) => Array.isArray(a.phases) && typeof a.nom === 'string' && a.nom);
+    if (parent) {
+      competitionName = parent.nom;
+      if (typeof parent.code === 'string' && parent.code && !/^\d+$/.test(parent.code)) competitionCode = parent.code;
+    }
   }
   // Secours du logo : un objet « compétition » (id = celui de la phase) ou une rencontre qui le porte.
   if (!competitionLogoAsset) {
@@ -214,10 +228,12 @@ export function extractPoule(html: string, pouleId: string): Omit<FfbbPoule, 'po
     }
   }
   // Secours : le code lu dans un lien …/competitions/<code>?poule=<poule> présent dans la page.
-  if (!competitionCode) {
+  {
     const text = html.replace(/\\\//g, '/').replace(/&amp;/g, '&').replace(/\\u0026/g, '&');
-    const m = new RegExp(`/competitions/([A-Za-z0-9_.~%-]+)\\?[^"'\\\\\\s<>]*poule=${pid}`).exec(text);
-    if (m && !/^\d{9,}$/.test(m[1])) competitionCode = m[1];
+    // Le chemin du lien est gardé : une compétition régionale (RM2...) est sous /ligues/ara, pas sous le comité.
+    const m = new RegExp(`((?:/ligues/[A-Za-z0-9_~%-]+)(?:/comites/[A-Za-z0-9_~%-]+)?)?/competitions/([A-Za-z0-9_.~%-]+)\\?[^"'\\\\\\s<>]*poule=${pid}`).exec(text);
+    if (m && m[1]) competitionPrefix = m[1];
+    if (m && !competitionCode && !/^\d{9,}$/.test(m[2])) competitionCode = m[2];
     if (!competitionId) {
       const p = new RegExp(`poule=${pid}[^"'\\\\\\s<>]*?phase=(\\d{9,})|phase=(\\d{9,})[^"'\\\\\\s<>]*?poule=${pid}`).exec(text);
       if (p) competitionId = p[1] || p[2] || null;
@@ -231,6 +247,8 @@ export function extractPoule(html: string, pouleId: string): Omit<FfbbPoule, 'po
     competitionId,
     competitionName,
     competitionCode,
+    competitionPrefix,
+    phaseLabel,
     competitionLogoAsset,
     rencontres: Array.from(rencontres.values()).map(normRencontre),
     classements: ((pouleNode?.classements ?? []) as Json[]).map(normClassement),
@@ -251,6 +269,8 @@ export function pouleFromPages(pages: unknown, pouleId: string): FfbbPoule {
     meta.competitionId = meta.competitionId || page.competitionId;
     meta.competitionName = meta.competitionName || page.competitionName;
     meta.competitionCode = meta.competitionCode || page.competitionCode;
+    meta.competitionPrefix = meta.competitionPrefix || page.competitionPrefix;
+    meta.phaseLabel = meta.phaseLabel || page.phaseLabel;
     meta.competitionLogoAsset = meta.competitionLogoAsset || page.competitionLogoAsset;
   }
   const rencontres = Array.from(all.values()).sort(
@@ -264,6 +284,8 @@ export function pouleFromPages(pages: unknown, pouleId: string): FfbbPoule {
     competitionId: meta?.competitionId ?? null,
     competitionName: meta?.competitionName ?? null,
     competitionCode: meta?.competitionCode ?? null,
+    competitionPrefix: meta?.competitionPrefix ?? null,
+    phaseLabel: meta?.phaseLabel ?? null,
     competitionLogoAsset: meta?.competitionLogoAsset ?? null,
     rencontres,
     classements: meta?.classements ?? [],

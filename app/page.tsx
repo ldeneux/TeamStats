@@ -1278,18 +1278,23 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     const goesBeyondRegular = target > game.period && target > game.config.periodCount;
     // Au-delà du temps réglementaire : une prolongation à la fois, seulement si autorisée et à égalité.
     if (goesBeyondRegular && !(canStartOvertime && target === game.period + 1)) return;
-    // Passer du temps réglementaire aux prolongations (ou l'inverse, ex. OT1 -> Q4) remet le chrono
-    // à la durée de ce type de période : 5 min en prolongation, durée normale sinon.
-    const willBeOvertime = target > game.config.periodCount;
-    const crossesBoundary = (game.period > game.config.periodCount) !== willBeOvertime;
     setStartingFiveByPeriod(sf => (sf[target] ? sf : { ...sf, [target]: game.onCourtPlayerIds }));
-    setGame(prev => ({
-      ...prev,
-      period: target,
-      ...(crossesBoundary
-        ? { clockSeconds: (willBeOvertime ? OVERTIME_MINUTES : prev.config.periodMinutes) * 60, isClockRunning: false }
-        : {})
-    }));
+    // Le chrono se règle sur la période choisie (et s'arrête) : durée complète si rien n'y a encore été saisi,
+    // sinon temps restant d'après les statistiques déjà enregistrées pour cette période.
+    const clock = clockForPeriod(target);
+    setGame(prev => ({ ...prev, period: target, clockSeconds: clock, isClockRunning: false }));
+  };
+
+  // Durée d'une période : durée normale, ou 5 minutes en prolongation.
+  const periodDurationSecs = (p: number) => (p > game.config.periodCount ? OVERTIME_MINUTES : game.config.periodMinutes) * 60;
+  // Temps à afficher au chrono quand on arrive sur la période p.
+  const clockForPeriod = (p: number) => {
+    const times = Object.values(playingTime).map(m => m[p] || 0);
+    const maxT = Math.max(0, ...times);
+    const hasEvents = game.events.some(e => e.period === p);
+    if (!hasEvents && maxT === 0) return periodDurationSecs(p);                    // période vierge : temps max
+    const elapsed = Math.max(maxT, Math.round(times.reduce((a, t) => a + t, 0) / 5)); // temps déjà joué (5 joueuses/seconde)
+    return Math.max(0, periodDurationSecs(p) - elapsed);
   };
 
   // RÉINITIALISER LE QUART-TEMPS EN COURS : remet le chrono à fond et efface le temps de jeu

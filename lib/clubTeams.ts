@@ -63,6 +63,16 @@ export function phaseNumberOf(competitionName: string | null): number {
   const m = /phase\s*(\d+)/i.exec(competitionName || '');
   return m ? parseInt(m[1], 10) : 1;
 }
+// Nom de compétition à afficher : « Départementale féminine U15 - Phase 2 » devient « Départementale féminine U15 » (le numéro de
+// phase est déjà donné par l'étiquette jaune « Phase 2 »). Si le nom n'indique pas la division mais que le code se termine par
+// « -N » (ex. DFU13-3), on l'ajoute : « … - Division 3 ».
+export function displayCompetitionName(name: string | null, code: string | null): string {
+  let n = (name || '').replace(/\s*[-–]\s*(?:saison régulière|phase\s*\d+)\s*$/i, '').trim();
+  if (!n) return 'Compétition';
+  const div = /-(\d+)$/.exec(code || '');
+  if (div && !/division|poule|niveau/i.test(n)) n = `${n} - Division ${div[1]}`;
+  return n;
+}
 export const isCup = (competitionName: string | null) => /coupe|tour\b|challenge|trophee/i.test(competitionName || '');
 
 // Nom de l'équipe TeamStats associée : « SATHONAY U15F - 2026/2027 ».
@@ -74,8 +84,9 @@ export const ffbbAssetUrl = (id: string | null | undefined, opts: { width?: numb
   return `https://api.ffbb.com/assets/${id}${qs}`;
 };
 
-export const competitionUrl = (code: string | null, pouleId: string | null, competitionId: string | null) =>
-  `https://competitions.ffbb.com/${CLUB_COMITE_PATH}/competitions/${code || competitionId || 'x'}` +
+// prefix : chemin lu dans la page (compétition de comité ou régionale) ; à défaut, le comité du club.
+export const competitionUrl = (code: string | null, pouleId: string | null, competitionId: string | null, prefix: string | null = null) =>
+  `https://competitions.ffbb.com${prefix || `/${CLUB_COMITE_PATH}`}/competitions/${code || competitionId || 'x'}` +
   `?poule=${pouleId ?? ''}${competitionId ? `&phase=${competitionId}` : ''}`;
 
 export interface ClubEngagement {

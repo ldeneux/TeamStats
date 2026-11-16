@@ -7,7 +7,7 @@ import RosterPanel from './RosterPanel';
 import { adminApi } from '../lib/adminApi';
 import { supabase } from '../lib/supabase';
 import { ClubPhase, ClubTeam, fmtDateTimeLocal, fmtDay, loadClubTeams, loadPhases, phaseLabels, sortTeams } from '../lib/clubDb';
-import { currentSeason, ffbbAssetUrl } from '../lib/clubTeams';
+import { currentSeason, displayCompetitionName, ffbbAssetUrl } from '../lib/clubTeams';
 
 // Programme à lancer depuis un PC pour (re)charger le cache FFBB (même fichier que dans l'appli Multisports).
 const EXE_URL = process.env.NEXT_PUBLIC_FFBB_EXE_URL || 'https://multisports-eosin.vercel.app/MiseAJourFFBB_Club.exe';
@@ -192,8 +192,8 @@ export default function AdminTeams() {
                       <p className="text-sm text-white">
                         <span className="font-black text-amber-400">{labels.get(p.id)} :</span>{' '}
                         {p.competition_url
-                          ? <a href={p.competition_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-bold underline decoration-slate-500 hover:text-amber-300">{p.competition_name || 'Compétition'}</a>
-                          : <span className="font-bold">{p.competition_name || 'Compétition'}</span>}
+                          ? <a href={p.competition_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-bold underline decoration-slate-500 hover:text-amber-300">{displayCompetitionName(p.competition_name, p.competition_code)}</a>
+                          : <span className="font-bold">{displayCompetitionName(p.competition_name, p.competition_code)}</span>}
                         {p.poule_label ? <span className="text-slate-300"> - {/^poule/i.test(p.poule_label) ? p.poule_label.replace(/^Poule/, 'poule') : `poule ${p.poule_label}`}</span> : null}
                       </p>
                       <p className="mt-1 text-[11px] text-slate-500">

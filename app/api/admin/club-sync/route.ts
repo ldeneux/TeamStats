@@ -88,11 +88,11 @@ async function processPoule(db: DB, pouleId: string, data: any, fetchedAt: strin
     // 2) la phase (compétition + poule) -----------------------------------------------------
     const { data: ph, error: ePh } = await db.from('stats_club_phases').upsert({
       club_team_id: clubTeamId,
-      phase_number: phaseNumberOf(poule.competitionName),
+      phase_number: phaseNumberOf(poule.phaseLabel ?? poule.competitionName),
       competition_id: poule.competitionId,
       competition_name: poule.competitionName,
       competition_code: poule.competitionCode,
-      competition_url: competitionUrl(poule.competitionCode, pouleId, poule.competitionId),
+      competition_url: competitionUrl(poule.competitionCode, pouleId, poule.competitionId, poule.competitionPrefix),
       poule_id: pouleId,
       poule_label: poule.pouleNom,
       engagement_id: eng.engagementId,

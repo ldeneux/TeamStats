@@ -229,22 +229,22 @@ class MockRoster(Panel):
     def draw(self):
         c = self.canv; self.bg()
         c.setFillColor(HexColor('#FDE68A')); c.setFont('Poppins-Bold', 7.6); c.drawString(14, self.H - 17, 'Aperçu : U11 FILLES · n° 1 · 2026-2027')
-        rows = [('BARABE', 'Juliette', 'BC169984', '05/04/2016 (11 ans)', 'U11 F', 'joueur', None),
-                ('COLANGE', 'Daphné', 'BC175604', '09/10/2017 (10 ans)', 'U11 F', 'joueur', None),
-                ('LOUEE', 'Clara', 'BC183100', '18/07/2018 (9 ans)', 'U11 F', 'joueur', 'Surclassement U11'),
-                ('CHERIOT', 'Ombeline', 'VT820200', '05/06/1982 (45 ans)', 'U11 F', 'encadrement', None)]
+        # Données FICTIVES : prénoms seuls, n° de licence et dates inventés (aucune donnée réelle de licenciée).
+        rows = [('', 'Léa', 'BC204518', '12/03/2016 (11 ans)', 'U11 F', 'joueur', None),
+                ('', 'Jade', 'BC231907', '22/09/2016 (11 ans)', 'U11 F', 'joueur', None),
+                ('', 'Manon', 'BC260341', '05/02/2018 (9 ans)', 'U11 F', 'joueur', 'Surclassement U11'),
+                ('', 'Sophie', 'VT731205', '14/11/1984 (43 ans)', 'U11 F', 'encadrement', None)]
         for i, (ln, fn, lic, bd, tm, role, badge) in enumerate(rows):
             y = self.H - 40 - i * 21
             c.setFillColor(HexColor('#111C33')); c.roundRect(10, y - 4, self.W - 20, 19, 4, fill=1, stroke=0)
             c.setFillColor(AMBER); c.rect(16, y + 1, 7, 7, fill=1, stroke=0)
             c.setFillColor(NAVY); c.setFont('DejaVu', 5.5); c.drawString(16.8, y + 2, '✓')
-            c.setFillColor(white); c.setFont('Carlito-Bold', 8.6); c.drawString(30, y + 4, ln); w = pdfmetrics.stringWidth(ln, 'Carlito-Bold', 8.6)
-            c.setFont('Carlito', 8.6); c.drawString(34 + w, y + 4, fn)
+            c.setFillColor(white); c.setFont('Carlito-Bold', 9); c.drawString(30, y + 4, fn); w = pdfmetrics.stringWidth(fn, 'Carlito-Bold', 9)
             if badge:
                 bw = pdfmetrics.stringWidth(badge.upper(), 'Poppins-Bold', 5.2) + 8
                 c.setFillColor(HexColor('#4A3508')); c.setStrokeColor(AMBER); c.setLineWidth(0.6)
-                c.roundRect(40 + w + pdfmetrics.stringWidth(fn, 'Carlito', 8.6), y + 2.2, bw, 9.5, 4.7, fill=1, stroke=1)
-                c.setFillColor(HexColor('#FCD34D')); c.setFont('Poppins-Bold', 5.2); c.drawString(44 + w + pdfmetrics.stringWidth(fn, 'Carlito', 8.6), y + 5.2, badge.upper())
+                c.roundRect(36 + w, y + 2.2, bw, 9.5, 4.7, fill=1, stroke=1)
+                c.setFillColor(HexColor('#FCD34D')); c.setFont('Poppins-Bold', 5.2); c.drawString(40 + w, y + 5.2, badge.upper())
             c.setFillColor(HexColor('#94A3B8')); c.setFont('Carlito', 8); c.drawString(236, y + 4, f'{lic} · {bd}')
             self.pill(372, y, 50, 13, tm, HexColor('#1E293B'), white, 7, False); self.pill(426, y, 54, 13, role, HexColor('#1E293B'), white, 7, False)
         self.mark(1, self.W - 8, self.H - 14); self.mark(2, 386 - 14, self.H - 40 + 10 + 11)
@@ -343,6 +343,8 @@ def page_annexe():
     rows = [("Un coach ne voit aucune équipe", "Vérifiez qu'il a le profil coach et qu'au moins une équipe lui est affectée pour la saison (Administration > Accès). Il doit rouvrir l'appli avec du réseau."),
             ("Une vignette n'a pas d'image", "Ouvrez l'équipe, « Chercher dans les données FFBB » et touchez la bonne image ; on peut aussi coller son adresse api.ffbb.com/assets/…"),
             ("Résultats ou classement pas à jour", "Relancez MiseAJourFFBB_Club.exe depuis un PC, puis « Charger les équipes depuis le cache ». Recharger est sans risque."),
+            ("Une équipe n'a qu'une phase alors que le site FFBB en montre deux", "Relancez la dernière version de MiseAJourFFBB_Club.exe : elle cherche aussi les autres phases de la compétition. Si une phase manque encore, le programme enregistre une copie de la page dans son dossier « diagnostic » : transmettez-la pour adapter la lecture."),
+            ("Le programme affiche « HTTP 404 » pour une équipe", "Compétition régionale ou autre niveau : la dernière version essaie plusieurs adresses (comité, puis ligue). Si l'erreur persiste, notez le nom de la compétition indiqué dans la ligne du journal."),
             ("Une équipe manque", "Elle n'a pas de poule dans le cache (pas encore engagée, ou exe non relancé). Le détail du chargement liste les poules ignorées ou en erreur."),
             ("Un match est introuvable par son numéro", "Il n'est pas dans le calendrier de vos équipes : relancez le chargement, ou passez le match en AMICAL."),
             ("Message « permission denied » ou « table introuvable »", "Les scripts SQL de l'installation n'ont pas tous été exécutés (admin_01, admin_03, admin_04), ou le compte n'a pas le profil admin / superadmin.")]
@@ -443,6 +445,16 @@ def patch_page4(c):  # étape 2 : la loupe
                      "Passez en AMICAL et tapez le nom de l'adversaire, ou prévenez la personne qui gère l'application.")]
     flow_at(c, items, LM, 524)
 
+def patch_page8(c):  # étape 7 : le chrono suit la période choisie
+    c.setFillColor(white); c.rect(40, PH - 376, PW - 80, 376 - 343, fill=1, stroke=0)
+    flow_at(c, [NumItem(2, f"Le chrono {b('se règle seul')} sur la nouvelle période : durée complète si rien n'y a encore été saisi, sinon temps restant d'après les statistiques déjà "
+                           f"saisies. Pour la recommencer à zéro : touchez {chip('RESET', 'gray')} et confirmez.", AMBER_D)], LM + 0.0, 342.5)
+    c.setFillColor(HexColor('#FEF3C7')); c.rect(54, PH - 646, PW - 108 + 0.5, 646 - 601, fill=1, stroke=0)
+    flow_at(c, [P("Pour les catégories plus jeunes, le bouton + reste grisé à la fin du match. De même, il n'est pas possible de passer en prolongation si le score n'est pas à égalité. "
+                  "Si vous repassez d'une prolongation à Q4 (ou l'inverse), le chrono affiche le temps restant de la période choisie, d'après ses statistiques (durée complète si elle est vierge).",
+                  ParagraphStyle('co2', fontName='Carlito', fontSize=10, leading=13.4, textColor=TEXT))], 60, 602, width=CW - 18)
+
+
 def patch_page9(c):  # étape 8 : protection des matchs déjà joués
     items = [H2('Protection des matchs déjà joués'),
              P(f"Un match dont la {b('date est antérieure à aujourd\'hui')} est considéré comme joué : ses statistiques sont protégées. "
@@ -460,7 +472,7 @@ def main():
     w = PdfWriter()
     w.add_page(base.pages[0])                                       # couverture (inchangée)
     for p in build(page_accueil(), 1).pages: w.add_page(p)          # accueil / programme (reconstruit)
-    patches = {2: patch_page3, 3: patch_page4, 8: patch_page9}      # index dans le PDF d'origine
+    patches = {2: patch_page3, 3: patch_page4, 7: patch_page8, 8: patch_page9}      # index dans le PDF d'origine
     for i in range(2, 12):                                          # étapes 1 à 11 (pages d'origine)
         pg = base.pages[i]
         if i in patches: pg.merge_page(overlay(i, patches[i]))
