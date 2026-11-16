@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import CalendarMenu from '../components/CalendarMenu';
 import AdminPanel from '../components/AdminPanel';
 import { StatsPdfContext } from '../lib/statsPdfContext';
+import { isLockedDate, useLockedBefore } from '../lib/seasonLock';
 
 export interface Player { id: string; number: number; name: string; }
 export interface SavedTeam { id: string; name: string; roster: Player[]; }
@@ -490,6 +491,9 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const [upcomingMatches, setUpcomingMatches] = useState<any[]>([]);
   const [upcomingError, setUpcomingError] = useState('');
   const [showPastConfirm, setShowPastConfirm] = useState(false);
+  const [showLockedInfo, setShowLockedInfo] = useState(false);
+  const lockedBefore = useLockedBefore();
+  const matchLocked = isLockedDate(matchConfig.matchDate, lockedBefore); // match d'une saison clôturée : lecture seule
   const [confirmText, setConfirmText] = useState('');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isSheetExpanded, setIsSheetExpanded] = useState(false);
@@ -737,6 +741,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
   const handleDeleteMatch = async () => {
     if (!matchToDelete) return;
+    if (isLockedDate(matchToDelete.match_date, lockedBefore)) { setMatchToDelete(null); setShowLockedInfo(true); return; }
     setIsDeletingMatch(true);
     setPickerNotice('');
     try {
@@ -957,6 +962,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const isPastMatch = () => !!matchConfig.matchDate && matchConfig.matchDate < todayLocal();
   const requestSaveMatch = () => {
     if (saveStatus === 'saving') return;
+    if (matchLocked) { setShowLockedInfo(true); return; }   // saison clôturée : aucun enregistrement
     if (isPastMatch()) { setConfirmText(''); setShowPastConfirm(true); return; }
     void handleSaveMatch();
   };
@@ -2094,6 +2100,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             <button onClick={onReauth} className="underline font-bold">Se reconnecter</button>
           </p>
         )}
+        {matchLocked && (
+          <p className="text-center text-[10px] text-amber-300 pb-1.5 px-2">
+            🔒 Match d&apos;une saison clôturée : lecture seule (l&apos;enregistrement est bloqué ; export PDF possible).
+          </p>
+        )}
         {restoredAt && (
           <p className="text-center text-[10px] text-slate-300 pb-1.5 px-2">
             Match repris depuis cet appareil (sauvegarde locale de {new Date(restoredAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}).{' '}
@@ -2399,7 +2410,9 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                           </span>
                         </div>
                       </button>
-                      <button onClick={() => setMatchToDelete(entry.m)} title="Supprimer ce match" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 hover:bg-rose-900/60 text-rose-400 transition">🗑️</button>
+                      {isLockedDate(entry.m.match_date, lockedBefore)
+                        ? <span title="Saison clôturée : lecture seule" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 text-amber-400">🔒</span>
+                        : <button onClick={() => setMatchToDelete(entry.m)} title="Supprimer ce match" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 hover:bg-rose-900/60 text-rose-400 transition">🗑️</button>}
                     </div>
                   ) : (() => {
                     const u = entry.u;
@@ -2432,6 +2445,19 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   })())}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {showLockedInfo && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => setShowLockedInfo(false)}>
+            <div className="bg-slate-900 border border-amber-500/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-bold text-amber-400">🔒 Saison clôturée</h3>
+              <p className="text-xs text-slate-300">
+                Ce match date d&apos;avant le {new Date(lockedBefore + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })} : les données d&apos;une saison terminée ne se modifient plus
+                dans l&apos;application. Vous pouvez les consulter et exporter le PDF des statistiques. Pour une correction exceptionnelle, contactez le superadmin (modification directe en base).
+              </p>
+              <button onClick={() => setShowLockedInfo(false)} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-2.5 rounded-xl text-sm transition">Compris</button>
             </div>
           </div>
         )}

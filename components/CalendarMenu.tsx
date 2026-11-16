@@ -7,6 +7,7 @@ import {
   ClubPhase, ClubTeam, defaultPhase, loadClubTeams, loadPhases, phaseLabels, sortTeams,
 } from '../lib/clubDb';
 import { currentSeason, displayCompetitionName } from '../lib/clubTeams';
+import { isLockedSeason, useLockedBefore } from '../lib/seasonLock';
 
 const LS_SEL = 'teamstats:calendar-selection:v1';
 const readSel = (userId: string): { team?: string; season?: string } => {
@@ -19,6 +20,7 @@ const writeSel = (userId: string, v: { team?: string; season?: string }) => {
 // Menu « Calendrier » : équipe (par image) -> saison (en cours par défaut) -> phase (en cours par défaut)
 // -> « Calendrier & résultats » et « Classement ». Chaque compte ne voit que ses équipes (RLS).
 export default function CalendarMenu({ userId, isAdmin, onOpenAdmin }: { userId: string; isAdmin: boolean; onOpenAdmin: () => void }) {
+  const lockedBefore = useLockedBefore();
   const [teams, setTeams] = useState<ClubTeam[] | null>(null);
   const [error, setError] = useState('');
   const [season, setSeason] = useState('');
@@ -93,7 +95,7 @@ export default function CalendarMenu({ userId, isAdmin, onOpenAdmin }: { userId:
           <label className="flex items-center gap-2 text-xs text-slate-400">
             Saison
             <select value={season} onChange={(e) => pickSeason(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm font-bold text-white">
-              {seasons.map((s) => <option key={s} value={s}>{s}{s === currentSeason() ? ' (en cours)' : ''}</option>)}
+              {seasons.map((s) => <option key={s} value={s}>{s}{s === currentSeason() ? ' (en cours)' : isLockedSeason(s, lockedBefore) ? ' 🔒 historique' : ''}</option>)}
             </select>
           </label>
         </div>

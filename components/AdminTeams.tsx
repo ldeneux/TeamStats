@@ -8,6 +8,7 @@ import { adminApi } from '../lib/adminApi';
 import { supabase } from '../lib/supabase';
 import { ClubPhase, ClubTeam, fmtDateTimeLocal, fmtDay, loadClubTeams, loadPhases, phaseLabels, sortTeams } from '../lib/clubDb';
 import { currentSeason, displayCompetitionName, ffbbAssetUrl } from '../lib/clubTeams';
+import { isLockedSeason, useLockedBefore } from '../lib/seasonLock';
 
 // Programme à lancer depuis un PC pour (re)charger le cache FFBB (même fichier que dans l'appli Multisports).
 const EXE_URL = process.env.NEXT_PUBLIC_FFBB_EXE_URL || 'https://multisports-eosin.vercel.app/MiseAJourFFBB_Club.exe';
@@ -16,6 +17,7 @@ interface PouleResult { pouleId: string; status: 'ok' | 'ignoree' | 'erreur'; me
 const BATCH = 3;
 
 export default function AdminTeams() {
+  const lockedBefore = useLockedBefore();
   const [teams, setTeams] = useState<ClubTeam[] | null>(null);
   const [error, setError] = useState('');
   const [season, setSeason] = useState(currentSeason());
@@ -150,7 +152,7 @@ export default function AdminTeams() {
           <h2 className="text-sm font-extrabold uppercase tracking-wide text-amber-500">Équipes</h2>
           <label className="flex items-center gap-2 text-xs text-slate-400">Saison
             <select value={season} onChange={(e) => { setSeason(e.target.value); setTeamId(''); }} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm font-bold text-white">
-              {seasons.map((s) => <option key={s} value={s}>{s}{s === currentSeason() ? ' (en cours)' : ''}</option>)}
+              {seasons.map((s) => <option key={s} value={s}>{s}{s === currentSeason() ? ' (en cours)' : isLockedSeason(s, lockedBefore) ? ' 🔒 historique' : ''}</option>)}
             </select>
           </label>
         </div>
@@ -223,6 +225,7 @@ export default function AdminTeams() {
 // On peut aussi coller l'adresse api.ffbb.com/assets/… (ou l'identifiant) à la main.
 interface AssetCandidate { id: string; score: number; count: number; paths: string[]; labels: string[] }
 function ImageEditor({ team, pouleIds, onSaved }: { team: ClubTeam; pouleIds: string[]; onSaved: () => void | Promise<void> }) {
+  const locked = isLockedSeason(team.season, useLockedBefore());
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -247,6 +250,7 @@ function ImageEditor({ team, pouleIds, onSaved }: { team: ClubTeam; pouleIds: st
       if (r.candidates.length === 0) setMsg('Aucune image trouvée dans les pages FFBB de cette équipe.');
     } catch (e: any) { setMsg(e?.message || String(e)); } finally { setBusy(false); }
   };
+  if (locked) return null; // saison clôturée : lecture seule
   return (
     <details className="text-xs text-slate-400" open={!team.logo_asset}>
       <summary className="cursor-pointer font-semibold">{team.logo_asset ? "Changer l'image de l'équipe" : "⚠ Pas d'image : la retrouver"}</summary>

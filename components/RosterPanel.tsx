@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase';
 import { ClubTeam, sortTeams } from '../lib/clubDb';
 import { currentSeason } from '../lib/clubTeams';
+import { isLockedSeason, useLockedBefore } from '../lib/seasonLock';
 import {
   ParsedPlayer, ParsedRoster, extractPdfPages, guessRole, parseTrombinoscope, sportAge, surclassementOf, teamByBirthdate, teamCodeFromPdf,
 } from '../lib/rosterPdf';
@@ -35,6 +36,7 @@ export default function RosterPanel({ team, allTeams, onChanged }: { team: ClubT
   const [busy, setBusy] = useState('');
   const [removeMissing, setRemoveMissing] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const locked = isLockedSeason(team.season, useLockedBefore()); // saison clôturée : lecture seule
 
   const seasonTeams = useMemo(() => sortTeams(allTeams.filter((t) => t.season === team.season)), [allTeams, team.season]);
 
@@ -132,13 +134,13 @@ export default function RosterPanel({ team, allTeams, onChanged }: { team: ClubT
             {r.licence_category ? ` · licence ${r.licence_category}` : ''}{withoutSurclass(r.extra) ? ` · ${withoutSurclass(r.extra)}` : ''}
           </p>
         </div>
-        <select value={team.id} onChange={(e) => run(() => supabase.from('stats_club_roster').update({ club_team_id: e.target.value }).eq('id', r.id))} className={selCls} title="Changer d'équipe">
+        {!locked && <select value={team.id} onChange={(e) => run(() => supabase.from('stats_club_roster').update({ club_team_id: e.target.value }).eq('id', r.id))} className={selCls} title="Changer d'équipe">
           {seasonTeams.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-        </select>
-        <button onClick={() => run(() => supabase.from('stats_club_roster').update({ role: r.role === 'joueur' ? 'encadrement' : 'joueur' }).eq('id', r.id))} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-[11px] font-bold text-slate-300" title="Changer le rôle">
+        </select>}
+        {!locked && <button onClick={() => run(() => supabase.from('stats_club_roster').update({ role: r.role === 'joueur' ? 'encadrement' : 'joueur' }).eq('id', r.id))} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-[11px] font-bold text-slate-300" title="Changer le rôle">
           {r.role === 'joueur' ? '→ encadrement' : '→ joueur'}
-        </button>
-        <button onClick={() => { if (window.confirm(`Retirer ${r.first_name} ${r.last_name} de l'équipe ?`)) void run(() => supabase.from('stats_club_roster').delete().eq('id', r.id)); }} className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-[11px] font-bold text-rose-300" title="Retirer de l'équipe">✕</button>
+        </button>}
+        {!locked && <button onClick={() => { if (window.confirm(`Retirer ${r.first_name} ${r.last_name} de l'équipe ?`)) void run(() => supabase.from('stats_club_roster').delete().eq('id', r.id)); }} className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-[11px] font-bold text-rose-300" title="Retirer de l'équipe">✕</button>}
       </li>
     );
   };
@@ -149,10 +151,10 @@ export default function RosterPanel({ team, allTeams, onChanged }: { team: ClubT
         <p className="text-xs text-slate-400">
           {rows === null ? 'Chargement…' : `${players.length} joueur(s)${staff.length ? ` · ${staff.length} encadrement` : ''}`} · saison {team.season}
         </p>
-        <label className="cursor-pointer rounded-xl bg-amber-600 px-3 py-2 text-xs font-bold text-white hover:bg-amber-500">
+        {locked ? <span className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-300">🔒 Saison clôturée : lecture seule</span> : <label className="cursor-pointer rounded-xl bg-amber-600 px-3 py-2 text-xs font-bold text-white hover:bg-amber-500">
           📄 Importer un PDF extranet FFBB
           <input ref={fileRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void onFile(f); }} />
-        </label>
+        </label>}
       </div>
       {busy && <p className="text-xs text-amber-400">{busy}</p>}
       {error && <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-xs text-rose-300 break-words">{error}</p>}

@@ -133,3 +133,14 @@ Fichier fourni à part : `push_ffbb_club.py`, à remplacer dans le dépôt Multi
 - Compétitions régionales (RM2...) : le chemin du lien est conservé (ligue ou comité) au lieu de forcer le comité, et plusieurs adresses sont essayées (fin des « HTTP 404 »).
 - Phases manquantes : à partir d'une poule lue, le programme retrouve les autres phases de la même compétition et y dépose les poules où joue le club.
   Si la structure de la page ne le permet pas, une copie de la page est écrite dans le dossier « diagnostic » (à transmettre).
+
+## Historique des saisons et verrouillage (`sql/admin_05_season_lock.sql`)
+- Tout ce qui date d'**avant le 1er septembre de la saison en cours** est en **lecture seule pour tous les comptes de l'appli, y compris superadmin** : matchs, événements,
+  statistiques, équipes TeamStats et joueuses d'une saison passée (saison lue dans le nom « … - 2025/2026 »), calendriers, classements et effectifs. Consultation, historique et export PDF restent possibles.
+- Seule une modification **directe en base** (éditeur SQL Supabase) reste possible : c'est le moyen du superadmin pour corriger une saison clôturée.
+- Réglage manuel (délai de grâce / clôture anticipée) : `INSERT INTO multisports.app_settings (key,value) VALUES ('lock_before','2026-08-01') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;`
+  (supprimer la ligne = règle automatique).
+- Dans l'appli : 🔒 sur les matchs de saisons clôturées (sélecteur JOUÉ), bandeau « lecture seule », enregistrement et suppression refusés avec explication, saisons
+  marquées « 🔒 historique » dans Calendrier et Administration, import d'effectif et changement d'image masqués.
+- Technique : politiques **restrictives** en écriture, ajoutées aux règles existantes (non modifiées). Un UPDATE / DELETE visant une saison clôturée n'est pas une erreur mais ne
+  modifie aucune ligne ; l'appli prévient l'utilisateur avant.
