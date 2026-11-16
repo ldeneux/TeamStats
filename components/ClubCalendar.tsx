@@ -216,7 +216,7 @@ function ClassementTab({ standings, matches, ourEngagement }: { standings: ClubS
     <div className="space-y-2">
       {!official && <p className="text-[11px] text-slate-500">Classement calculé à partir des résultats (victoire 2 pts, défaite 1 pt) : le classement officiel n&apos;était pas dans les données FFBB.</p>}
       <div className="overflow-x-auto rounded-xl bg-slate-900/80 border border-slate-800">
-        <table className="w-full min-w-[640px] text-sm">
+        <table className="w-full min-w-[680px] whitespace-nowrap text-sm">
           <thead>
             <tr className="border-b border-slate-800 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               <th className="px-3 py-2">#</th><th className="px-3 py-2">Équipe</th>
@@ -232,7 +232,7 @@ function ClassementTab({ standings, matches, ourEngagement }: { standings: ClubS
               return (
                 <tr key={s.engagement_id} className={`border-b border-slate-800/60 last:border-0 ${s.is_us ? 'bg-amber-500/10 font-bold text-amber-300' : 'text-slate-200'}`}>
                   <td className="px-3 py-2">{s.position ?? '—'}</td>
-                  <td className="px-3 py-2"><div className="flex items-center gap-2"><Crest asset={logo} name={s.engagement_nom} /><span>{s.engagement_nom ?? 'Équipe inconnue'}</span></div></td>
+                  <td className="px-3 py-2"><div className="flex items-center gap-2 whitespace-normal"><Crest asset={logo} name={s.engagement_nom} /><span>{s.engagement_nom ?? 'Équipe inconnue'}</span></div></td>
                   <td className="px-2 py-2 text-right font-black">{s.points ?? '—'}</td>
                   <td className="px-2 py-2 text-right text-slate-400">{s.matches_joues ?? '—'}</td>
                   <td className="px-2 py-2 text-right">{hasDraws ? `${s.gagnes ?? '—'}-${(s.matches_joues ?? 0) - (s.gagnes ?? 0) - (s.perdus ?? 0)}-${s.perdus ?? '—'}` : `${s.gagnes ?? '—'}-${s.perdus ?? '—'}`}</td>

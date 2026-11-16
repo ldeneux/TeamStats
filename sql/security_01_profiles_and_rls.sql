@@ -1,11 +1,11 @@
 -- =====================================================================================
--- SÉCURITÉ TEAMSTATS : profils (admin / analyst) et accès par équipe.
+-- SÉCURITÉ TEAMSTATS : profils (admin / coach) et accès par équipe.
 -- À exécuter dans l'éditeur SQL de Supabase. Ordre conseillé :
 --   1) ce script, 2) ffbb_lookup.sql, 3) ffbb_upcoming.sql, 4) stats_extra_columns.sql.
 --
 -- Principe
 --   * admin   : voit et gère toutes les équipes.
---   * analyst : ne voit que les équipes listées dans multisports.team_access ; peut tout faire
+--   * coach : ne voit que les équipes listées dans multisports.team_access ; peut tout faire
 --               dessus (joueuses, matchs, statistiques) sauf créer ou supprimer une équipe.
 --   * un compte sans profil, ou non connecté, n'a accès à rien.
 -- Les règles sont appliquées par la base (RLS) : elles valent aussi pour qui appellerait
@@ -15,7 +15,7 @@
 -- 1) Tables de sécurité --------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS multisports.app_profiles (
   user_id uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
-  role text NOT NULL CHECK (role IN ('admin', 'analyst')),
+  role text NOT NULL CHECK (role IN ('admin', 'coach')),
   display_name text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS multisports.team_access (
 );
 
 -- 2) Comptes déjà existants = admin (pour que personne ne perde l'accès) -----------------
--- ATTENTION : à exécuter AVANT de créer les comptes analyst, sinon ils deviendraient admin.
+-- ATTENTION : à exécuter AVANT de créer les comptes coach, sinon ils deviendraient admin.
 -- Pour n'en garder que certains : remplacer par WHERE u.email IN ('vous@exemple.fr').
 INSERT INTO multisports.app_profiles (user_id, role, display_name)
 SELECT u.id, 'admin', u.email
@@ -167,17 +167,17 @@ CREATE POLICY stats_player_period_stats_all ON multisports.stats_player_period_s
 NOTIFY pgrst, 'reload schema';
 
 -- =====================================================================================
--- MODE D'EMPLOI : créer un compte analyst et lui ouvrir des équipes
+-- MODE D'EMPLOI : créer un compte coach et lui ouvrir des équipes
 --   1. Supabase > Authentication > Users > Add user (e-mail + mot de passe).
 --   2. Exécuter (en remplaçant l'e-mail et les noms d'équipes) :
 --
 --   INSERT INTO multisports.app_profiles (user_id, role, display_name)
---   SELECT id, 'analyst', 'Prénom' FROM auth.users WHERE email = 'analyste@exemple.fr';
+--   SELECT id, 'coach', 'Prénom' FROM auth.users WHERE email = 'coach@exemple.fr';
 --
 --   INSERT INTO multisports.team_access (user_id, team_id)
 --   SELECT u.id, t.id
 --   FROM auth.users u, multisports.stats_teams t
---   WHERE u.email = 'analyste@exemple.fr'
+--   WHERE u.email = 'coach@exemple.fr'
 --     AND t.name IN ('SATHONAY U15F - 2026/2027');
 --
 -- Retirer une équipe :  DELETE FROM multisports.team_access WHERE user_id = '...' AND team_id = '...';

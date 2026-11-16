@@ -414,7 +414,9 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
   return matchId;
 }
 
-type Role = 'superadmin' | 'admin' | 'analyst';
+type Role = 'superadmin' | 'admin' | 'coach';
+// L'ancien nom « analyst » est lu comme « coach » (le temps que la base soit migrée, sql/admin_04_role_coach.sql).
+const normRole = (r: unknown): Role | null => (r === 'analyst' ? 'coach' : r === 'superadmin' || r === 'admin' || r === 'coach' ? r : null);
 
 function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReauth }: { userId: string; userEmail: string; role: Role; onSignOut: () => void; needsReauth: boolean; onReauth: () => void }) {
   const isAdmin = role === 'admin' || role === 'superadmin';
@@ -1129,7 +1131,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       let targetTeamId = selectedTeamId;
 
       if (!targetTeamId && !isAdmin) {
-        // Seul l'admin crée des équipes (l'analyste modifie celles qui lui sont ouvertes).
+        // Seul l'admin crée des équipes (le coach modifie celles qui lui sont ouvertes).
         setTeamSaveStatus('error');
         return;
       }
@@ -2941,7 +2943,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
 // ---------------------------------------------------------------------------
 // CONNEXION : page affichée avant toute l'application.
-// Profils : "admin" (toutes les équipes) et "analyst" (équipes de team_access uniquement).
+// Profils : "admin" (toutes les équipes) et "coach" (équipes de team_access uniquement).
 // La vraie protection est dans Supabase (RLS, voir sql/security_01_profiles_and_rls.sql) :
 // cette page ne fait que demander un compte, la base refuse tout à qui n'est pas connecté.
 // ---------------------------------------------------------------------------
@@ -3048,7 +3050,7 @@ export default function App() {
       setOfflineIdentity(value);
     };
 
-    // Lit le profil (admin / analyst) du compte connecté ; sans profil, pas d'accès.
+    // Lit le profil (admin / coach) du compte connecté ; sans profil, pas d'accès.
     const resolveSession = async (s: any) => {
       if (!active) return;
       if (!s) {
@@ -3056,7 +3058,7 @@ export default function App() {
         const known = lsRead<any>(LS_OFFLINE_USER, null);
         if (known && typeof navigator !== 'undefined' && !navigator.onLine) {
           setSession({ user: { id: known.userId, email: known.email } });
-          setRole(known.role);
+          setRole(normRole(known.role));
           setOffline(true);
           setStatus('ready');
           return;
@@ -3074,16 +3076,17 @@ export default function App() {
       if (error) {
         const known = lsRead<any>(LS_OFFLINE_USER, null);
         if (isNetworkError(error) && known && known.userId === s.user.id) {
-          setRole(known.role);
+          setRole(normRole(known.role));
           setOffline(true);
           setStatus('ready');
           return;
         }
         setErrorMessage(error.message);
         setStatus('error');
-      } else if (data?.role === 'superadmin' || data?.role === 'admin' || data?.role === 'analyst') {
-        lsWrite(LS_OFFLINE_USER, { userId: s.user.id, email: s.user.email || '', role: data.role });
-        setRole(data.role);
+      } else if (normRole(data?.role)) {
+        const r = normRole(data?.role) as Role;
+        lsWrite(LS_OFFLINE_USER, { userId: s.user.id, email: s.user.email || '', role: r });
+        setRole(r);
         setOffline(false);
         setNeedsReauth(false);
         setStatus('ready');

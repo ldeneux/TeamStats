@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS multisports.stats_player_period_stats (
 CREATE INDEX IF NOT EXISTS stats_player_period_stats_match_idx
   ON multisports.stats_player_period_stats (match_id);
 
--- Accès : réservé aux comptes connectés. Les règles par équipe (profils admin / analyst) sont
+-- Accès : réservé aux comptes connectés. Les règles par équipe (profils admin / coach) sont
 -- définies dans sql/security_01_profiles_and_rls.sql, à exécuter APRÈS ce script.
 GRANT ALL ON multisports.stats_player_period_stats TO authenticated, service_role;
 REVOKE ALL ON multisports.stats_player_period_stats FROM anon;

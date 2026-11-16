@@ -1,21 +1,25 @@
 // « Gestion des accès » : liste, création et modification des comptes de l'application.
 // Réservé aux profils admin et superadmin. Règles :
-//   - un admin gère les comptes « analyst » et « admin » ; seul le superadmin crée / modifie / donne le rôle superadmin ;
+//   - un admin gère les comptes « coach » et « admin » ; seul le superadmin crée / modifie / donne le rôle superadmin ;
 //   - personne ne peut changer son propre rôle, se désactiver ou se supprimer.
-// Les affectations d'équipes (team_access) se font directement depuis le navigateur (RLS admin).
+// Les profils (app_profiles) et affectations (team_access) sont lus et écrits AVEC LE JETON DE L'APPELANT : les règles
+// de la base (RLS) s'appliquent donc, et aucun droit particulier n'est nécessaire sur le schéma « multisports ».
+// La clé « service » ne sert qu'à la partie comptes d'authentification (liste, création, mot de passe, suppression).
 import { NextResponse } from 'next/server';
 import { authenticate, fail, HttpError, serviceClient, type Caller, type Role } from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
 
-const ROLES: Role[] = ['superadmin', 'admin', 'analyst'];
-const isRole = (r: unknown): r is Role => typeof r === 'string' && (ROLES as string[]).includes(r);
+const ROLES: Role[] = ['superadmin', 'admin', 'coach'];
+// L'ancien nom « analyst » est lu comme « coach » (le temps que la base soit migrée : sql/admin_04_role_coach.sql).
+const asRole = (r: unknown): Role | null => (r === 'analyst' ? 'coach' : typeof r === 'string' && (ROLES as string[]).includes(r) ? (r as Role) : null);
 
-async function targetRole(svc: ReturnType<typeof serviceClient>, userId: string): Promise<Role | null> {
-  const { data } = await svc.from('app_profiles').select('role').eq('user_id', userId).maybeSingle();
-  return isRole(data?.role) ? data.role : null;
+async function targetRole(caller: Caller, userId: string): Promise<Role | null> {
+  const { data, error } = await caller.db.from('app_profiles').select('role').eq('user_id', userId).maybeSingle();
+  if (error) throw new HttpError(500, `Lecture du profil : ${error.message}`);
+  return asRole(data?.role);
 }
-// Un admin agit sur analyst, admin ou compte sans profil (jamais sur un superadmin) ; le superadmin sur tous.
+// Un admin agit sur coach, admin ou compte sans profil (jamais sur un superadmin) ; le superadmin sur tous.
 function assertCanManage(caller: Caller, current: Role | null, wanted?: Role | null) {
   if (caller.role === 'superadmin') return;
   if (current === 'superadmin') throw new HttpError(403, 'Seul un superadmin peut modifier un compte superadmin.');
@@ -33,11 +37,13 @@ export async function GET(req: Request) {
       users.push(...data.users);
       if (data.users.length < 200) break;
     }
-    const [{ data: profiles }, { data: access }] = await Promise.all([
-      svc.from('app_profiles').select('user_id, role, display_name'),
-      svc.from('team_access').select('user_id, team_id'),
+    const [prof, acc] = await Promise.all([
+      caller.db.from('app_profiles').select('user_id, role, display_name'),
+      caller.db.from('team_access').select('user_id, team_id'),
     ]);
-    const prof = new Map<string, any>((profiles ?? []).map((p: any) => [p.user_id, p]));
+    if (prof.error) throw new HttpError(500, `Lecture des profils : ${prof.error.message}`);
+    if (acc.error) throw new HttpError(500, `Lecture des accès : ${acc.error.message}`);
+    const byUser = new Map<string, any>((prof.data ?? []).map((p: any) => [p.user_id, p]));
     return NextResponse.json({
       callerRole: caller.role,
       callerId: caller.userId,
@@ -45,10 +51,10 @@ export async function GET(req: Request) {
         .map((u) => ({
           id: u.id, email: u.email, created_at: u.created_at, last_sign_in_at: u.last_sign_in_at,
           banned: !!u.banned_until && new Date(u.banned_until) > new Date(),
-          role: prof.get(u.id)?.role ?? null, display_name: prof.get(u.id)?.display_name ?? null,
+          role: asRole(byUser.get(u.id)?.role), display_name: byUser.get(u.id)?.display_name ?? null,
         }))
         .sort((a, b) => String(a.email).localeCompare(String(b.email))),
-      access: access ?? [],
+      access: acc.data ?? [],
     });
   } catch (e) {
     return fail(e);
@@ -62,14 +68,14 @@ export async function POST(req: Request) {
     const b = await req.json().catch(() => ({}));
     const email = String(b.email || '').trim().toLowerCase();
     const password = String(b.password || '');
-    const role: Role = isRole(b.role) ? b.role : 'analyst';
+    const role: Role = asRole(b.role) ?? 'coach';
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new HttpError(400, 'Adresse e-mail invalide.');
-    if (password.length < 8) throw new HttpError(400, 'Mot de passe : 8 caractères minimum.');
+    if (!password) throw new HttpError(400, 'Mot de passe manquant.');
     assertCanManage(caller, null, role);
 
     const { data, error } = await svc.auth.admin.createUser({ email, password, email_confirm: true });
     if (error || !data.user) throw new HttpError(400, error?.message || 'Création du compte impossible.');
-    const { error: pErr } = await svc.from('app_profiles').upsert({
+    const { error: pErr } = await caller.db.from('app_profiles').upsert({
       user_id: data.user.id, role, display_name: String(b.display_name || '').trim() || email,
     });
     if (pErr) throw new HttpError(500, `Compte créé mais profil non enregistré : ${pErr.message}`);
@@ -79,6 +85,7 @@ export async function POST(req: Request) {
   }
 }
 
+// Un seul appel pour tout enregistrer : nom, rôle, mot de passe, activation. Seuls les champs envoyés changent.
 export async function PATCH(req: Request) {
   try {
     const caller = await authenticate(req);
@@ -87,31 +94,28 @@ export async function PATCH(req: Request) {
     const userId = String(b.user_id || '');
     if (!userId) throw new HttpError(400, 'Compte manquant.');
     const self = userId === caller.userId;
-    const current = await targetRole(svc, userId);
+    const current = await targetRole(caller, userId);
     const roleChange = b.role !== undefined;
-    const newRole: Role | null | undefined = roleChange ? (b.role === null ? null : isRole(b.role) ? b.role : undefined) : undefined;
-    if (roleChange && newRole === undefined) throw new HttpError(400, 'Rôle inconnu.');
-    assertCanManage(caller, current, newRole ?? null);
-    if (self && (roleChange || b.banned === true)) throw new HttpError(400, 'Vous ne pouvez pas changer votre propre rôle ni vous désactiver.');
+    const newRole: Role | null = roleChange ? (b.role === null || b.role === '' ? null : asRole(b.role)) : null;
+    if (roleChange && b.role !== null && b.role !== '' && newRole === null) throw new HttpError(400, 'Rôle inconnu.');
+    assertCanManage(caller, current, newRole);
+    if (self && ((roleChange && newRole !== current) || b.banned === true)) throw new HttpError(400, 'Vous ne pouvez pas changer votre propre rôle ni vous désactiver.');
 
-    if (roleChange) {
+    if (roleChange && newRole !== current) {
       if (newRole === null) {
-        const { error } = await svc.from('app_profiles').delete().eq('user_id', userId);
+        const { error } = await caller.db.from('app_profiles').delete().eq('user_id', userId);
         if (error) throw new HttpError(500, error.message);
       } else {
-        const { error } = await svc.from('app_profiles').upsert({ user_id: userId, role: newRole });
+        const display = typeof b.display_name === 'string' ? b.display_name.trim() || null : undefined;
+        const { error } = await caller.db.from('app_profiles').upsert({ user_id: userId, role: newRole, ...(display !== undefined ? { display_name: display } : {}) });
         if (error) throw new HttpError(500, error.message);
       }
-    }
-    if (typeof b.display_name === 'string') {
-      const { error } = await svc.from('app_profiles').update({ display_name: b.display_name.trim() || null }).eq('user_id', userId);
+    } else if (typeof b.display_name === 'string' && current !== null) {
+      const { error } = await caller.db.from('app_profiles').update({ display_name: b.display_name.trim() || null }).eq('user_id', userId);
       if (error) throw new HttpError(500, error.message);
     }
     const attrs: Record<string, unknown> = {};
-    if (typeof b.password === 'string' && b.password) {
-      if (b.password.length < 8) throw new HttpError(400, 'Mot de passe : 8 caractères minimum.');
-      attrs.password = b.password;
-    }
+    if (typeof b.password === 'string' && b.password) attrs.password = b.password;
     if (typeof b.banned === 'boolean') attrs.ban_duration = b.banned ? '876000h' : 'none';
     if (Object.keys(attrs).length > 0) {
       const { error } = await svc.auth.admin.updateUserById(userId, attrs);
@@ -131,7 +135,12 @@ export async function DELETE(req: Request) {
     const userId = String(b.user_id || '');
     if (!userId) throw new HttpError(400, 'Compte manquant.');
     if (userId === caller.userId) throw new HttpError(400, 'Vous ne pouvez pas supprimer votre propre compte.');
-    assertCanManage(caller, await targetRole(svc, userId));
+    assertCanManage(caller, await targetRole(caller, userId));
+    // on retire d'abord ses affectations et son profil (les liens vers le compte empêcheraient sa suppression)
+    const a = await caller.db.from('team_access').delete().eq('user_id', userId);
+    if (a.error) throw new HttpError(500, a.error.message);
+    const p = await caller.db.from('app_profiles').delete().eq('user_id', userId);
+    if (p.error) throw new HttpError(500, p.error.message);
     const { error } = await svc.auth.admin.deleteUser(userId);
     if (error) throw new HttpError(400, error.message);
     return NextResponse.json({ ok: true });

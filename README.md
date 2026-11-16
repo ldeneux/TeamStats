@@ -19,7 +19,7 @@ Renseigner dans `.env.local` (en local) ou dans les Environment Variables du pro
 ## Scripts SQL (à exécuter dans l'éditeur SQL de Supabase)
 Ordre conseillé pour une base à jour :
 1. `sql/stats_player_period_stats.sql` : statistiques par joueuse et par période.
-2. `sql/security_01_profiles_and_rls.sql` : profils (admin / analyst), accès par équipe, règles RLS. **À lire avant d'exécuter.**
+2. `sql/security_01_profiles_and_rls.sql` : profils (admin / coach), accès par équipe, règles RLS. **À lire avant d'exécuter.**
 3. `sql/ffbb_lookup.sql` : recherche d'un match par ID FFBB (comptes connectés uniquement).
 4. `sql/ffbb_upcoming.sql` : matchs à venir de NOS équipes (filtrés selon les équipes autorisées).
 5. `sql/stats_extra_columns.sql` : colonnes des nouvelles statistiques (interceptions, balles perdues, contres, contres subis).
@@ -31,8 +31,8 @@ Ordre conseillé pour une base à jour :
 ## Connexion et profils
 - L'appli demande une connexion (Supabase Auth, e-mail + mot de passe) avant tout affichage. Les comptes se créent dans
   Supabase > Authentication > Users > Add user. Pensez à **désactiver l'inscription libre** (Authentication > Sign In / Providers).
-- `multisports.app_profiles` donne un profil à un compte : `admin` (toutes les équipes) ou `analyst`.
-- `multisports.team_access` liste les équipes ouvertes à un compte. Un analyst ne voit que ces équipes, peut tout faire dessus
+- `multisports.app_profiles` donne un profil à un compte : `admin` (toutes les équipes) ou `coach`.
+- `multisports.team_access` liste les équipes ouvertes à un compte. Un coach ne voit que ces équipes, peut tout faire dessus
   (joueuses, matchs, statistiques) sauf créer ou supprimer une équipe. Un compte sans profil n'a accès à rien.
 - Les règles sont appliquées par la base (RLS) : une simple page de login ne protégerait pas des appels directs à l'API.
 - Le compte Supabase est partagé avec l'appli principale : voir `security_02_lock_main_app_OPTIONAL.sql`.
@@ -46,7 +46,7 @@ Ordre conseillé pour une base à jour :
   tout le match : il est sans risque de le rejouer.
 - Ouverture sans réseau : `public/sw.js` (service worker) garde l'application ; `public/manifest.webmanifest` permet de l'installer
   sur l'écran d'accueil. Ouvrir l'appli une fois avec du réseau après chaque mise à jour. Le service worker n'est actif qu'en production.
-- Le profil (admin / analyst) est mémorisé sur l'appareil pour pouvoir entrer sans réseau ; il est relu à chaque ouverture avec du réseau.
+- Le profil (admin / coach) est mémorisé sur l'appareil pour pouvoir entrer sans réseau ; il est relu à chaque ouverture avec du réseau.
 - Nécessite du réseau : créer ou modifier une équipe, chercher un match par ID FFBB, rouvrir un match déjà enregistré.
 
 ## Prolongations (U13 et +)
@@ -57,8 +57,8 @@ de la période). Une prolongation est stockée comme une période de numéro sup
 
 
 ## Menus Calendrier et Administration
-- **Rôles** : `superadmin` (accès illimité, gère tous les comptes), `admin` (toutes les équipes, gère les comptes `analyst` et `admin`, jamais un superadmin),
-  `analyst` (uniquement les équipes affectées). Le premier superadmin se désigne en SQL (dernière étape de `admin_01_club_calendar.sql`).
+- **Rôles** : `superadmin` (accès illimité, gère tous les comptes), `admin` (toutes les équipes, gère les comptes `coach` et `admin`, jamais un superadmin),
+  `coach` (uniquement les équipes affectées). Le premier superadmin se désigne en SQL (dernière étape de `admin_01_club_calendar.sql`).
 - **📅 Calendrier** (tous les comptes) : choix de l'équipe par image, saison (en cours par défaut), phase (en cours par défaut), puis
   « Calendrier & résultats » et « Classement ». Un coach ne voit que les équipes qui lui sont affectées.
 - **🛠️ Administration** (admin et superadmin), bandeau d'icônes :
@@ -112,3 +112,17 @@ Dans le menu 📅 Calendrier (et dans l'administration), un match dont les stati
 télécharge le PDF des statistiques du match (même document que le bouton « Statistiques (PDF) » de l'onglet Stats). Les données sont relues en base
 (matchs, événements, temps de jeu) : le match éventuellement en cours de saisie n'est pas modifié. Le lien se fait par le n° de rencontre FFBB.
 Un compte ne voit l'icône que pour les matchs de ses équipes. Sans réseau, l'icône n'apparaît pas.
+
+
+## Profil « coach » (ex-analyst) et écran Accès
+- Le profil `analyst` s'appelle désormais `coach` : exécuter `sql/admin_04_role_coach.sql` (une fois, avant de déployer). L'appli lit encore « analyst » comme « coach » tant que la base n'est pas migrée.
+- **Administration > Accès** : toucher une personne ouvre un formulaire unique (nom, profil, mot de passe facultatif) ; rien n'est enregistré avant le bouton
+  **💾 Enregistrer**. Pour affecter des équipes : profil **coach** + Enregistrer, puis la liste « Équipes affectées » (saison + vignettes) apparaît.
+- Les profils et affectations sont lus / écrits avec le jeton de l'utilisateur connecté (règles RLS) : aucun droit spécial n'est nécessaire sur le schéma
+  `multisports` pour la clé service ; elle ne sert qu'aux comptes d'authentification (liste, création, mot de passe, suppression).
+- Plus de longueur minimale imposée par l'appli pour les mots de passe (Supabase en impose 6 par défaut : Authentication > Policies).
+
+## Mode d'emploi (PDF)
+`public/mode-emploi-teamstats.pdf` est généré par `docs/build_mode_emploi.py` à partir de `docs/mode-emploi-base-v1.pdf` (pages d'origine conservées,
+trois passages retouchés, nouvelles pages : programme, étape 12 Calendrier, annexe A administrateur) :
+`cd docs && python3 build_mode_emploi.py mode-emploi-base-v1.pdf ../public/mode-emploi-teamstats.pdf` (polices Poppins et Carlito requises).

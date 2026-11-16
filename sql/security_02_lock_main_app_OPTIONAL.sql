@@ -3,7 +3,7 @@
 --
 -- Le compte Supabase est PARTAGÉ entre toutes les applis du projet. Dans l'appli principale, les
 -- tables sont ouvertes à n'importe quel compte connecté (politique « authenticated_full_access »).
--- Sans ce script, un analyst créé pour TeamStats pourrait, via l'API, lire ou modifier les données
+-- Sans ce script, un coach créé pour TeamStats pourrait, via l'API, lire ou modifier les données
 -- de la famille (participants, documents, natation, basket...).
 --
 -- Ce script remplace ces politiques par « réservé aux comptes de profil admin ».

@@ -5,8 +5,8 @@
 --
 -- Rôles
 --   superadmin : accès illimité (tout ce que fait admin + gestion des comptes admin / superadmin).
---   admin      : voit et gère toutes les équipes ; gère les comptes « analyst » et « admin » (pas les superadmin).
---   analyst    : ne voit que les équipes qui lui sont affectées (multisports.team_access).
+--   admin      : voit et gère toutes les équipes ; gère les comptes « coach » et « admin » (pas les superadmin).
+--   coach    : ne voit que les équipes qui lui sont affectées (multisports.team_access).
 -- =====================================================================================
 
 -- 1) Rôle superadmin ------------------------------------------------------------------
@@ -21,8 +21,9 @@ BEGIN
     EXECUTE format('ALTER TABLE multisports.app_profiles DROP CONSTRAINT %I', c.conname);
   END LOOP;
 END $$;
+UPDATE multisports.app_profiles SET role = 'coach' WHERE role = 'analyst';  -- ancien nom du profil
 ALTER TABLE multisports.app_profiles
-  ADD CONSTRAINT app_profiles_role_check CHECK (role IN ('superadmin', 'admin', 'analyst'));
+  ADD CONSTRAINT app_profiles_role_check CHECK (role IN ('superadmin', 'admin', 'coach'));
 
 -- is_admin() reste la porte d'entrée de TOUTES les règles existantes : superadmin la passe aussi.
 CREATE OR REPLACE FUNCTION multisports.is_admin()
@@ -48,14 +49,14 @@ $$;
 REVOKE ALL ON FUNCTION multisports.is_superadmin() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION multisports.is_superadmin() TO authenticated;
 
--- Profils : un admin peut créer / modifier / supprimer des comptes « analyst » et « admin », mais jamais
+-- Profils : un admin peut créer / modifier / supprimer des comptes « coach » et « admin », mais jamais
 -- toucher un superadmin ni donner ce rôle. Le superadmin peut tout.
 DROP POLICY IF EXISTS app_profiles_admin_write ON multisports.app_profiles;
 DROP POLICY IF EXISTS app_profiles_write ON multisports.app_profiles;
 CREATE POLICY app_profiles_write ON multisports.app_profiles
   FOR ALL TO authenticated
-  USING (multisports.is_superadmin() OR (multisports.is_admin() AND role IN ('analyst', 'admin')))
-  WITH CHECK (multisports.is_superadmin() OR (multisports.is_admin() AND role IN ('analyst', 'admin')));
+  USING (multisports.is_superadmin() OR (multisports.is_admin() AND role IN ('coach', 'admin')))
+  WITH CHECK (multisports.is_superadmin() OR (multisports.is_admin() AND role IN ('coach', 'admin')));
 
 -- 2) Équipes du club, par saison ----------------------------------------------------------
 -- Une ligne par équipe (U15F, U13M, U15F-2...) et par saison. Chaque équipe du club est liée à
@@ -160,7 +161,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- Lecture : admin = tout ; analyst = équipes qui lui sont affectées. Écriture : admin seulement.
+-- Lecture : admin = tout ; coach = équipes qui lui sont affectées. Écriture : admin seulement.
 CREATE POLICY club_teams_read ON multisports.stats_club_teams
   FOR SELECT TO authenticated USING (multisports.can_access_club_team(id));
 CREATE POLICY club_teams_write ON multisports.stats_club_teams
