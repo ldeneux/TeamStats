@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Labo vocal TeamStats</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:0;padding:12px;background:#0f172a;color:#e2e8f0;font-size:15px}
+ h1{font-size:18px;margin:0 0 4px} h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;margin:14px 0 6px}
+ .card{background:#1e293b;border-radius:12px;padding:10px 12px;margin-bottom:10px}
+ button{font-size:15px;padding:10px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff;font-weight:600}
+ button.alt{background:#475569} button.stop{background:#dc2626}
+ input[type=text],textarea{width:100%;box-sizing:border-box;background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px;font-size:15px}
+ textarea{height:150px;font-family:ui-monospace,monospace;font-size:13px}
+ .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+ #partial{color:#fbbf24;min-height:1.4em} #heard{font-size:20px;font-weight:700}
+ pre{white-space:pre-wrap;background:#0f172a;border-radius:8px;padding:8px;font-size:12px;margin:6px 0 0}
+ #log div{padding:3px 0;border-bottom:1px solid #334155;font-size:13px} .ok{color:#4ade80}.ko{color:#f87171}.mid{color:#fbbf24}
+ small{color:#94a3b8}
+</style></head><body>
+<h1>Labo vocal TeamStats</h1>
+<small>Teste la reconnaissance vocale hors ligne et l'interprétation des commandes. Aucune donnée n'est enregistrée.</small>
+
+<div class="card">
+ <h2>1. Reconnaissance hors ligne (Vosk)</h2>
+ <div class="row"><input type="file" id="modelFile" accept=".gz,.tgz"> <small>modèle français « .tar.gz » (sinon : model.tar.gz à côté de cette page)</small></div>
+ <div class="row" style="margin-top:8px"><button id="go">▶ Démarrer l'écoute</button><button id="halt" class="stop" disabled>■ Arrêter</button><label><input type="checkbox" id="tts" checked> réponses vocales</label></div>
+ <div id="status"><small>Prêt.</small></div>
+ <div id="partial"></div>
+</div>
+
+<div class="card">
+ <h2>2. Sans micro : tape ce que tu dirais</h2>
+ <div class="row"><input type="text" id="sim" placeholder="ex. changement sortie Laura Candice entrée Hinde Hanae" style="flex:1"><button id="simGo" class="alt">Envoyer</button></div>
+</div>
+
+<div class="card">
+ <h2>Résultat</h2>
+ <div id="heard">—</div><div id="say"></div><pre id="json"></pre>
+</div>
+
+<div class="card">
+ <h2>Joueuses du match <small>(« PRÉNOM; variante, variante » — une par ligne)</small></h2>
+ <textarea id="roster">ALIYA
+ANNABELLE
+ANNAELLE
+CHLOE; cloé, clo
+CANDICE; candy, kandis
+HANAE
+HINDE; inde, hind
+LAURA; lora</textarea>
+ <h2>Sur le terrain <small>(prénoms séparés par des virgules)</small></h2>
+ <input type="text" id="court" value="CANDICE, LAURA, ANNABELLE, CHLOE, ALIYA">
+ <div id="state"></div>
+</div>
+
+<div class="card"><h2>Historique</h2><div id="log"></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js"></script>
+<script>
+// voice-commands.js — transforme le texte reconnu (« Candice deux points », « changement sortie Laura
+// Candice entrée Hinde Chloé »…) en commandes TeamStats. JS pur, sans dépendance, fonctionne hors ligne.
+// Les noms d'actions renvoyés sont EXACTEMENT ceux de TeamStats (recordEvent).
+
+const strip = (s) =>
+  String(s ?? "").toLowerCase().replace(/ç/g, "s").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’'`-]/g, " ").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+// Clé phonétique française simplifiée : deux écritures qui se prononcent pareil donnent la même clé.
+function phonetic(word) {
+  let s = strip(word).replace(/ /g, "");
+  s = s.replace(/(.)\1+/g, "$1")
+    .replace(/ph/g, "f").replace(/qu/g, "k").replace(/ck/g, "k").replace(/gn/g, "N")
+    .replace(/ch(?=[lrn])/g, "k").replace(/ch|sh/g, "S")
+    .replace(/g([eiy])/g, "j$1").replace(/c([eiy])/g, "s$1").replace(/c/g, "k")
+    .replace(/y/g, "i").replace(/w/g, "v").replace(/h/g, "").replace(/x/g, "ks")
+    .replace(/(ain|ein|in|im|un)(?![aeiouy])/g, "I").replace(/(an|am|en|em)(?![aeiouy])/g, "A")
+    .replace(/(on|om)(?![aeiouy])/g, "O")
+    .replace(/eau|au/g, "o").replace(/ou/g, "u").replace(/ai|ei/g, "e").replace(/oi/g, "oa")
+    .replace(/(.)\1+/g, "$1").replace(/[esdtx]+$/, "");
+  return s;
+}
+
+function lev(a, b) {
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[n];
+}
+
+// roster : [{ id, name, aliases?: [] }]  (name = prénom)
+function buildRoster(players) {
+  return players.map((p) => {
+    const variants = [p.name, ...(p.aliases ?? [])];
+    return { id: p.id, name: p.name, keys: [...new Set(variants.map(phonetic).filter(Boolean))] };
+  });
+}
+
+const titleCase = (s) => String(s).toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+const FILLER = new Set(["et", "puis", "avec", "de", "du", "la", "le", "les", "l", "a", "au", "pour", "par", "donc", "alors", "euh", "heu", "allez", "bon", "ok"]);
+const NUM = { zero: 0, "0": 0, un: 1, une: 1, "1": 1, deux: 2, "2": 2, trois: 3, "3": 3 };
+
+const RULES = [
+  [/\b(zero|un|une|deux|trois|0|1|2|3) sur (un|une|deux|trois|1|2|3)\b/g, (_, x, n) => ` LFX${NUM[x]}N${NUM[n]} `],
+  [/\blancers? francs?\b|\blf\b/g, " LF "],
+  [/\bcontres? subis?e?\b/g, " BLKD "], [/\bcontres?\b/g, " BLK "],
+  [/\bfautes? subies?\b/g, " FD "], [/\bfautes? techniques?\b|\btechniques?\b/g, " FTECH "],
+  [/\bfautes? antisportives?\b|\bantisportives?\b/g, " FANTI "], [/\bfautes? disqualifiantes?\b|\bdisqualifiantes?\b/g, " FDISQ "],
+  [/\bfautes?\b/g, " FAUTE "],
+  [/\brebonds? (?:offensifs?|off|attaque)\b/g, " REBO "], [/\brebonds? (?:defensifs?|def|defense)\b/g, " REBD "], [/\brebonds?\b/g, " REB "],
+  [/\bpasses? decisives?\b|\bpasses?\b/g, " AST "],
+  [/\binterceptions?\b|\bintercepte\b|\bvol de balle\b/g, " STL "],
+  [/\bpertes? de balles?\b|\bballes? perdues?\b|\bpertes?\b/g, " TOV "],
+  [/\b(?:un|1) points?\b/g, " P1 "], [/\b(?:deux|2) (?:points?|pointes?|pts?)\b|\btir a deux\b/g, " P2 "],
+  [/\b(?:trois|3) (?:points?|pointes?|pts?)\b|\btir a trois\b/g, " P3 "],
+  [/\b(?:deux|2)\b/g, " P2 "], [/\b(?:trois|3)\b/g, " P3 "],
+  [/\b(?:rates?|rater|manques?|manquer|loupes?|loupee?)\b/g, " MISS "], [/\b(?:reussis?|reussies?|dedans|marque)\b/g, " MADE "],
+  [/\b(?:adversaires?|eux|visiteurs?)\b/g, " OPP "], [/\bmoins\b/g, " MOINS "],
+  [/\b(?:annule|annuler|annulation|supprime)\b/g, " UNDO "],
+  [/\b(?:changements?|remplacements?|change)\b/g, " SUBX "],
+  [/\b(?:sorties?|sortent|sortant|sortants|sortantes|sort)\b/g, " OUTM "],
+  [/\b(?:entrees?|entrent|entrant|entrants|rentrent|rentre|entre)\b/g, " INM "],
+  [/\b(?:remplace|remplacent)\b/g, " REPL "],
+  [/\bscore\b/g, " SCOREQ "], [/\bsur le terrain\b|\bterrain\b|\ben jeu\b/g, " COURTQ "],
+];
+
+const EVENT = {
+  P2: ["TIR 2PTS RÉUSSI", "TIR 2PTS Manqué", "deux points", "deux points raté"],
+  P3: ["TIR 3PTS RÉUSSI", "TIR 3PTS Manqué", "trois points", "trois points raté"],
+  REBO: ["REBOND OFFENSIF", null, "rebond offensif"], REBD: ["REBOND DÉFENSIF", null, "rebond défensif"],
+  AST: ["PASSE DÉCISIVE", null, "passe"], STL: ["INTERCEPTION", null, "interception"], TOV: ["PERTE DE BALLE", null, "perte de balle"],
+  BLK: ["CONTRE", null, "contre"], BLKD: ["CONTRE SUBI", null, "contre subi"],
+  FD: ["FAUTE SUBIE", null, "faute subie"], FAUTE: ["FAUTE PERSONNELLE", null, "faute"],
+  FTECH: ["FAUTE TECHNIQUE", null, "faute technique"], FANTI: ["FAUTE ANTISPORTIVE", null, "faute antisportive"],
+  FDISQ: ["FAUTE DISQUALIFIANTE", null, "faute disqualifiante"],
+};
+const CONFIRM_ACTIONS = new Set(["FTECH", "FANTI", "FDISQ"]); // actions graves : on relit et on demande « oui »
+
+// Reconnaît un prénom dans une liste de mots. Renvoie { ids, ambiguous, used }.
+function matchName(words, i, roster) {
+  let best = null;
+  for (const n of [2, 1]) {
+    if (i + n > words.length) continue;
+    const slice = words.slice(i, i + n);
+    if (slice.some((w) => /^[A-Z0-9]+$/.test(w) || FILLER.has(w))) continue;
+    const raw = slice.join("");
+    if (raw.length < 3) continue;
+    const pk = phonetic(raw);
+    if (!pk) continue;
+    const scored = roster
+      .map((p) => ({ p, d: Math.min(...p.keys.map((k) => lev(pk, k) <= (k.length >= 4 ? 1 : 0) ? lev(pk, k) : 99)) }))
+      .filter((x) => x.d < 99).sort((a, b) => a.d - b.d);
+    if (!scored.length) continue;
+    const top = scored.filter((x) => x.d === scored[0].d);
+    const cand = { used: n, d: scored[0].d, ids: top.map((x) => x.p.id), ambiguous: top.length > 1, heard: raw };
+    if (!best || cand.d < best.d || (cand.d === best.d && cand.used > best.used)) best = cand;
+  }
+  return best;
+}
+
+function tokenize(text, roster) {
+  let t = strip(text);
+  for (const [re, rep] of RULES) t = t.replace(re, rep);
+  const words = t.split(" ").filter(Boolean);
+  const items = [];
+  for (let i = 0; i < words.length;) {
+    const w = words[i];
+    if (/^[A-Z0-9]+$/.test(w)) { items.push({ code: w }); i++; continue; }
+    if (FILLER.has(w)) { i++; continue; }
+    const m = matchName(words, i, roster);
+    if (m) { items.push({ name: m }); i += m.used; } else { items.push({ unknown: w }); i++; }
+  }
+  return items;
+}
+
+const nameOf = (roster, id) => titleCase(roster.find((p) => p.id === id)?.name ?? "?");
+
+// parseCommand(texte, roster, ctx) -> { type, ..., say }
+//  ctx : { onCourt:[ids], unavailable:[ids], lastPlayerId, allowLast }
+function parseCommand(text, roster, ctx = {}) {
+  const items = tokenize(text, roster);
+  if (!items.length) return { type: "UNKNOWN", reason: "rien compris", say: "Je n'ai pas compris." };
+  const codes = items.filter((i) => i.code).map((i) => i.code);
+  const has = (c) => codes.includes(c);
+  const names = items.filter((i) => i.name).map((i) => i.name);
+  const unknown = items.filter((i) => i.unknown).map((i) => i.unknown);
+  const firstCode = items.find((i) => i.code)?.code;
+  const first = items[0];
+
+  if (has("SCOREQ")) return { type: "SCORE", say: "Score" };
+  if (has("COURTQ")) return { type: "COURT", say: "Sur le terrain" };
+  if (first.code === "FAUTE" && (unknown.includes("equipe") || names.length)) {
+    if (unknown.includes("equipe")) return { type: "TEAM_FOULS", say: "Fautes d'équipe" };
+    const n = names[0];
+    if (n.ambiguous) return { type: "ASK_NAME", candidates: n.ids, say: `${n.ids.map((id) => nameOf(roster, id)).join(" ou ")} ?` };
+    return { type: "FOULS", playerId: n.ids[0], say: `Fautes de ${nameOf(roster, n.ids[0])}` };
+  }
+  if (first.code === "UNDO") {
+    const n = names[0];
+    if (n?.ambiguous) return { type: "ASK_NAME", candidates: n.ids, say: `${n.ids.map((id) => nameOf(roster, id)).join(" ou ")} ?` };
+    return { type: "UNDO", playerId: n?.ids[0] ?? null, say: n ? `Annuler la dernière action de ${nameOf(roster, n.ids[0])} ?` : "Annuler la dernière action ?" };
+  }
+
+  // ---- Changements (plusieurs joueuses d'un coup)
+  if (has("SUBX") || has("OUTM") || has("INM") || has("REPL")) {
+    const outs = [], ins = [], issues = [];
+    if (has("REPL")) {
+      const seq = items.filter((i) => i.name || i.code === "REPL");
+      for (let k = 0; k < seq.length; k++) {
+        if (seq[k].code !== "REPL") continue;
+        const a = seq[k - 1]?.name, b = seq[k + 1]?.name;
+        if (!a || !b) { issues.push("« remplace » demande une joueuse avant et une après"); continue; }
+        ins.push(a); outs.push(b);
+      }
+    } else {
+      let mode = null;
+      for (const it of items) {
+        if (it.code === "OUTM") mode = "out"; else if (it.code === "INM") mode = "in";
+        else if (it.name) { if (!mode) issues.push(`${titleCase(it.name.heard)} : sortie ou entrée ?`); else (mode === "out" ? outs : ins).push(it.name); }
+      }
+    }
+    for (const u of unknown) issues.push(`mot non compris : « ${u} »`);
+    for (const n of [...outs, ...ins]) if (n.ambiguous) issues.push(`${n.ids.map((id) => nameOf(roster, id)).join(" ou ")} ?`);
+    const outIds = outs.map((n) => n.ids[0]), inIds = ins.map((n) => n.ids[0]);
+    if (!outIds.length || outIds.length !== inIds.length) issues.push(`il faut autant de sorties (${outIds.length}) que d'entrées (${inIds.length})`);
+    if (new Set([...outIds, ...inIds]).size !== outIds.length + inIds.length) issues.push("une joueuse est citée deux fois");
+    if (ctx.onCourt) {
+      for (const id of outIds) if (!ctx.onCourt.includes(id)) issues.push(`${nameOf(roster, id)} n'est pas sur le terrain`);
+      for (const id of inIds) if (ctx.onCourt.includes(id)) issues.push(`${nameOf(roster, id)} est déjà sur le terrain`);
+    }
+    for (const id of inIds) if (ctx.unavailable?.includes(id)) issues.push(`${nameOf(roster, id)} ne peut pas entrer`);
+    const say = `Sortie ${outIds.map((i) => nameOf(roster, i)).join(", ")}. Entrée ${inIds.map((i) => nameOf(roster, i)).join(", ")}.`;
+    if (issues.length) return { type: "SUB_INVALID", outs: outIds, ins: inIds, issues, say: issues.join(". ") };
+    return { type: "SUB", outs: outIds, ins: inIds, needsConfirm: true, say: `${say} Valide ?` };
+  }
+
+  // ---- Score adverse
+  if (has("OPP")) {
+    const pts = codes.find((c) => ["P1", "P2", "P3"].includes(c));
+    if (!pts) return { type: "NEED", missing: "points", say: "Combien de points pour l'adversaire ?" };
+    const delta = Number(pts[1]) * (has("MOINS") ? -1 : 1);
+    return { type: "OPP", delta, say: `Adversaire ${delta > 0 ? "plus" : "moins"} ${Math.abs(delta)}` };
+  }
+
+  // ---- Action d'une joueuse
+  const lfx = codes.find((c) => c.startsWith("LFX"));
+  const actionCodes = codes.filter((c) => EVENT[c] || c === "LF" || c === "REB" || c.startsWith("LFX") || c === "P1")
+    .map((c) => (c.startsWith("LFX") ? "LF" : c)); // « lancers francs un sur deux » = LF + LFX1N2 : une seule action
+  let who = null;
+  if (names.length > 1) return { type: "UNKNOWN", reason: "plusieurs joueuses", say: "Une seule joueuse à la fois." };
+  if (names.length === 1) {
+    if (names[0].ambiguous) return { type: "ASK_NAME", candidates: names[0].ids, say: `${names[0].ids.map((id) => nameOf(roster, id)).join(" ou ")} ?` };
+    who = names[0].ids[0];
+  } else if (ctx.allowLast && ctx.lastPlayerId) who = ctx.lastPlayerId;
+
+  if (!actionCodes.length) {
+    if (who && !unknown.length) return { type: "NEED", missing: "action", playerId: who, say: `${nameOf(roster, who)}, quoi ?` };
+    return { type: "UNKNOWN", reason: "action inconnue", heard: unknown.join(" "), say: "Je n'ai pas compris." };
+  }
+  if (new Set(actionCodes).size > 1) return { type: "UNKNOWN", reason: "plusieurs actions", say: "Une seule action à la fois." };
+  if (!who) return { type: "NEED", missing: "joueuse", say: "Quelle joueuse ?" };
+  const code = actionCodes[0], nm = nameOf(roster, who), miss = has("MISS");
+
+  if (code === "REB") return { type: "NEED", missing: "rebond", playerId: who, say: `${nm}, rebond offensif ou défensif ?` };
+  if (code === "P1") return { type: "UNKNOWN", reason: "un point seul = lancer franc ?", say: "Lancer franc ? Dis lancer franc réussi ou raté." };
+  if (code === "LF" || lfx) {
+    let made, att;
+    if (lfx) { [made, att] = lfx.slice(3).split("N").map(Number); }
+    else if (has("MADE") || has("MISS")) { made = has("MISS") ? 0 : 1; att = 1; }
+    else return { type: "NEED", missing: "lancers francs", playerId: who, say: `${nm}, combien sur combien ?` };
+    if (att < 1 || att > 3 || made > att) return { type: "UNKNOWN", reason: "lancers francs impossibles", say: "Lancers francs impossibles." };
+    return { type: "FREE_THROWS", playerId: who, made, attempts: att, action: `LANCERS FRANCS (${made}/${att})`, points: made, say: `${nm}, lancers francs ${made} sur ${att}` };
+  }
+  const e = EVENT[code];
+  if (miss && !e[1]) return { type: "UNKNOWN", reason: "« raté » ne s'applique qu'aux tirs", say: "« Raté » ne va qu'avec un tir." };
+  const action = miss ? e[1] : e[0];
+  const points = !miss && code === "P2" ? 2 : !miss && code === "P3" ? 3 : 0;
+  return { type: "EVENT", playerId: who, action, points, needsConfirm: CONFIRM_ACTIONS.has(code), say: `${nm}, ${miss ? e[3] : e[2]}` };
+}
+
+// Réponse à une demande de confirmation (« valide ? »)
+function parseConfirm(text) {
+  const t = strip(text);
+  if (/\b(oui|valide|ok|confirme|d accord|c est bon|vas y)\b/.test(t)) return "yes";
+  if (/\b(non|annule|stop|laisse tomber|pas ca)\b/.test(t)) return "no";
+  return null;
+}
+
+
+const $ = (id) => document.getElementById(id);
+let roster = [], events = [], oppScore = 0, lastPlayerId = null, pending = null, rec = null, model = null, audio = null;
+
+function readRoster() {
+  roster = buildRosterFrom($('roster').value);
+}
+function buildRosterFrom(txt) {
+  return buildRoster(txt.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const [n, al] = l.split(';'); const name = n.trim();
+    return { id: strip(name).replace(/ /g, '_'), name, aliases: (al || '').split(',').map(s => s.trim()).filter(Boolean) };
+  }));
+}
+const idOf = (n) => strip(n).replace(/ /g, '_');
+const nm = (id) => roster.find(p => p.id === id)?.name ?? id;
+function courtIds() { return $('court').value.split(',').map(s => idOf(s)).filter(Boolean); }
+function setCourt(ids) { $('court').value = ids.map(nm).join(', '); }
+const ourPoints = () => events.reduce((s, e) => s + (e.points || 0), 0);
+
+function speak(text) {
+  $('say').textContent = '🔊 ' + text;
+  if (!$('tts').checked || !('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text); u.lang = 'fr-FR'; u.rate = 1.1;
+  const v = speechSynthesis.getVoices().filter(v => v.lang.startsWith('fr')).sort((a, b) => b.localService - a.localService)[0];
+  if (v) u.voice = v;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
+function log(cls, text) { const d = document.createElement('div'); d.className = cls; d.textContent = new Date().toLocaleTimeString() + '  ' + text; $('log').prepend(d); }
+
+function apply(c) {
+  switch (c.type) {
+    case 'EVENT': case 'FREE_THROWS':
+      events.push(c); lastPlayerId = c.playerId; speak(c.say); log('ok', c.say + (c.points ? ` (+${c.points})` : '')); break;
+    case 'OPP': oppScore = Math.max(0, oppScore + c.delta); speak(c.say); log('ok', c.say); break;
+    case 'SUB': setCourt(courtIds().filter(i => !c.outs.includes(i)).concat(c.ins)); speak('Changement fait'); log('ok', c.say); break;
+    case 'SCORE': speak(`Nous ${ourPoints()}, eux ${oppScore}`); break;
+    case 'COURT': speak('Sur le terrain : ' + courtIds().map(nm).join(', ')); break;
+    case 'TEAM_FOULS': speak(`${events.filter(e => /FAUTE/.test(e.action) && !/SUBIE/.test(e.action)).length} fautes d'équipe`); break;
+    case 'FOULS': speak(`${nm(c.playerId)} : ${events.filter(e => e.playerId === c.playerId && /FAUTE/.test(e.action) && !/SUBIE/.test(e.action)).length} fautes`); break;
+    case 'UNDO': { const i = events.findIndex(e => !c.playerId || e.playerId === c.playerId); if (i < 0) { speak('Rien à annuler'); break; }
+      const [r] = events.splice(i, 1); speak('Annulé : ' + r.say); log('mid', 'annulé : ' + r.say); break; }
+    default: speak(c.say); log('ko', c.say);
+  }
+  $('state').innerHTML = `<small>Nous ${ourPoints()} – Eux ${oppScore} · ${events.length} action(s)</small>`;
+}
+
+function handle(text) {
+  readRoster();
+  $('heard').textContent = '« ' + text + ' »';
+  if (pending) {
+    const a = parseConfirm(text);
+    if (a === 'yes') { apply(pending); pending = null; return; }
+    if (a === 'no') { speak('Annulé'); log('mid', 'refusé'); pending = null; return; }
+    pending = null;
+  }
+  const c = parseCommand(text, roster, { onCourt: courtIds(), lastPlayerId, allowLast: false });
+  $('json').textContent = JSON.stringify(c, null, 1);
+  if (c.needsConfirm) { pending = c; speak(c.type === 'EVENT' ? c.say + '. Valide ?' : c.say); log('mid', 'à confirmer : ' + c.say); return; }
+  apply(c);
+}
+
+$('simGo').onclick = () => { const t = $('sim').value.trim(); if (t) handle(t); };
+$('sim').onkeydown = (e) => { if (e.key === 'Enter') $('simGo').click(); };
+
+async function start() {
+  $('go').disabled = true; $('status').innerHTML = '<small>Chargement du modèle…</small>';
+  try {
+    const f = $('modelFile').files[0];
+    model = await Vosk.createModel(f ? URL.createObjectURL(f) : 'model.tar.gz');
+    rec = new model.KaldiRecognizer();
+    let t0 = 0;
+    rec.on('partialresult', m => { if (!t0 && m.result.partial) t0 = performance.now(); $('partial').textContent = m.result.partial; });
+    rec.on('result', m => { const txt = (m.result.text || '').trim(); $('partial').textContent = '';
+      if (txt) { const ms = t0 ? Math.round(performance.now() - t0) : 0; log('', `reconnu en ${ms} ms depuis le 1er mot`); handle(txt); } t0 = 0; });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+    const ac = new AudioContext(); const node = ac.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (e) => { try { rec.acceptWaveform(e.inputBuffer); } catch (err) { console.error(err); } };
+    const src = ac.createMediaStreamSource(stream); src.connect(node); node.connect(ac.destination);
+    audio = { ac, stream, node, src };
+    $('halt').disabled = false; $('status').innerHTML = '<small class="ok">À l\'écoute. Parle dans le casque.</small>';
+  } catch (err) { $('status').innerHTML = '<small class="ko">Erreur : ' + (err.message || err) + '</small>'; $('go').disabled = false; }
+}
+function stop() {
+  if (audio) { audio.src.disconnect(); audio.node.disconnect(); audio.stream.getTracks().forEach(t => t.stop()); audio.ac.close(); audio = null; }
+  if (model) { model.terminate(); model = null; }
+  $('go').disabled = false; $('halt').disabled = true; $('status').innerHTML = '<small>Arrêté.</small>'; $('partial').textContent = '';
+}
+$('go').onclick = start; $('halt').onclick = stop;
+if ('speechSynthesis' in window) speechSynthesis.getVoices();
+</script></body></html>
