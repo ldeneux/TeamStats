@@ -8,8 +8,8 @@
 | 5 | Chrono : en changeant de période avec +, repartir au temps max si la période est vierge, sinon temps restant d'après les stats | **Fait** |
 | 1 | Mode d'emploi : aucune donnée réelle de licenciée | **Fait** (prénoms seuls, licences et dates fictives) |
 | 4 | Historiser les saisons + consultation ; données verrouillées (seul le superadmin modifie, directement en base) | **Fait** (`sql/admin_05_season_lock.sql`, testé sur PostgreSQL) |
-| 6 | Connexion : changer son mot de passe ; admin / superadmin peut se connecter « en tant que coach » (test de profil, sans mot de passe) | À faire |
-| 7 | Accès de secours « quoi qu'il arrive » (superadmin supprimé de la base) | À faire — à cadrer (voir notes) |
+| 6 | Connexion : changer son mot de passe ; admin / superadmin peut se connecter « en tant que coach » (test de profil, sans mot de passe) | **Fait** (bouton 👤 ; à tester sur le site réel) |
+| 7 | Accès de secours « quoi qu'il arrive » (superadmin supprimé de la base) | **Fait** (`sql/admin_06_last_superadmin.sql` testé sur PostgreSQL + route `/api/emergency` ; à configurer sur Vercel) |
 | 8 | `MiseAJourFFBB_Club.exe` : rejets du 16/11 (3 équipes en erreur) + dépôts inutiles | **Analysé, à traiter en dernier** (détail ci-dessous) |
 | 9 (a) | Nouveau profil **consultant** : lit les infos des équipes qui lui sont affectées, ne modifie rien | À faire |
 | 10 (b1) | Direct : afficher la date et l'heure du match, en petit, au-dessus du score | À faire |
@@ -23,7 +23,7 @@
 | 18 (g) | Mise à jour du mode d'emploi (**en tout dernier**, après les points ci-dessus) | À faire |
 
 ## Notes pour 6 et 7
-- 6 : « voir comme un coach » = bascule d'affichage côté appli (les droits réels restent ceux de l'admin) ; pour tester les droits RLS réels il faut un vrai compte coach.
+- 6 : réalisé comme une **vraie connexion** au compte coach (jeton à usage unique généré par le serveur) : on voit exactement ce que voit ce coach, droits réels (RLS) compris ; un bandeau permet de revenir à son compte.
 - 7 : on évite un jeton secret codé en dur dans l'appli (n'importe qui le retrouverait). Piste : récupération par la clé `service_role` côté serveur (variable Vercel) protégée par un secret d'urgence, ou simple procédure SQL documentée pour se redonner le profil superadmin.
 
 ## Point 8 : analyse du journal du 16/11 (69 poules déposées, 3 équipes en erreur)

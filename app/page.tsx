@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import CalendarMenu from '../components/CalendarMenu';
 import AdminPanel from '../components/AdminPanel';
+import AccountModal from '../components/AccountModal';
+import { adminApi } from '../lib/adminApi';
 import { StatsPdfContext } from '../lib/statsPdfContext';
 import { isLockedDate, useLockedBefore } from '../lib/seasonLock';
 
@@ -419,7 +421,11 @@ type Role = 'superadmin' | 'admin' | 'coach';
 // L'ancien nom « analyst » est lu comme « coach » (le temps que la base soit migrée, sql/admin_04_role_coach.sql).
 const normRole = (r: unknown): Role | null => (r === 'analyst' ? 'coach' : r === 'superadmin' || r === 'admin' || r === 'coach' ? r : null);
 
-function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReauth }: { userId: string; userEmail: string; role: Role; onSignOut: () => void; needsReauth: boolean; onReauth: () => void }) {
+interface Impersonation { admin: { access_token: string; refresh_token: string }; adminEmail: string; targetEmail: string; targetName: string | null }
+const LS_IMPERSONATION = 'teamstats:impersonation';   // sessionStorage : propre à l'onglet
+const SS_JUST_LOGGED_IN = 'teamstats:justLoggedIn';
+
+function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReauth, impersonation, onImpersonate, onStopImpersonation }: { userId: string; userEmail: string; role: Role; onSignOut: () => void; needsReauth: boolean; onReauth: () => void; impersonation: Impersonation | null; onImpersonate: (userId: string) => Promise<void>; onStopImpersonation: () => void }) {
   const isAdmin = role === 'admin' || role === 'superadmin';
   const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS' | 'CAL' | 'ADMIN'>('MATCH');
   const [selectedPeriodFilter, setSelectedPeriodFilter] = useState<number | 'ALL'>('ALL');
@@ -492,6 +498,17 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const [upcomingError, setUpcomingError] = useState('');
   const [showPastConfirm, setShowPastConfirm] = useState(false);
   const [showLockedInfo, setShowLockedInfo] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  useEffect(() => {
+    // Juste après une connexion par mot de passe, un admin / superadmin choisit : continuer en admin ou tester un coach.
+    try {
+      if (window.sessionStorage.getItem(SS_JUST_LOGGED_IN)) {
+        window.sessionStorage.removeItem(SS_JUST_LOGGED_IN);
+        if ((role === 'admin' || role === 'superadmin') && !impersonation) { setAccountWelcome(true); setShowAccount(true); }
+      }
+    } catch { /* stockage indisponible */ }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [accountWelcome, setAccountWelcome] = useState(false);
   const lockedBefore = useLockedBefore();
   const matchLocked = isLockedDate(matchConfig.matchDate, lockedBefore); // match d'une saison clôturée : lecture seule
   const [confirmText, setConfirmText] = useState('');
@@ -2045,6 +2062,12 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             </button>
             <span title={userEmail} className={`hidden sm:inline px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide ${role === 'superadmin' ? 'border-fuchsia-400/50 text-fuchsia-300 bg-fuchsia-500/10' : isAdmin ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' : 'border-blue-400/50 text-blue-300 bg-blue-500/10'}`}>{role}</span>
             <button
+              onClick={() => { setAccountWelcome(false); setShowAccount(true); }}
+              title="Mon compte (mot de passe, tester un coach)"
+              aria-label="Mon compte"
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 text-xs transition"
+            >👤</button>
+            <button
               onClick={onSignOut}
               title={`Se déconnecter (${userEmail})`}
               aria-label="Se déconnecter"
@@ -2115,6 +2138,16 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       </header>
 
       <StatsPdfContext.Provider value={{ exportMatchStats: exportSavedMatchStats }}>
+        {impersonation && (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-blue-400/50 bg-blue-500/15 px-3 py-2 text-xs text-blue-100">
+            <span>👁 Vous testez le compte de <b>{impersonation.targetName || impersonation.targetEmail}</b> (coach). Vous voyez ce qu&apos;il voit ; ce que vous enregistrez est enregistré pour de vrai.</span>
+            <button onClick={onStopImpersonation} className="shrink-0 rounded-xl bg-blue-600 px-3 py-1.5 font-bold text-white hover:bg-blue-500">Revenir à mon compte</button>
+          </div>
+        )}
+        {showAccount && (
+          <AccountModal email={userEmail} role={role} impersonating={!!impersonation} welcome={accountWelcome}
+            onClose={() => setShowAccount(false)} onImpersonate={onImpersonate} />
+        )}
       <main>
         {activeTab === 'CAL' && (
           <CalendarMenu userId={userId} isAdmin={isAdmin} onOpenAdmin={() => setActiveTab('ADMIN')} />
@@ -2984,6 +3017,29 @@ function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  // Accès de secours (propriétaire) : voir app/api/emergency/route.ts
+  const [rescue, setRescue] = useState(false);
+  const [rescueSecret, setRescueSecret] = useState('');
+  const [rescuePwd, setRescuePwd] = useState('');
+  const [rescueMsg, setRescueMsg] = useState('');
+
+  const handleRescue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    setRescueMsg('');
+    try {
+      const res = await fetch('/api/emergency', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: rescueSecret, password: rescuePwd }) });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `Erreur ${res.status}`);
+      try { window.sessionStorage.setItem(SS_JUST_LOGGED_IN, '1'); } catch { /* ignoré */ }
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email: json.email, password: rescuePwd });
+      if (signInError) throw new Error(signInError.message);
+    } catch (err: any) {
+      setRescueMsg(err?.message || String(err));
+      setSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2994,6 +3050,8 @@ function LoginScreen() {
     if (signInError) {
       setError(/invalid login credentials/i.test(signInError.message) ? 'E-mail ou mot de passe incorrect.' : signInError.message);
       setSubmitting(false);
+    } else {
+      try { window.sessionStorage.setItem(SS_JUST_LOGGED_IN, '1'); } catch { /* stockage indisponible */ }
     }
     // En cas de succès, la passerelle détecte la session et affiche l'application.
   };
@@ -3045,6 +3103,16 @@ function LoginScreen() {
           {submitting ? 'Connexion...' : 'Se connecter'}
         </button>
         <p className="text-[10px] text-slate-500 text-center">Les comptes sont créés par l'administrateur.</p>
+        <button type="button" onClick={() => setRescue(v => !v)} className="block mx-auto text-[10px] text-slate-600 hover:text-slate-400 underline">Accès de secours</button>
+        {rescue && (
+          <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/50 p-3">
+            <p className="text-[11px] text-slate-400">Réservé au propriétaire : rétablit son compte superadmin. Saisissez le code de secours (variable du serveur) et un nouveau mot de passe.</p>
+            <input type="password" autoComplete="off" placeholder="Code de secours" value={rescueSecret} onChange={e => setRescueSecret(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500" />
+            <input type="password" autoComplete="new-password" placeholder="Nouveau mot de passe" value={rescuePwd} onChange={e => setRescuePwd(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500" />
+            {rescueMsg && <p className="text-xs text-rose-400 break-words">{rescueMsg}</p>}
+            <button type="button" onClick={handleRescue as any} disabled={submitting || !rescueSecret || !rescuePwd} className="w-full bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white text-sm font-bold py-2.5 rounded-xl">Rétablir mon accès</button>
+          </div>
+        )}
       </form>
     </div>
   );
@@ -3073,6 +3141,12 @@ export default function App() {
   const [offlineIdentity, setOfflineIdentity] = useState(false);
   const [needsReauth, setNeedsReauth] = useState(false);
   const offlineIdentityRef = useRef(false);
+  const [impersonation, setImpersonation] = useState<Impersonation | null>(null);
+
+  // Test d'un compte coach en cours (propre à l'onglet) : on le retrouve si la page est rechargée.
+  useEffect(() => {
+    try { const raw = window.sessionStorage.getItem(LS_IMPERSONATION); if (raw) setImpersonation(JSON.parse(raw)); } catch { /* ignoré */ }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -3151,10 +3225,40 @@ export default function App() {
     };
   }, []);
 
+  // Teste un compte coach : le serveur fournit un jeton à usage unique, échangé contre une vraie session de ce coach.
+  // La session de l'administrateur est gardée dans l'onglet pour pouvoir y revenir.
+  const startImpersonation = async (targetId: string) => {
+    const { data } = await supabase.auth.getSession();
+    const cur = data.session;
+    if (!cur) throw new Error('Session absente : reconnectez-vous.');
+    const r = await adminApi<{ token_hash: string; email: string; display_name: string | null }>('/api/admin/impersonate', 'POST', { user_id: targetId });
+    const info: Impersonation = {
+      admin: { access_token: cur.access_token, refresh_token: cur.refresh_token },
+      adminEmail: cur.user.email || '', targetEmail: r.email, targetName: r.display_name,
+    };
+    window.sessionStorage.setItem(LS_IMPERSONATION, JSON.stringify(info));
+    const { error } = await supabase.auth.verifyOtp({ token_hash: r.token_hash, type: 'magiclink' });
+    if (error) { window.sessionStorage.removeItem(LS_IMPERSONATION); throw new Error(error.message); }
+    setImpersonation(info);
+  };
+  const stopImpersonation = async () => {
+    const info = impersonation;
+    window.sessionStorage.removeItem(LS_IMPERSONATION);
+    setImpersonation(null);
+    if (!info) return;
+    const { error } = await supabase.auth.setSession(info.admin);
+    if (error) {                      // la session de l'admin a expiré : retour à la connexion
+      await supabase.auth.signOut({ scope: 'local' });
+      setSession(null); setRole(null); setStatus('signed_out');
+    }
+  };
+
   const signOut = async () => {
     const pending = readPending().filter(i => session && i.userId === session.user.id).length;
     if (pending > 0 && !window.confirm(`${pending} match${pending > 1 ? 's' : ''} ${pending > 1 ? 'ne sont pas encore envoyés' : "n'est pas encore envoyé"} en base. Se déconnecter maintenant empêchera l'envoi tant que vous ne serez pas reconnecté. Continuer ?`)) return;
     lsRemove(LS_OFFLINE_USER);
+    try { window.sessionStorage.removeItem(LS_IMPERSONATION); } catch { /* ignoré */ }
+    setImpersonation(null);
     await supabase.auth.signOut({ scope: 'local' });
     // La déconnexion locale ne dépend pas du réseau : on affiche la connexion tout de suite.
     setSession(null);
@@ -3190,6 +3294,9 @@ export default function App() {
       onSignOut={signOut}
       needsReauth={needsReauth && offlineIdentity}
       onReauth={signOut}
+      impersonation={impersonation}
+      onImpersonate={startImpersonation}
+      onStopImpersonation={() => { void stopImpersonation(); }}
     />
   );
 }

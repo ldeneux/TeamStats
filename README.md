@@ -144,3 +144,23 @@ Fichier fourni à part : `push_ffbb_club.py`, à remplacer dans le dépôt Multi
   marquées « 🔒 historique » dans Calendrier et Administration, import d'effectif et changement d'image masqués.
 - Technique : politiques **restrictives** en écriture, ajoutées aux règles existantes (non modifiées). Un UPDATE / DELETE visant une saison clôturée n'est pas une erreur mais ne
   modifie aucune ligne ; l'appli prévient l'utilisateur avant.
+
+## Mon compte : mot de passe et « tester un coach » (bouton 👤)
+- **Changer son mot de passe** : bouton 👤 (en haut, à côté de la déconnexion) > « Changer mon mot de passe ». Aucune règle imposée par l'appli (Supabase refuse moins de 6 caractères par défaut).
+- **Après la connexion d'un admin / superadmin**, une fenêtre propose : *Continuer en admin* ou *tester un coach* (liste des comptes coach). Le même choix reste accessible via 👤.
+- **Tester un coach** est une vraie connexion à son compte, sans son mot de passe : le serveur (route `/api/admin/impersonate`, clé `SUPABASE_SERVICE_ROLE_KEY` requise) génère un
+  jeton à usage unique que le navigateur échange contre une session de ce coach. On voit donc exactement ses équipes et ses droits. Seuls les comptes **coach** sont ciblables
+  (jamais un admin / superadmin) ; chaque test est tracé dans les journaux du serveur Vercel. La session de l'administrateur est gardée dans l'onglet ; le bandeau bleu
+  « Revenir à mon compte » la restaure. **Utiliser un seul onglet** pendant un test (la session est partagée entre les onglets du navigateur). Ce qui est enregistré pendant un test l'est pour de vrai.
+
+## Accès de secours (point 7) : ne plus jamais perdre l'accès
+Deux protections complémentaires, sans jeton secret codé en dur :
+1. **Anti-verrouillage** (`sql/admin_06_last_superadmin.sql`) : la base refuse de supprimer ou rétrograder le **dernier superadmin**, depuis l'appli, le tableau de bord Supabase ou le SQL
+   (y compris en supprimant le compte). Pour l'outrepasser volontairement : `ALTER TABLE multisports.app_profiles DISABLE TRIGGER last_superadmin_guard;` (puis `ENABLE`).
+2. **Accès de secours** (écran de connexion > « Accès de secours »), si malgré tout l'accès est perdu : le propriétaire saisit un **code de secours** et choisit un nouveau mot de passe ; le serveur
+   recrée / répare son compte superadmin et le connecte. Configuration sur Vercel (Settings > Environment Variables, serveur uniquement) :
+   - `EMERGENCY_SUPERADMIN_EMAIL` : l'adresse du propriétaire (la seule que cette procédure peut réparer) ;
+   - `EMERGENCY_ACCESS_SECRET` : un code long, 24 caractères minimum (`openssl rand -base64 32`), à ranger dans un gestionnaire de mots de passe. Sans ces deux variables la procédure est désactivée.
+   Ce n'est pas une porte d'accès aux données : elle ne fait que rétablir le compte du propriétaire, qui se connecte ensuite normalement. Comparaison à temps constant, 1 s d'attente par essai, chaque usage journalisé.
+3. **Sans l'appli** (toujours possible avec votre compte Supabase) : Authentication > Users pour (re)créer le compte, puis la requête SQL en tête de `admin_06_last_superadmin.sql`.
+Les données restent de toute façon lisibles dans le tableau de bord Supabase avec votre compte Supabase, indépendamment de l'appli.
