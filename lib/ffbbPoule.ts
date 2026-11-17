@@ -202,6 +202,21 @@ export function extractPoule(html: string, pouleId: string): Omit<FfbbPoule, 'po
       if (typeof parent.code === 'string' && parent.code && !/^\d+$/.test(parent.code)) competitionCode = parent.code;
     }
   }
+  // Libellé de phase porté par le nœud de la phase lui-même (« Phase 2 »), ou rang de la phase parmi celles de la compétition.
+  if (!phaseLabel) {
+    for (const a of pouleChain) {
+      if (!Array.isArray(a.poules)) continue;
+      for (const v of Object.values(a)) {
+        if (typeof v === 'string' && /^\s*(saison r[ée]guli[eè]re|phase\s*\d+)\s*$/i.test(v)) { phaseLabel = v.trim(); break; }
+      }
+      if (phaseLabel) break;
+    }
+  }
+  if (!phaseLabel && competitionId) {
+    const parent = pouleChain.find((a) => Array.isArray(a.phases) && a.phases.length > 1);
+    const idx = parent ? (parent.phases as Json[]).findIndex((ph) => String(ph?.id) === competitionId) : -1;
+    if (idx >= 0) phaseLabel = `Phase ${idx + 1}`;
+  }
   // Secours du logo : un objet « compétition » (id = celui de la phase) ou une rencontre qui le porte.
   if (!competitionLogoAsset) {
     for (const r of Array.from(rencontres.values())) {

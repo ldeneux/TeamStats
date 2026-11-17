@@ -70,10 +70,24 @@ export const sortPhases = (phases: ClubPhase[]) =>
   );
 
 // « Phase 1 », « Phase 2 »... (numérotées dans l'ordre chronologique) ; les coupes sont nommées « Coupe ».
+// Le numéro vient du libellé FFBB (phase_number > 0). Sans libellé (0) : une phase seule qui démarre après le 31 octobre est la phase 2
+// (ex. une équipe créée en phase 2) ; sinon on numérote dans l'ordre chronologique.
 export function phaseLabels(phases: ClubPhase[]): Map<string, string> {
   const out = new Map<string, string>();
-  let n = 0;
-  for (const p of sortPhases(phases)) out.set(p.id, isCup(p.competition_name) ? 'Coupe' : `Phase ${++n}`);
+  const sorted = sortPhases(phases);
+  const champ = sorted.filter((p) => !isCup(p.competition_name));
+  const used = new Set(champ.filter((p) => p.phase_number > 0).map((p) => p.phase_number));
+  const unknown = champ.filter((p) => !(p.phase_number > 0));
+  const afterOctober = (d: string | null) => !!d && /^\d{4}-(1[12]|0[1-8])/.test(d);   // novembre à août
+  let next = 1;
+  for (const p of sorted) {
+    if (isCup(p.competition_name)) { out.set(p.id, 'Coupe'); continue; }
+    if (p.phase_number > 0) { out.set(p.id, `Phase ${p.phase_number}`); continue; }
+    if (unknown.length === 1 && used.size === 0) { out.set(p.id, afterOctober(p.starts_on) ? 'Phase 2' : 'Phase 1'); continue; }
+    while (used.has(next)) next++;
+    used.add(next);
+    out.set(p.id, `Phase ${next}`);
+  }
   return out;
 }
 

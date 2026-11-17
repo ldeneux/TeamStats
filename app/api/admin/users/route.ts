@@ -44,17 +44,25 @@ export async function GET(req: Request) {
     if (prof.error) throw new HttpError(500, `Lecture des profils : ${prof.error.message}`);
     if (acc.error) throw new HttpError(500, `Lecture des accès : ${acc.error.message}`);
     const byUser = new Map<string, any>((prof.data ?? []).map((p: any) => [p.user_id, p]));
+    // Un admin ne voit pas les comptes superadmin : ils sont retirés ICI, côté serveur (ils n'arrivent jamais au navigateur).
+    const hidden = new Set<string>();
+    if (caller.role === 'admin') {
+      for (const p of prof.data ?? []) if (asRole((p as any).role) === 'superadmin') hidden.add((p as any).user_id);
+      const { data: ids } = await caller.db.rpc('superadmin_user_ids');   // renfort base (sql/admin_07_hide_superadmin.sql)
+      for (const id of (ids ?? []) as string[]) hidden.add(id);
+    }
     return NextResponse.json({
       callerRole: caller.role,
       callerId: caller.userId,
       users: users
+        .filter((u) => !hidden.has(u.id))
         .map((u) => ({
           id: u.id, email: u.email, created_at: u.created_at, last_sign_in_at: u.last_sign_in_at,
           banned: !!u.banned_until && new Date(u.banned_until) > new Date(),
           role: asRole(byUser.get(u.id)?.role), display_name: byUser.get(u.id)?.display_name ?? null,
         }))
         .sort((a, b) => String(a.email).localeCompare(String(b.email))),
-      access: acc.data ?? [],
+      access: (acc.data ?? []).filter((a: any) => !hidden.has(a.user_id)),
     });
   } catch (e) {
     return fail(e);

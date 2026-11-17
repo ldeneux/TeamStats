@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 import { authenticate, fail, HttpError, type DB } from '@/lib/serverAuth';
 import { findAssetCandidates, pouleFromPages, type AssetCandidate, type FfbbPoule } from '@/lib/ffbbPoule';
 import {
-  clubEngagementsIn, competitionUrl, currentSeason, identifyTeam, normName, phaseNumberOf, seasonOfIso, statsTeamName,
+  clubEngagementsIn, competitionUrl, currentSeason, explicitPhaseNumber, identifyTeam, normName, seasonOfIso, statsTeamName,
 } from '@/lib/clubTeams';
 
 export const dynamic = 'force-dynamic';
@@ -88,7 +88,7 @@ async function processPoule(db: DB, pouleId: string, data: any, fetchedAt: strin
     // 2) la phase (compétition + poule) -----------------------------------------------------
     const { data: ph, error: ePh } = await db.from('stats_club_phases').upsert({
       club_team_id: clubTeamId,
-      phase_number: phaseNumberOf(poule.phaseLabel ?? poule.competitionName),
+      phase_number: explicitPhaseNumber(poule.phaseLabel) || explicitPhaseNumber(poule.competitionName), // 0 = inconnu (déduit à l'affichage)
       competition_id: poule.competitionId,
       competition_name: poule.competitionName,
       competition_code: poule.competitionCode,

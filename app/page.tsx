@@ -20,6 +20,7 @@ export interface GameConfig {
   periodCount: number;
   periodMinutes: number;
   ffbbMatchId: string;
+  matchTime?: string; // heure du match « HH:MM » (calendrier FFBB ou saisie), affichée au-dessus du score
 }
 
 export interface GameState {
@@ -62,6 +63,20 @@ const parseCategory = (label: string | null | undefined) => {
 const categoryAllowsOvertime = (teamName: string) => {
   const c = parseCategory(teamName);
   return c ? c.n >= 13 : true;
+};
+// Périodes par défaut selon la catégorie : U9 et moins 6 x 4 min ; U11 8 x 4 min ; U13 4 x 8 min ; U15 et + (ou senior) 4 x 10 min.
+const defaultPeriodsFor = (teamName: string) => {
+  const c = parseCategory(teamName);
+  const n = c ? c.n : 99;
+  if (n <= 9) return { periodCount: 6, periodMinutes: 4 };
+  if (n <= 11) return { periodCount: 8, periodMinutes: 4 };
+  if (n <= 13) return { periodCount: 4, periodMinutes: 8 };
+  return { periodCount: 4, periodMinutes: 10 };
+};
+// Heure « HH:MM » d'une date du calendrier (rien si l'heure n'est pas renseignée : minuit).
+const timeOfIso = (iso: string | null | undefined) => {
+  const t = /T(\d{2}:\d{2})/.exec(iso || '')?.[1];
+  return t && t !== '00:00' ? t : '';
 };
 // Une des étiquettes (catégorie, équipe, division...) correspond-elle à la catégorie de l'équipe ?
 const sameCategory = (teamName: string, labels: (string | null | undefined)[]) => {
@@ -686,7 +701,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         setMatchConfig(prev => ({
           ...prev,
           teamAway: row.opponent || prev.teamAway,
-          matchDate: row.match_date ? String(row.match_date).slice(0, 10) : prev.matchDate
+          matchDate: row.match_date ? String(row.match_date).slice(0, 10) : prev.matchDate,
+          matchTime: timeOfIso(row.match_date)
         }));
         setFfbbLookupStatus('found');
       }
@@ -744,6 +760,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       ...prev,
       teamAway: u.opponent || prev.teamAway,
       matchDate: u.match_date ? new Date(u.match_date).toLocaleDateString('sv-SE') : prev.matchDate,
+      matchTime: timeOfIso(u.match_date),
       ffbbMatchId: String(u.ffbb_rencontre_id || '').slice(0, 20)
     }));
     setFfbbLookupStatus('found');
@@ -1588,7 +1605,9 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     const team = savedTeams.find(t => t.id === teamId);
     if (team) {
       setNewTeamName(team.name);
-      setMatchConfig(prev => ({ ...prev, teamHome: team.name }));
+      // Nombre et durée des périodes de la catégorie, sauf si un match est déjà en cours (on ne change pas les règles en route).
+      const underway = game.events.length > 0 || game.scoreHome + game.scoreAway > 0;
+      setMatchConfig(prev => ({ ...prev, teamHome: team.name, ...(underway ? {} : defaultPeriodsFor(team.name)) }));
       setEditingRoster(team.roster);
       setSelectedMatchPlayerIds(team.roster.slice(0, 10).map(p => p.id));
     }
@@ -2301,6 +2320,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   <input type="date" value={matchConfig.matchDate} onChange={e => setMatchConfig({...matchConfig, matchDate: e.target.value})} className="bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
                 </div>
                 <div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-1">Heure</label>
+                  <input type="time" value={matchConfig.matchTime || ''} onChange={e => setMatchConfig({...matchConfig, matchTime: e.target.value})} className="bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white focus:outline-none" />
+                </div>
+                <div>
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Périodes</label>
                   <input type="number" min="1" max="49" value={matchConfig.periodCount} onChange={e => setMatchConfig({...matchConfig, periodCount: Math.min(49, Math.max(1, parseInt(e.target.value) || 1))})} className="w-16 bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm font-bold text-white text-center focus:outline-none" />
                 </div>
@@ -2558,6 +2581,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
+              {matchConfig.matchDate && (
+                <p className="text-center text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                  {new Date(matchConfig.matchDate + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}{matchConfig.matchTime ? ` · ${matchConfig.matchTime}` : ''}
+                </p>
+              )}
               <div className="grid grid-cols-3 items-center text-center">
                 <div className={`flex flex-col items-center ${homeAway === 'DOMICILE' ? 'order-1' : 'order-3'}`}>
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{matchConfig.teamHome || (homeAway === 'DOMICILE' ? 'DOMICILE' : 'EXTÉRIEUR')}</p>

@@ -164,3 +164,15 @@ Deux protections complémentaires, sans jeton secret codé en dur :
    Ce n'est pas une porte d'accès aux données : elle ne fait que rétablir le compte du propriétaire, qui se connecte ensuite normalement. Comparaison à temps constant, 1 s d'attente par essai, chaque usage journalisé.
 3. **Sans l'appli** (toujours possible avec votre compte Supabase) : Authentication > Users pour (re)créer le compte, puis la requête SQL en tête de `admin_06_last_superadmin.sql`.
 Les données restent de toute façon lisibles dans le tableau de bord Supabase avec votre compte Supabase, indépendamment de l'appli.
+
+### Correctifs de l'exe du 17/11 (point 8)
+Réessais automatiques sur blocage 403 / 429, une page lue par phase, dépôt limité aux poules où joue le club, adresses essayées dans les messages 404, copie de page pour chaque équipe en erreur.
+Même procédure de mise à jour que ci-dessus (remplacer `scripts/push_ffbb_club.py`, reconstruire l'exe, le déposer dans `public/`).
+
+## Confort du Direct et des phases (17/11)
+- **Date et heure** du match en petit au-dessus du score du Direct ; champ **Heure** dans la configuration (rempli automatiquement depuis le calendrier FFBB ou par la recherche d'ID).
+- **Périodes par défaut selon la catégorie** de l'équipe choisie (modifiables ensuite) : U9 et moins 6 × 4 min ; U11 8 × 4 min ; U13 4 × 8 min ; U15 et plus (ou seniors) 4 × 10 min.
+  Prolongations de 5 min à partir de U13 (pas de prolongation en U11 et moins : le nul reste possible). Les valeurs ne changent pas si un match est déjà en cours.
+- **Accès** : un admin ne voit plus les comptes superadmin (retirés côté serveur ; `sql/admin_07_hide_superadmin.sql` ajoute la protection côté base).
+- **Numéro de phase** : lu dans le libellé FFBB (« Phase 2 », « Saison régulière »), sinon dans le rang de la phase dans la compétition ; en dernier recours, une phase seule qui démarre après
+  le 31 octobre est affichée « Phase 2 ». Relancer « Charger les équipes depuis le cache » pour mettre à jour les phases déjà chargées.

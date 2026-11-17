@@ -58,6 +58,12 @@ export function identifyTeam(competitionName: string | null, teamName: string | 
   };
 }
 
+// Numéro de phase EXPLICITE (« … - Phase 2 », « Phase 2 », « Saison régulière » = 1) ; 0 si le libellé n'en donne pas.
+export function explicitPhaseNumber(label: string | null | undefined): number {
+  const m = /phase\s*(\d+)/i.exec(label || '');
+  if (m) return parseInt(m[1], 10);
+  return /saison\s+r[ée]guli[eè]re/i.test(label || '') ? 1 : 0;
+}
 // Numéro de phase lu dans le nom de la compétition (« … - Phase 2 »), sinon 1.
 export function phaseNumberOf(competitionName: string | null): number {
   const m = /phase\s*(\d+)/i.exec(competitionName || '');
