@@ -155,6 +155,20 @@ export function surclassementOf(extra: string | null | undefined): string | null
   return m ? `U${parseInt(m[1], 10)}` : null;
 }
 
+// Catégorie → nombre (U11 = 11, Seniors = 100) pour comparer des équipes.
+const catNum = (c: string | null) => { const m = /^U(\d+)$/.exec(c || ''); return m ? parseInt(m[1], 10) : c === 'Seniors' ? 100 : null; };
+
+// Surclassement : une joueuse est surclassée quand l'équipe où elle joue est d'une catégorie PLUS ÉLEVÉE que celle qui correspond à son âge,
+// à condition qu'une équipe plus jeune existe pour elle dans le club (pas de surclassement en U11 F si U9 F n'existe pas).
+// Renvoie la catégorie de l'équipe où elle joue (« U13 ») si elle est surclassée, sinon null.
+export function surclassement(birthdate: string | null, sexe: 'F' | 'M' | null, season: string, team: TeamLite | null, teams: TeamLite[]): string | null {
+  if (!team) return null;
+  const natural = teamByBirthdate(birthdate, sexe, season, teams);
+  if (!natural || natural.id === team.id) return null;
+  const a = catNum(natural.category), b = catNum(team.category);
+  return a !== null && b !== null && a < b ? team.category : null;
+}
+
 // Adulte (>= 19 ans) dans une équipe de jeunes : encadrement (entraîneur, parent...) et non joueur.
 export function guessRole(birthdate: string | null, season: string, team: TeamLite | null): 'joueur' | 'encadrement' {
   const age = sportAge(birthdate, season);

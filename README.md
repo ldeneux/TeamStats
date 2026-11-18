@@ -176,3 +176,18 @@ Même procédure de mise à jour que ci-dessus (remplacer `scripts/push_ffbb_clu
 - **Accès** : un admin ne voit plus les comptes superadmin (retirés côté serveur ; `sql/admin_07_hide_superadmin.sql` ajoute la protection côté base).
 - **Numéro de phase** : lu dans le libellé FFBB (« Phase 2 », « Saison régulière »), sinon dans le rang de la phase dans la compétition ; en dernier recours, une phase seule qui démarre après
   le 31 octobre est affichée « Phase 2 ». Relancer « Charger les équipes depuis le cache » pour mettre à jour les phases déjà chargées.
+
+## Effectif : case Coach et badge « surclassement »
+- **Coach** (`sql/admin_08_roster_coach.sql`, à exécuter après admin_03) : pour l'encadrement, une case « Coach » (plusieurs possibles). Au chargement d'un PDF, le premier encadrant d'une équipe qui n'a
+  pas encore de coach est coché par défaut ; le choix déjà enregistré est conservé aux réimports. Badge vert « Coach » dans la liste.
+- **Badge « Surclassement U13 »** calculé (plus d'après le code D11 de la fiche) : une joueuse est surclassée quand son équipe est d'une catégorie plus élevée que celle de son âge **et** qu'une équipe plus
+  jeune existe pour elle dans le club (pas de badge en U11 F si U9 F n'existe pas). Le code de la fiche FFBB (ex. « D11 ») reste affiché en information.
+- **Contrôle après import** : l'appli relit la base et nomme toute personne qui n'aurait pas été enregistrée (« 14 / 15 enregistrées »).
+
+## Profil « consultant » (lecture seule) — `sql/admin_09_role_consultant.sql`
+- Le consultant **lit** les équipes qui lui sont affectées (Administration > Accès, comme un coach) et **ne modifie rien** : la base refuse toute écriture sur matchs, événements, statistiques,
+  équipes et joueuses TeamStats (politiques restrictives, testées).
+- Dans l'appli il ne voit que le menu **📅 Calendrier** : calendrier, résultats, classement, **effectif** de l'équipe (onglet 👥, lecture seule) et PDF des statistiques des matchs enregistrés (icône 📊).
+  Pas de Configuration, Direct, Statistiques en direct ni bouton Enregistrer.
+- Un admin gère les comptes consultant ; « Tester un profil » (bouton 👤) fonctionne aussi pour un consultant. L'onglet 👥 Effectif du menu Calendrier est visible aussi des coachs (pour leurs équipes).
+- À exécuter après admin_01 et admin_04 : il remplace la contrainte des profils par (superadmin, admin, coach, consultant).

@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { adminApi } from '../lib/adminApi';
 import { supabase } from '../lib/supabase';
 
-interface Coach { id: string; email: string; display_name: string | null }
+interface Coach { id: string; email: string; display_name: string | null; role: string }
 const inputCls = 'w-full rounded-xl border border-slate-700 bg-slate-800 p-2.5 text-sm font-bold text-white focus:border-amber-500 focus:outline-none';
 
 // « Mon compte » : changer son mot de passe ; pour un admin / superadmin, choisir de continuer en admin
@@ -60,18 +60,18 @@ export default function AccountModal({ email, role, impersonating, welcome, onCl
           <div className="space-y-2 rounded-xl bg-slate-800/50 p-3">
             <h4 className="text-xs font-extrabold uppercase tracking-wide text-slate-300">Se connecter en tant que…</h4>
             <button onClick={onClose} className="w-full rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white hover:bg-emerald-500">Continuer en {role}</button>
-            <p className="pt-1 text-[11px] text-slate-400">ou tester ce que voit un coach (sans son mot de passe) :</p>
+            <p className="pt-1 text-[11px] text-slate-400">ou tester ce que voit un coach ou un consultant (sans son mot de passe) :</p>
             {coaches === null ? <p className="text-xs text-slate-500">Chargement…</p>
-              : coaches.length === 0 ? <p className="text-xs text-slate-500">Aucun compte coach.</p>
+              : coaches.length === 0 ? <p className="text-xs text-slate-500">Aucun compte coach ni consultant.</p>
               : (
                 <div className="flex gap-2">
                   <select value={coachId} onChange={(e) => setCoachId(e.target.value)} className={inputCls}>
-                    {coaches.map((c) => <option key={c.id} value={c.id}>{c.display_name || c.email}</option>)}
+                    {coaches.map((c) => <option key={c.id} value={c.id}>{c.display_name || c.email} ({c.role})</option>)}
                   </select>
                   <button onClick={test} disabled={busy} className="shrink-0 rounded-xl bg-blue-600 px-3 text-sm font-bold text-white hover:bg-blue-500 disabled:opacity-50">Tester</button>
                 </div>
               )}
-            <p className="text-[10px] text-slate-500">Vous aurez exactement les droits et les équipes de ce coach. Attention : ce que vous enregistrez est enregistré pour de vrai.</p>
+            <p className="text-[10px] text-slate-500">Vous aurez exactement les droits et les équipes de ce compte. Attention : ce que vous enregistrez est enregistré pour de vrai.</p>
           </div>
         )}
 
@@ -86,7 +86,7 @@ export default function AccountModal({ email, role, impersonating, welcome, onCl
             <button onClick={changePassword} disabled={busy || !pwd} className="w-full rounded-xl bg-amber-600 py-2.5 text-sm font-bold text-white hover:bg-amber-500 disabled:opacity-40">Enregistrer le mot de passe</button>
           </div>
         )}
-        {impersonating && <p className="rounded-xl bg-amber-500/10 p-3 text-xs text-amber-300">Vous testez le compte d&apos;un coach : le mot de passe n&apos;est pas modifiable ici. Revenez d&apos;abord à votre compte.</p>}
+        {impersonating && <p className="rounded-xl bg-amber-500/10 p-3 text-xs text-amber-300">Vous testez le compte d&apos;un coach ou consultant : le mot de passe n&apos;est pas modifiable ici. Revenez d&apos;abord à votre compte.</p>}
 
         {msg && <p className={`text-xs break-words ${msg.ok ? 'text-emerald-300' : 'text-rose-300'}`}>{msg.text}</p>}
         <button onClick={onClose} className="w-full rounded-xl bg-slate-800 py-2.5 text-sm font-bold text-white hover:bg-slate-700">Fermer</button>

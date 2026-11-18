@@ -11,11 +11,11 @@
 | 6 | Connexion : changer son mot de passe ; admin / superadmin peut se connecter « en tant que coach » (test de profil, sans mot de passe) | **Fait** (bouton 👤 ; à tester sur le site réel) |
 | 7 | Accès de secours « quoi qu'il arrive » (superadmin supprimé de la base) | **Fait** (`sql/admin_06_last_superadmin.sql` testé sur PostgreSQL + route `/api/emergency` ; à configurer sur Vercel) |
 | 8 | `MiseAJourFFBB_Club.exe` : rejets du 16/11 (3 équipes en erreur) + dépôts inutiles | **Corrigé dans `push_ffbb_club.py`** (testé sur un site simulé ; à relancer pour vérifier, 404 « CRMLSM » à confirmer) |
-| 9 (a) | Nouveau profil **consultant** : lit les infos des équipes qui lui sont affectées, ne modifie rien | À faire |
+| 9 (a) | Nouveau profil **consultant** : lit les infos des équipes qui lui sont affectées, ne modifie rien | **Fait** (`sql/admin_09_role_consultant.sql` testé sur PostgreSQL) |
 | 10 (b1) | Direct : afficher la date et l'heure du match, en petit, au-dessus du score | **Fait** |
 | 11 (b2) | Périodes / durée par défaut selon la catégorie de l'équipe choisie | **Fait** |
-| 12 (b3) | Effectifs : retrouver Clara (perdue au chargement) ; case « Coach » pour l'encadrement | À faire |
-| 13 (b4) | Badge « surclassée » calculé (âge / niveau de l'équipe, si une équipe plus jeune existe) | À faire |
+| 12 (b3) | Effectifs : retrouver Clara (perdue au chargement) ; case « Coach » pour l'encadrement | **Case Coach faite** (`sql/admin_08_roster_coach.sql`) ; **Clara : non reproduite** (mon analyse du PDF la lit bien) → ajout d'un contrôle après import qui nomme toute personne non enregistrée ; à re-tester avec le PDF |
+| 13 (b4) | Badge « surclassée » calculé (âge / niveau de l'équipe, si une équipe plus jeune existe) | **Fait** |
 | 14 (c) | Feuille de match : joueuses d'une autre équipe (renfort), fond vert + provenance, vert aussi dans le Direct si possible | À faire |
 | 15 (d) | Accès : un admin ne doit pas voir les comptes superadmin | **Fait** (`sql/admin_07_hide_superadmin.sql` testé sur PostgreSQL + filtrage serveur) |
 | 16 (e) | Libellés de phase : ne pas afficher « Phase 1 » quand seule la phase 2 existe | **Fait** (relancer « Charger les équipes depuis le cache » pour mettre à jour les phases déjà chargées) |

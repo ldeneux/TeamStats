@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS multisports.stats_club_roster (
   insurance text,
   extra text,                                -- information supplémentaire de la fiche (ex. « D11 »)
   role text NOT NULL DEFAULT 'joueur' CHECK (role IN ('joueur', 'encadrement')),
+  is_coach boolean NOT NULL DEFAULT false,   -- encadrement : coach de l'équipe (plusieurs possibles)
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (club_team_id, licence_number)      -- une personne peut figurer dans 2 équipes (surclassement)

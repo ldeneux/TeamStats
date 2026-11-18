@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { ClubTeam, loadClubTeams, sortTeams } from '../lib/clubDb';
 import { currentSeason } from '../lib/clubTeams';
 
-type Role = 'superadmin' | 'admin' | 'coach';
+type Role = 'superadmin' | 'admin' | 'coach' | 'consultant';
 interface AppUser { id: string; email: string; created_at: string; last_sign_in_at: string | null; banned: boolean; role: Role | null; display_name: string | null }
 interface Access { user_id: string; team_id: string }
 interface StatsTeam { id: string; name: string }
@@ -17,6 +17,7 @@ const ROLE_STYLE: Record<Role, string> = {
   superadmin: 'border-fuchsia-400/50 bg-fuchsia-500/10 text-fuchsia-300',
   admin: 'border-amber-500/50 bg-amber-500/10 text-amber-400',
   coach: 'border-blue-400/50 bg-blue-500/10 text-blue-300',
+  consultant: 'border-teal-400/50 bg-teal-500/10 text-teal-300',
 };
 const genPassword = () => {
   const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -54,7 +55,7 @@ export default function AdminAccess() {
   useEffect(() => { void reload(); }, [reload]);
 
   const canManage = (u: AppUser) => !!data && (data.callerRole === 'superadmin' || u.role !== 'superadmin');
-  const roleOptions: Role[] = data?.callerRole === 'superadmin' ? ['coach', 'admin', 'superadmin'] : ['coach', 'admin'];
+  const roleOptions: Role[] = data?.callerRole === 'superadmin' ? ['coach', 'consultant', 'admin', 'superadmin'] : ['coach', 'consultant', 'admin'];
 
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     setError(''); setNotice('');
@@ -68,7 +69,7 @@ export default function AdminAccess() {
           <div>
             <h2 className="text-sm font-extrabold uppercase tracking-wide text-amber-500">Comptes et accès</h2>
             <p className="text-[11px] text-slate-400">
-              Un coach ne voit que les équipes qui lui sont affectées, par saison. Les admin et superadmin voient tout.
+              Un coach (modifie) ou un consultant (lecture seule) ne voit que les équipes qui lui sont affectées, par saison. Les admin et superadmin voient tout.
               {data?.callerRole === 'admin' && ' Seul un superadmin peut gérer les comptes superadmin.'}
             </p>
           </div>
@@ -207,9 +208,9 @@ function UserCard({ u, self, open, onToggle, manageable, roleOptions, callerRole
                 💾 Enregistrer {dirty ? 'les modifications' : '(rien à enregistrer)'}
               </button>
 
-              {u.role === 'coach' && <TeamAssignment user={u} clubTeams={clubTeams} statsTeams={statsTeams} access={access} act={act} />}
-              {u.role === null && <p className="rounded-xl bg-slate-800/50 p-3 text-xs text-slate-400">Pour ouvrir des équipes à cette personne : choisissez le profil <b className="text-blue-300">coach</b>, touchez <b>Enregistrer</b> ; la liste des équipes apparaît ici.</p>}
-              {seesAll && <p className="rounded-xl bg-slate-800/50 p-3 text-xs text-slate-400">Un profil {u.role} voit toutes les équipes : il n&apos;y a rien à affecter. Pour limiter l&apos;accès à certaines équipes, passez-le en <b className="text-blue-300">coach</b>.</p>}
+              {(u.role === 'coach' || u.role === 'consultant') && <TeamAssignment user={u} clubTeams={clubTeams} statsTeams={statsTeams} access={access} act={act} />}
+              {u.role === null && <p className="rounded-xl bg-slate-800/50 p-3 text-xs text-slate-400">Pour ouvrir des équipes à cette personne : choisissez le profil <b className="text-blue-300">coach</b> (modifie) ou <b className="text-teal-300">consultant</b> (lecture seule), touchez <b>Enregistrer</b> ; la liste des équipes apparaît ici.</p>}
+              {seesAll && <p className="rounded-xl bg-slate-800/50 p-3 text-xs text-slate-400">Un profil {u.role} voit toutes les équipes : il n&apos;y a rien à affecter. Pour limiter l&apos;accès à certaines équipes, passez-le en <b className="text-blue-300">coach</b> ou <b className="text-teal-300">consultant</b>.</p>}
 
               {!self && (
                 <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-3">

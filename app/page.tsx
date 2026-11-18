@@ -432,9 +432,9 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
   return matchId;
 }
 
-type Role = 'superadmin' | 'admin' | 'coach';
+type Role = 'superadmin' | 'admin' | 'coach' | 'consultant';
 // L'ancien nom « analyst » est lu comme « coach » (le temps que la base soit migrée, sql/admin_04_role_coach.sql).
-const normRole = (r: unknown): Role | null => (r === 'analyst' ? 'coach' : r === 'superadmin' || r === 'admin' || r === 'coach' ? r : null);
+const normRole = (r: unknown): Role | null => (r === 'analyst' ? 'coach' : r === 'superadmin' || r === 'admin' || r === 'coach' || r === 'consultant' ? r : null);
 
 interface Impersonation { admin: { access_token: string; refresh_token: string }; adminEmail: string; targetEmail: string; targetName: string | null }
 const LS_IMPERSONATION = 'teamstats:impersonation';   // sessionStorage : propre à l'onglet
@@ -442,7 +442,9 @@ const SS_JUST_LOGGED_IN = 'teamstats:justLoggedIn';
 
 function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReauth, impersonation, onImpersonate, onStopImpersonation }: { userId: string; userEmail: string; role: Role; onSignOut: () => void; needsReauth: boolean; onReauth: () => void; impersonation: Impersonation | null; onImpersonate: (userId: string) => Promise<void>; onStopImpersonation: () => void }) {
   const isAdmin = role === 'admin' || role === 'superadmin';
-  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS' | 'CAL' | 'ADMIN'>('MATCH');
+  const isConsultant = role === 'consultant';   // lecture seule : Calendrier, classements, effectifs et PDF des matchs enregistrés
+  const [activeTab, setActiveTab] = useState<'INIT' | 'MATCH' | 'STATS' | 'LOGS' | 'CAL' | 'ADMIN'>(role === 'consultant' ? 'CAL' : 'MATCH');
+  useEffect(() => { if (role === 'consultant' && activeTab !== 'CAL') setActiveTab('CAL'); }, [role, activeTab]);
   const [selectedPeriodFilter, setSelectedPeriodFilter] = useState<number | 'ALL'>('ALL');
 
   const [savedTeams, setSavedTeams] = useState<SavedTeam[]>([]);
@@ -2079,7 +2081,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               <span className={`w-1.5 h-1.5 rounded-full ${!isOnline ? 'bg-amber-400' : pendingCount > 0 ? 'bg-blue-400' : 'bg-emerald-400'}`} />
               <span>{!isOnline ? `Hors ligne${pendingCount > 0 ? ` · ${pendingCount}` : ''}` : isSyncing ? 'Envoi…' : pendingCount > 0 ? `${pendingCount} à envoyer` : 'En ligne'}</span>
             </button>
-            <span title={userEmail} className={`hidden sm:inline px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide ${role === 'superadmin' ? 'border-fuchsia-400/50 text-fuchsia-300 bg-fuchsia-500/10' : isAdmin ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' : 'border-blue-400/50 text-blue-300 bg-blue-500/10'}`}>{role}</span>
+            <span title={userEmail} className={`hidden sm:inline px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide ${role === 'superadmin' ? 'border-fuchsia-400/50 text-fuchsia-300 bg-fuchsia-500/10' : isAdmin ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' : role === 'consultant' ? 'border-teal-400/50 text-teal-300 bg-teal-500/10' : 'border-blue-400/50 text-blue-300 bg-blue-500/10'}`}>{role}</span>
             <button
               onClick={() => { setAccountWelcome(false); setShowAccount(true); }}
               title="Mon compte (mot de passe, tester un coach)"
@@ -2095,14 +2097,17 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           </div>
           
           <nav className="flex space-x-1.5 bg-slate-800 p-1 rounded-xl text-base font-semibold border border-slate-700/60">
+            {!isConsultant && (<>
             <button onClick={() => setActiveTab('INIT')} title="Configuration" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'INIT' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>⚙️</button>
             <button onClick={() => setActiveTab('MATCH')} title="Direct" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'MATCH' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🏀</button>
             <button onClick={() => setActiveTab('STATS')} title="Statistiques" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'STATS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>📊</button>
             <button onClick={() => setActiveTab('LOGS')} title="Historique" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'LOGS' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🕒</button>
+            </>)}
             <button onClick={() => setActiveTab('CAL')} title="Calendrier" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'CAL' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>📅</button>
             {isAdmin && (
               <button onClick={() => setActiveTab('ADMIN')} title="Administration" className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${activeTab === 'ADMIN' ? 'bg-fuchsia-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>🛠️</button>
             )}
+            {!isConsultant && (<>
             <span className="w-px h-6 bg-slate-700 self-center mx-0.5" />
             <button
               onClick={requestSaveMatch}
@@ -2116,6 +2121,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                 'text-slate-400 hover:text-white'
               }`}
             >{saveStatus === 'saving' ? '⏳' : saveStatus === 'saved' ? '✅' : saveStatus === 'queued' ? '📥' : saveStatus === 'error' ? '⚠️' : '💾'}</button>
+            </>)}
           </nav>
         </div>
         {saveStatus === 'error' && (

@@ -10,7 +10,7 @@ import { authenticate, fail, HttpError, serviceClient, type Caller, type Role } 
 
 export const dynamic = 'force-dynamic';
 
-const ROLES: Role[] = ['superadmin', 'admin', 'coach'];
+const ROLES: Role[] = ['superadmin', 'admin', 'coach', 'consultant'];
 // L'ancien nom « analyst » est lu comme « coach » (le temps que la base soit migrée : sql/admin_04_role_coach.sql).
 const asRole = (r: unknown): Role | null => (r === 'analyst' ? 'coach' : typeof r === 'string' && (ROLES as string[]).includes(r) ? (r as Role) : null);
 

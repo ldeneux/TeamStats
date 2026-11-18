@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import ClubCalendar from './ClubCalendar';
 import TeamTile from './TeamTile';
+import RosterPanel from './RosterPanel';
 import {
   ClubPhase, ClubTeam, defaultPhase, loadClubTeams, loadPhases, phaseLabels, sortTeams,
 } from '../lib/clubDb';
@@ -27,6 +28,7 @@ export default function CalendarMenu({ userId, isAdmin, onOpenAdmin }: { userId:
   const [teamId, setTeamId] = useState('');
   const [phases, setPhases] = useState<ClubPhase[] | null>(null);
   const [phaseId, setPhaseId] = useState('');
+  const [view, setView] = useState<'CALENDRIER' | 'EFFECTIF'>('CALENDRIER');
 
   useEffect(() => {
     let alive = true;
@@ -104,9 +106,22 @@ export default function CalendarMenu({ userId, isAdmin, onOpenAdmin }: { userId:
         </div>
       </section>
 
-      {team && phases && phases.length === 0 && <p className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5 text-center text-sm text-slate-400">Aucune phase enregistrée pour cette équipe.</p>}
+      {team && (
+        <div className="flex rounded-xl border border-slate-700 bg-slate-800 p-1 text-sm font-bold">
+          {([['CALENDRIER', '📅 Calendrier'], ['EFFECTIF', '👥 Effectif']] as const).map(([k, l]) => (
+            <button key={k} onClick={() => setView(k)} className={`flex-1 rounded-lg px-3 py-2 transition ${view === k ? 'bg-amber-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>{l}</button>
+          ))}
+        </div>
+      )}
+      {team && view === 'EFFECTIF' && (
+        <section className="rounded-2xl border border-slate-700/60 bg-slate-900/80 p-3">
+          <RosterPanel team={team} allTeams={teams ?? []} onChanged={() => undefined} readOnly />
+        </section>
+      )}
 
-      {team && phases && phases.length > 0 && (
+      {team && view === 'CALENDRIER' && phases && phases.length === 0 && <p className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5 text-center text-sm text-slate-400">Aucune phase enregistrée pour cette équipe.</p>}
+
+      {team && view === 'CALENDRIER' && phases && phases.length > 0 && (
         <section className="space-y-3">
           <div className="flex flex-wrap gap-2">
             {phases.map((p) => (

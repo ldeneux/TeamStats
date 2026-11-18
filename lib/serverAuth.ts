@@ -5,7 +5,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 
 export type DB = SupabaseClient<any, any, any, any, any>;
-export type Role = 'superadmin' | 'admin' | 'coach';
+export type Role = 'superadmin' | 'admin' | 'coach' | 'consultant';
 
 const URL_ = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
