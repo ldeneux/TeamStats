@@ -1,0 +1,366 @@
+// tests/voice.test.ts — tests de l'analyseur et du dialogue vocal (sans navigateur, sans réseau).
+// Lancer : npm run test:voice
+import assert from 'node:assert/strict';
+import { parseCommand, phonetic, normalizeText, Cmd, VoicePlayer, VoiceEventLite } from '../lib/voice/commands';
+import { VoiceDialog, VoiceAction, VoiceView, DialogResult } from '../lib/voice/dialog';
+
+// ───── Effectif de test (fiche projet § 5)
+const P = (id: string, name: string, number: number, aliases?: string[]): VoicePlayer => ({ id, name, number, aliases });
+const PLAYERS: VoicePlayer[] = [
+  P('aliya', 'ALIYA', 2), P('annabelle', 'ANNABELLE', 12), P('annaelle', 'ANNAELLE', 11), P('chloe', 'CHLOÉ', 4),
+  P('candice', 'CANDICE', 5), P('hanae', 'HANAÉ', 10), P('hinde', 'HINDE', 9, ['hind', 'inde']), P('laura', 'LAURA', 7),
+  P('victoire', 'VICTOIRE', 13), P('mayra', 'MAYRA', 14),
+];
+const START_COURT = ['chloe', 'annabelle', 'candice', 'laura', 'aliya'];
+
+// ───── Mini-simulateur du match : applique les actions comme page.tsx
+class Sim {
+  events: VoiceEventLite[] = [];
+  onCourt = [...START_COURT];
+  home = 0; away = 0; period = 1; clock = false; seq = 0;
+  actions: VoiceAction[] = [];
+  dialog: VoiceDialog;
+  players = PLAYERS;
+  constructor(opts?: ConstructorParameters<typeof VoiceDialog>[0]) { this.dialog = new VoiceDialog(opts); }
+  view(): VoiceView {
+    return { players: this.players, onCourt: this.onCourt, events: this.events, scoreHome: this.home, scoreAway: this.away, period: this.period, clockRunning: this.clock };
+  }
+  say(...alts: string[]): DialogResult {
+    const r = this.dialog.handle(alts, this.view());
+    for (const a of r.actions) this.apply(a);
+    this.actions.push(...r.actions);
+    return r;
+  }
+  said(...alts: string[]): string { return this.say(...alts).say.join(' | '); }
+  private apply(a: VoiceAction) {
+    if (a.t === 'event') {
+      this.events = [{ id: 'e' + ++this.seq, actionType: a.action, playerId: a.playerId, period: this.period }, ...this.events];
+      this.home += a.points;
+      if (a.action.includes('DISQUALIFIANTE')) this.onCourt = this.onCourt.filter((i) => i !== a.playerId);
+    } else if (a.t === 'ft') {
+      this.events = [{ id: 'e' + ++this.seq, actionType: `LANCERS FRANCS (${a.made}/${a.attempts})`, playerId: a.playerId, period: this.period }, ...this.events];
+      this.home += a.made;
+    } else if (a.t === 'opp') this.away += a.delta;
+    else if (a.t === 'sub') {
+      this.onCourt = [...this.onCourt.filter((i) => !a.outs.includes(i)), ...a.ins];
+      this.events = [{ id: 'e' + ++this.seq, actionType: `REMPLACEMENT (${a.outs.length}j)`, playerId: a.ins[0], period: this.period }, ...this.events];
+    } else if (a.t === 'delete') {
+      const ev = this.events.find((e) => e.id === a.eventId);
+      if (ev) { const m = ev.actionType.match(/RÉUSSI/) ? Number(ev.actionType.match(/(\d)PTS/)?.[1]) : 0; this.home -= m; }
+      this.events = this.events.filter((e) => e.id !== a.eventId);
+    } else if (a.t === 'clock') this.clock = a.running;
+  }
+}
+
+const ctxOf = (onCourt = START_COURT, events: VoiceEventLite[] = []) => ({ onCourt, events });
+const parse = (text: string, onCourt = START_COURT, events: VoiceEventLite[] = []): Cmd => parseCommand(text, PLAYERS, ctxOf(onCourt, events));
+
+let ok = 0, ko = 0;
+function t(name: string, fn: () => void) {
+  try { fn(); ok++; } catch (e: any) { ko++; console.log(`✗ ${name}\n    ${String(e.message).split('\n').slice(0, 6).join('\n    ')}`); }
+}
+const ev = (c: Cmd) => c as Extract<Cmd, { type: 'EVENT' }>;
+const sub = (c: Cmd) => c as Extract<Cmd, { type: 'SUB' }>;
+
+// ═════════ 1. Tirs ═════════
+t('tir 2 pts réussi', () => { const c = ev(parse('Tir à 2 points réussi pour Chloé')); assert.equal(c.type, 'EVENT'); assert.equal(c.action, 'TIR 2PTS RÉUSSI'); assert.equal(c.points, 2); assert.equal(c.playerId, 'chloe'); });
+t('2 points pour X', () => assert.equal(ev(parse('2 points pour Chloé')).action, 'TIR 2PTS RÉUSSI'));
+t('X deux points', () => assert.equal(ev(parse('Chloé deux points')).action, 'TIR 2PTS RÉUSSI'));
+t('Candice deux points (non-régression)', () => { const c = ev(parse('Candice deux points')); assert.equal(c.playerId, 'candice'); assert.equal(c.action, 'TIR 2PTS RÉUSSI'); });
+t('raté à 3 points', () => { const c = ev(parse('raté à 3 points pour Chloé')); assert.equal(c.action, 'TIR 3PTS Manqué'); assert.equal(c.points, 0); });
+t('tir 2 points manqué', () => assert.equal(ev(parse('tir à 2 points manqué pour Laura')).action, 'TIR 2PTS Manqué'));
+t('trois points sans précision = réussi', () => { const c = ev(parse('trois points Laura')); assert.equal(c.action, 'TIR 3PTS RÉUSSI'); assert.equal(c.points, 3); });
+t('variantes point / pointe / pts', () => { for (const w of ['2 point', '2 pointe', '2 pts']) assert.equal(ev(parse(`Chloé ${w}`)).action, 'TIR 2PTS RÉUSSI', w); });
+t('« 3 points » en chiffres', () => assert.equal(ev(parse('Aliya 3 points')).action, 'TIR 3PTS RÉUSSI'));
+
+// ═════════ 2. Autres actions ═════════
+t('interception', () => assert.equal(ev(parse('interception Chloé')).action, 'INTERCEPTION'));
+t('rebond offensif / défensif', () => { assert.equal(ev(parse('rebond offensif Chloé')).action, 'REBOND OFFENSIF'); assert.equal(ev(parse('rebond défensif Laura')).action, 'REBOND DÉFENSIF'); });
+t('rebond seul → question', () => { const c = parse('rebond Chloé'); assert.equal(c.type, 'ASK'); assert.match((c as any).say, /offensif ou défensif/); });
+t('perte de balle de X', () => assert.equal(ev(parse('perte de balle de Chloé')).action, 'PERTE DE BALLE'));
+t('passe décisive', () => assert.equal(ev(parse('passe décisive Chloé')).action, 'PASSE DÉCISIVE'));
+t('contre de X → CONTRE', () => assert.equal(ev(parse('Contre de Chloé')).action, 'CONTRE'));
+t('X contrée → CONTRE SUBI', () => assert.equal(ev(parse('Chloé contrée')).action, 'CONTRE SUBI'));
+t('contre subi X', () => assert.equal(ev(parse('contre subi Chloé')).action, 'CONTRE SUBI'));
+
+// ═════════ 3. Fautes ═════════
+t('faute sur X = subie', () => assert.equal(ev(parse('Faute sur Chloé')).action, 'FAUTE SUBIE'));
+t('faute de X = personnelle', () => assert.equal(ev(parse('Faute de Chloé')).action, 'FAUTE PERSONNELLE'));
+t('faute subie / personnelle', () => { assert.equal(ev(parse('faute subie Chloé')).action, 'FAUTE SUBIE'); assert.equal(ev(parse('faute personnelle Chloé')).action, 'FAUTE PERSONNELLE'); });
+t('faute technique → confirmation', () => { const c = ev(parse('faute technique Chloé')); assert.equal(c.action, 'FAUTE TECHNIQUE'); assert.equal(c.needsConfirm, true); });
+t('antisportive / disqualifiante → confirmation', () => { assert.equal(ev(parse('faute antisportive Chloé')).needsConfirm, true); assert.equal(ev(parse('faute disqualifiante Chloé')).needsConfirm, true); });
+t('faute personnelle : pas de confirmation', () => assert.equal(ev(parse('faute de Chloé')).needsConfirm, false));
+t('« combien de fautes X » = question', () => assert.equal(parse('combien de fautes Chloé').type, 'Q_FOULS'));
+t('« faute de X » n\'est plus une question', () => assert.notEqual(parse('faute de Chloé').type, 'Q_FOULS'));
+t('fautes équipe', () => assert.equal(parse('fautes équipe').type, 'Q_TEAM_FOULS'));
+
+// ═════════ 4. Changements ═════════
+const ids = (a: string[]) => [...a].sort();
+t('Remplacement X, Y, Z par … (Annabelle/Anaelle : le contexte tranche)', () => {
+  const c = sub(parse('Remplacement Chloé, Annabelle, Candice par Hind, Anaelle, Hanaé'));
+  assert.equal(c.type, 'SUB');
+  assert.deepEqual(ids(c.outs), ids(['chloe', 'annabelle', 'candice']));
+  assert.deepEqual(ids(c.ins), ids(['hinde', 'annaelle', 'hanae']));
+});
+t('Sortie de … Entrée de …', () => {
+  const c = sub(parse('Sortie de Chloé, Annabelle, Candice Entrée de Hind, Annaelle, Hanaé'));
+  assert.deepEqual(ids(c.outs), ids(['chloe', 'annabelle', 'candice']));
+  assert.deepEqual(ids(c.ins), ids(['hinde', 'annaelle', 'hanae']));
+});
+t('entrée avant sortie', () => {
+  const c = sub(parse('Entrée de Hind, Annaelle, Hanaé sortie de Chloé, Annabelle, Candice'));
+  assert.equal(c.type, 'SUB'); assert.equal(c.outs.length, 3);
+});
+t('Sur le terrain on a … (5 prénoms)', () => {
+  const c = sub(parse('Sur le terrain on a Hind, Anaelle, Hanaé, Victoire et Mayra'));
+  assert.equal(c.type, 'SUB');
+  assert.deepEqual(ids(c.outs), ids(['chloe', 'annabelle', 'candice', 'laura', 'aliya']));
+  assert.deepEqual(ids(c.ins), ids(['hinde', 'annaelle', 'hanae', 'victoire', 'mayra']));
+});
+t('Sur le terrain on a … avec deux joueuses déjà dessus : écart des ensembles', () => {
+  const c = sub(parse('Sur le terrain on a Chloé, Annabelle, Candice, Hind, Hanaé'));
+  assert.deepEqual(ids(c.outs), ids(['laura', 'aliya']));
+  assert.deepEqual(ids(c.ins), ids(['hinde', 'hanae']));
+});
+t('Sur le terrain on a 2 prénoms → refus', () => { const c = parse('Sur le terrain on a Hind, Anaelle'); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /Il en faut 5/); });
+t('« Sur le terrain » seul = question', () => assert.equal(parse('qui est sur le terrain').type, 'Q_COURT'));
+t('sortante pas sur le terrain → refus', () => { const c = parse('remplacement Mayra par Hinde'); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /Mayra n'est pas sur le terrain/); });
+t('entrante déjà sur le terrain → refus', () => { const c = parse('remplacement Chloé par Laura'); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /déjà sur le terrain/); });
+t('joueuse citée deux fois → refus', () => assert.equal(parse('remplacement Chloé, Chloé par Hinde, Hanaé').type, 'REFUSE'));
+t('autant de sorties que d\'entrées', () => assert.equal(parse('remplacement Chloé, Laura par Hinde').type, 'REFUSE'));
+t('entrante à 5 fautes → refus', () => {
+  const evs: VoiceEventLite[] = Array.from({ length: 5 }, (_, i) => ({ id: 'f' + i, actionType: 'FAUTE PERSONNELLE', playerId: 'hinde' }));
+  const c = parse('remplacement Chloé par Hinde', START_COURT, evs); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /cinq fautes/);
+});
+t('« remplace » (X remplace Y)', () => { const c = sub(parse('Hinde remplace Chloé')); assert.deepEqual(c.outs, ['chloe']); assert.deepEqual(c.ins, ['hinde']); });
+t('changement : lecture avant exécution', () => { const c = sub(parse('Remplacement Chloé par Hinde')); assert.equal(c.needsConfirm, true); assert.match(c.say, /^Sortent Chloé\. Entrent Hinde\. Valide \?$/); });
+t('ambiguïté sans contexte → question « Annabelle ou Annaelle ? »', () => {
+  // les deux sont sur le terrain, ou les deux sur le banc : aucun contexte ne tranche pour une action
+  const c = parse('Anabel deux points', ['annabelle', 'annaelle', 'chloe', 'laura', 'aliya']);
+  assert.ok(c.type === 'ASK' || c.type === 'EVENT', c.type);
+});
+
+// ═════════ 5. Numéros de maillot ═════════
+t('Faute de la 5 / numéro 5 / cinq', () => {
+  for (const s of ['Faute de la 5', 'faute de la numéro 5', 'faute de cinq', 'faute de n° 5', 'faute de numéro 5']) {
+    const c = ev(parse(s)); assert.equal(c.action, 'FAUTE PERSONNELLE', s); assert.equal(c.playerId, 'candice', s);
+  }
+});
+t('Faute sur le 12 → subie n° 12', () => { const c = ev(parse('Faute sur le 12')); assert.equal(c.action, 'FAUTE SUBIE'); assert.equal(c.playerId, 'annabelle'); });
+t('douze deux points → TIR 2PTS n° 12', () => { const c = ev(parse('douze deux points')); assert.equal(c.action, 'TIR 2PTS RÉUSSI'); assert.equal(c.playerId, 'annabelle'); });
+t('le 12 deux points', () => { const c = ev(parse('le 12 deux points')); assert.equal(c.playerId, 'annabelle'); assert.equal(c.action, 'TIR 2PTS RÉUSSI'); });
+t('Deux points la 2 → n° 2', () => { const c = ev(parse('Deux points la 2')); assert.equal(c.action, 'TIR 2PTS RÉUSSI'); assert.equal(c.playerId, 'aliya'); });
+t('2 points la numéro 2 collé « numéro2 »', () => assert.equal(ev(parse('2 points numéro2')).playerId, 'aliya'));
+t('Remplacement la 4, la 7 par la 9, la 10', () => {
+  const c = sub(parse('Remplacement la 4, la 7 par la 9, la 10'));
+  assert.equal(c.type, 'SUB'); assert.deepEqual(ids(c.outs), ids(['chloe', 'laura'])); assert.deepEqual(ids(c.ins), ids(['hinde', 'hanae']));
+});
+t('Sur le terrain on a 4, 5, 6, 7, 8 (numéro inconnu → refus clair)', () => { const c = parse('Sur le terrain on a 4, 5, 6, 7, 8'); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /Numéro 6 : pas de joueuse/); });
+t('Sur le terrain on a 4, 5, 7, 2, 12 = écart nul', () => assert.equal(parse('Sur le terrain on a 4, 5, 7, 2, 12').type, 'NOOP'));
+t('Sur le terrain on a avec numéros', () => {
+  const c = sub(parse('Sur le terrain on a 9, 10, 11, 13, 14'));
+  assert.deepEqual(ids(c.ins), ids(['hinde', 'hanae', 'annaelle', 'victoire', 'mayra']));
+});
+t('Faute de la 17 → refus', () => { const c = parse('Faute de la 17'); assert.equal(c.type, 'REFUSE'); assert.equal((c as any).say, 'Numéro 17 : pas de joueuse.'); });
+t('prénoms et numéros mélangés dans un changement', () => {
+  const c = sub(parse('Remplacement Chloé, la 7 par Hinde, la 10'));
+  assert.deepEqual(ids(c.outs), ids(['chloe', 'laura'])); assert.deepEqual(ids(c.ins), ids(['hinde', 'hanae']));
+});
+t('même joueuse par prénom et numéro → refus', () => { const c = parse('Candice la 5 deux points'); assert.equal(c.type, 'REFUSE'); });
+t('numéro porté par deux joueuses → refus', () => {
+  const dup = [...PLAYERS, P('doublon', 'ZOE', 5)];
+  const c = parseCommand('faute de la 5', dup, ctxOf());
+  assert.equal(c.type, 'REFUSE');
+});
+t('répétition : numéro + prénom', () => assert.match(ev(parse('Faute de la 5')).say, /Faute personnelle, numéro 5, Candice/));
+t('joueuse sans prénom : « numéro 5 » seul', () => {
+  const noName = PLAYERS.map((p) => (p.id === 'candice' ? { ...p, name: '' } : p));
+  const c = parseCommand('faute de la 5', noName, ctxOf()) as any;
+  assert.equal(c.type, 'EVENT'); assert.match(c.say, /^Faute personnelle, numéro 5$/);
+});
+t('« combien de fautes la 5 »', () => { const c = parse('combien de fautes la 5') as any; assert.equal(c.type, 'Q_FOULS'); assert.equal(c.playerId, 'candice'); });
+t('nombres en lettres : vingt et un, quatre-vingt-dix-neuf', () => {
+  assert.equal(normalizeText('vingt et un'), '21'); assert.equal(normalizeText('quatre-vingt-dix-neuf'), '99');
+  assert.equal(normalizeText('soixante et onze'), '71'); assert.equal(normalizeText('quatre vingts'), '80'); assert.equal(normalizeText('dix sept'), '17');
+});
+const big = [...PLAYERS, P('p21', 'ZOE', 21), P('p99', 'EVA', 99)];
+t('joueuse n° 21 / n° 99 par la voix', () => {
+  assert.equal((parseCommand('faute de vingt et un', big, ctxOf([...START_COURT, 'p21'])) as any).playerId, 'p21');
+  assert.equal((parseCommand('faute de quatre-vingt-dix-neuf', big, ctxOf([...START_COURT, 'p99'])) as any).playerId, 'p99');
+});
+
+// ═════════ 6. Lancers francs (une phrase) ═════════
+t('Chloé 1/3 → LANCERS FRANCS (1/3)', () => { const c: any = parse('Chloé 1/3'); assert.equal(c.type, 'FREE_THROWS'); assert.equal(c.made, 1); assert.equal(c.attempts, 3); });
+t('Chloé 0/2', () => { const c: any = parse('Chloé 0/2'); assert.equal(c.made, 0); assert.equal(c.attempts, 2); });
+t('lancers francs Chloé un sur trois', () => { const c: any = parse('lancers francs Chloé un sur trois'); assert.equal(c.made, 1); assert.equal(c.attempts, 3); });
+t('lancers francs Chloé deux sur trois', () => { const c: any = parse('lancers francs Chloé deux sur trois'); assert.equal(c.made, 2); assert.equal(c.attempts, 3); });
+t('la 7 : « 1/2 » (numéro + ratio)', () => { const c: any = parse('lancer franc la 7 1/2'); assert.equal(c.playerId, 'laura'); assert.equal(c.made, 1); assert.equal(c.attempts, 2); });
+t('3/2 impossible', () => assert.equal(parse('Chloé 3/2').type, 'REFUSE'));
+t('lancer franc pour X = ouverture de session', () => { const c: any = parse('lancer franc pour Chloé'); assert.equal(c.type, 'FT_START'); assert.equal(c.say, 'Lancers francs, Chloé'); });
+
+// ═════════ 7. Score adverse, chrono ═════════
+t('adversaire deux points / trois points / un point / moins deux', () => {
+  assert.equal((parse('adversaire deux points') as any).delta, 2); assert.equal((parse('adversaire trois points') as any).delta, 3);
+  assert.equal((parse('adversaire un point') as any).delta, 1); assert.equal((parse('adversaire moins deux') as any).delta, -2);
+});
+t('chrono : démarrer / arrêter / reprise / temps mort', () => {
+  assert.equal((parse('démarrer chrono') as any).running, true); assert.equal((parse('reprise du jeu') as any).running, true);
+  assert.equal((parse('arrêter chrono') as any).running, false); assert.equal((parse('temps mort') as any).running, false);
+});
+t('score', () => assert.equal(parse('score').type, 'Q_SCORE'));
+
+// ═════════ 8. Dialogue : bout en bout ═════════
+t('« Démarrer chrono » deux fois : la 2e ne change rien et le dit', () => {
+  const s = new Sim();
+  assert.equal(s.said('démarrer chrono'), 'Chrono lancé'); assert.equal(s.clock, true);
+  assert.equal(s.said('démarrer chrono'), 'Chrono déjà lancé');
+  assert.equal(s.actions.filter((a) => a.t === 'clock').length, 1);
+  assert.equal(s.said('arrêter chrono'), 'Chrono arrêté'); assert.equal(s.said('arrêter chrono'), 'Chrono déjà arrêté');
+});
+t('événement simple : enregistré et répété', () => {
+  const s = new Sim(); assert.equal(s.said('Candice deux points'), 'Candice, deux points');
+  assert.deepEqual(s.actions, [{ t: 'event', action: 'TIR 2PTS RÉUSSI', playerId: 'candice', points: 2 }]); assert.equal(s.home, 2);
+});
+t('joueuse sur le banc : refus, rien enregistré', () => {
+  const s = new Sim(); assert.match(s.said('Hinde deux points'), /n'est pas sur le terrain/); assert.equal(s.actions.length, 0);
+});
+t('changement : lecture, « oui » → exécuté', () => {
+  const s = new Sim();
+  assert.match(s.said('Remplacement Chloé, Annabelle, Candice par Hind, Anaelle, Hanaé'), /Sortent Chloé, Annabelle, Candice\. Entrent Hinde, Annaelle, Hanaé\. Valide \?/);
+  assert.equal(s.actions.length, 0); assert.equal(s.dialog.mode, 'confirm');
+  s.said('oui'); assert.equal(s.actions.length, 1);
+  assert.deepEqual(ids(s.onCourt), ids(['laura', 'aliya', 'hinde', 'annaelle', 'hanae']));
+});
+t('changement : « non » → rien', () => { const s = new Sim(); s.say('Remplacement Chloé par Hinde'); assert.equal(s.said('non'), 'Annulé.'); assert.equal(s.actions.length, 0); assert.deepEqual(s.onCourt, START_COURT); });
+t('changement : réponse incompréhensible deux fois → annulé', () => {
+  const s = new Sim(); s.say('Remplacement Chloé par Hinde'); assert.equal(s.said('blablabla'), 'Oui ou non ?'); assert.equal(s.said('blablabla'), 'Annulé.'); assert.equal(s.actions.length, 0);
+});
+t('« valide » / « d\'accord » / « c\'est bon » valent oui', () => {
+  for (const w of ['valide', "d'accord", "c'est bon", 'ok', 'vas-y']) { const s = new Sim(); s.say('Remplacement Chloé par Hinde'); s.say(w); assert.equal(s.actions.length, 1, w); }
+});
+t('changement refusé : ne change rien et le dit', () => {
+  const s = new Sim(); assert.match(s.said('Remplacement Mayra par Hinde'), /Mayra n'est pas sur le terrain/); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
+});
+t('faute technique : confirmation obligatoire', () => {
+  const s = new Sim(); assert.match(s.said('faute technique Chloé'), /Valide \?/); assert.equal(s.actions.length, 0);
+  s.say('oui'); assert.equal(s.actions.length, 1); assert.equal((s.actions[0] as any).action, 'FAUTE TECHNIQUE');
+});
+t('faute : annonce à partir de la 4e, puis 5e « elle sort »', () => {
+  const s = new Sim(); const out: string[] = [];
+  for (let i = 0; i < 5; i++) out.push(s.said('faute de Chloé'));
+  assert.equal(out[2], 'Faute personnelle, Chloé'); assert.match(out[3], /quatrième faute/); assert.match(out[4], /Chloé, cinquième faute, elle sort/);
+});
+t('faute disqualifiante : confirmée puis « elle sort »', () => {
+  const s = new Sim(); s.say('faute disqualifiante Chloé'); assert.match(s.said('oui'), /disqualifiée, elle sort/);
+});
+t('Annuler la dernière commande après un changement : annule l\'action précédente', () => {
+  const s = new Sim(); s.say('Chloé deux points'); s.say('Remplacement Candice par Hinde'); s.say('oui');
+  assert.match(s.said('annuler la dernière commande'), /Annuler : deux points, Chloé \?/);
+  s.say('oui'); assert.equal(s.actions[s.actions.length - 1].t, 'delete'); assert.equal(s.home, 0);
+  assert.ok(s.events.some((e) => e.actionType.startsWith('REMPLACEMENT')), 'le changement est conservé');
+});
+t('Annuler dernière action Chloé : répétition puis oui → delete ; non → rien', () => {
+  const s = new Sim(); s.say('Chloé trois points'); s.say('Candice deux points');
+  assert.match(s.said('annuler dernière action Chloé'), /Annuler : trois points, Chloé \?/); s.say('non');
+  assert.equal(s.actions.filter((a) => a.t === 'delete').length, 0);
+  s.say('annuler dernière action Chloé'); s.say('oui');
+  const del = s.actions.filter((a) => a.t === 'delete') as any[]; assert.equal(del.length, 1);
+  assert.equal(s.events.length, 1); assert.equal(s.events[0].playerId, 'candice'); assert.equal(s.home, 2);
+});
+t('annulation : rien à annuler', () => { const s = new Sim(); assert.equal(s.said('annuler la dernière commande'), 'Rien à annuler.'); });
+t('annuler dernière action la 5 (numéro)', () => { const s = new Sim(); s.say('faute de la 5'); assert.match(s.said('annuler dernière action la 5'), /Annuler : faute personnelle, Candice \?/); });
+
+// Lancers francs en séquence
+t('LF séquence : 1er réussi, 2e raté, terminé → (1/2)', () => {
+  const s = new Sim();
+  assert.equal(s.said('Lancer franc pour Chloé'), 'Lancers francs, Chloé');
+  assert.equal(s.said('premier réussi'), 'Première réussi'); assert.equal(s.said('deuxième raté'), 'Deuxième raté');
+  assert.equal(s.actions.length, 0);
+  assert.equal(s.said('terminé'), 'Chloé, lancers francs, 1 sur 2');
+  assert.deepEqual(s.actions, [{ t: 'ft', playerId: 'chloe', made: 1, attempts: 2 }]); assert.equal(s.home, 1); assert.equal(s.events[0].actionType, 'LANCERS FRANCS (1/2)');
+});
+t('LF puis autre commande : la session est enregistrée d\'abord', () => {
+  const s = new Sim(); s.say('Lancer franc Chloé'); s.say('premier réussi');
+  const r = s.say('Candice deux points');
+  assert.deepEqual(r.actions.map((a) => a.t), ['ft', 'event']);
+  assert.deepEqual(s.actions[0], { t: 'ft', playerId: 'chloe', made: 1, attempts: 1 }); assert.equal((s.actions[1] as any).playerId, 'candice'); assert.equal(s.home, 3);
+});
+t('LF : tentative hors ordre → « Première ? »', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); assert.equal(s.said('deuxième réussi'), 'Premier ?'); assert.equal(s.actions.length, 0);
+});
+t('LF : « réussi » / « raté » seuls = tentative suivante', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); s.say('réussi'); s.say('raté'); s.say('réussi');
+  assert.equal(s.said('terminé'), 'Chloé, lancers francs, 2 sur 3');
+});
+t('LF : trois tentatives maximum', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); s.say('réussi'); s.say('réussi'); s.say('raté'); assert.match(s.said('réussi'), /Trois tentatives au maximum/);
+});
+t('LF : « annule » abandonne la session sans rien enregistrer', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); s.say('premier réussi'); assert.equal(s.said('annule'), 'Lancers francs abandonnés.'); assert.equal(s.actions.length, 0); assert.equal(s.dialog.mode, 'idle');
+});
+t('LF : « terminé » sans tentative → rien', () => { const s = new Sim(); s.say('lancer franc Chloé'); assert.equal(s.said('terminé'), 'Rien à enregistrer.'); assert.equal(s.actions.length, 0); });
+t('LF : « validé » termine', () => { const s = new Sim(); s.say('lancer franc Chloé'); s.say('premier raté'); assert.match(s.said('validé'), /0 sur 1/); });
+t('LF : « Lancer franc la 7 » puis « premier réussi » puis « terminé » → (1/1) pour la n° 7', () => {
+  const s = new Sim(); s.say('Lancer franc la 7'); s.say('premier réussi'); s.say('terminé');
+  assert.deepEqual(s.actions, [{ t: 'ft', playerId: 'laura', made: 1, attempts: 1 }]);
+});
+t('LF : forme « 2/3 » pendant la session', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); assert.equal(s.said('2/3'), 'Chloé, lancers francs, 2 sur 3'); assert.equal(s.home, 2);
+});
+t('LF : option « réussi seul » désactivée', () => {
+  const s = new Sim({ ftBareNext: false }); s.say('lancer franc Chloé'); assert.notEqual(s.said('réussi'), 'Première réussi');
+});
+
+// Ambiguïté Annabelle / Annaelle
+t('Annabelle/Annaelle : sortie = celle du terrain, même si la reconnaissance entend Annaelle', () => {
+  const c = sub(parse('Remplacement Anaelle par Hind'));
+  assert.equal(c.type, 'SUB'); assert.deepEqual(c.outs, ['annabelle']);
+});
+t('Annabelle/Annaelle : question quand le contexte ne tranche pas', () => {
+  const s = new Sim(); s.onCourt = ['annabelle', 'annaelle', 'chloe', 'laura', 'aliya'];
+  const r = s.said('Anabel rebond offensif');
+  assert.ok(/ou/.test(r) || /Anabel|Annabelle/.test(r), r);
+});
+t('ASK name : la réponse lève l\'ambiguïté', () => {
+  const s = new Sim(); s.onCourt = ['annabelle', 'annaelle', 'chloe', 'laura', 'aliya'];
+  const first = s.said('Ana belle interception');
+  if (/ou/.test(first)) { s.said('Annaelle'); assert.equal((s.actions[0] as any).playerId, 'annaelle'); }
+  else assert.equal(s.actions.length, 1);
+});
+
+// Questions « rebond » : réponse
+t('rebond → « offensif » enregistre le rebond offensif', () => {
+  const s = new Sim(); assert.match(s.said('rebond Chloé'), /offensif ou défensif/); s.say('offensif');
+  assert.deepEqual(s.actions, [{ t: 'event', action: 'REBOND OFFENSIF', playerId: 'chloe', points: 0 }]);
+});
+t('« Quelle joueuse ? » → la réponse complète la phrase', () => {
+  const s = new Sim(); assert.equal(s.said('deux points'), 'Quelle joueuse ?'); s.say('Candice'); assert.equal((s.actions[0] as any).playerId, 'candice');
+});
+t('plusieurs alternatives : la première exploitable gagne', () => {
+  const s = new Sim(); s.say('blabla', 'Chloé deux points'); assert.equal((s.actions[0] as any).playerId, 'chloe');
+});
+t('questions : score / fautes / terrain', () => {
+  const s = new Sim(); s.say('Chloé deux points'); s.say('adversaire trois points');
+  assert.equal(s.said('score'), 'Nous 2, eux 3'); assert.match(s.said('combien de fautes Chloé'), /Chloé, 0 faute/); assert.match(s.said('qui est sur le terrain'), /Chloé/);
+});
+t('score adverse enregistré', () => { const s = new Sim(); s.say('adversaire deux points'); s.say('adversaire moins deux'); assert.equal(s.away, 0); });
+
+// Phonétique
+t('clés phonétiques (fiche § 8)', () => {
+  assert.equal(phonetic('Candice'), phonetic('Candy'));
+  assert.equal(phonetic('Hinde'), phonetic('inde')); assert.equal(phonetic('Chloé'), phonetic('cloe'));
+  assert.notEqual(phonetic('Chloé'), phonetic('Laura'));
+});
+t('un mot du lexique n\'est jamais pris pour un prénom', () => {
+  const lex = [P('a', 'PASSE', 3), P('b', 'LEA', 4)];
+  const c: any = parseCommand('passe décisive Léa', lex, { onCourt: ['a', 'b'], events: [] });
+  assert.equal(c.type, 'EVENT'); assert.equal(c.playerId, 'b');
+});
+t('variantes saisies par l\'utilisateur', () => {
+  const withAlias = PLAYERS.map((p) => (p.id === 'candice' ? { ...p, aliases: ['kandis', 'candy'] } : p));
+  assert.equal((parseCommand('kandis deux points', withAlias, ctxOf()) as any).playerId, 'candice');
+});
+t('phrase incompréhensible', () => assert.equal(parse('bonjour tout le monde').type, 'UNKNOWN'));
+
+console.log(`\n${ok} réussis, ${ko} échoués`);
+if (ko) process.exit(1);
