@@ -5,11 +5,13 @@ import { supabase } from '../lib/supabase';
 import CalendarMenu from '../components/CalendarMenu';
 import AdminPanel from '../components/AdminPanel';
 import AccountModal from '../components/AccountModal';
+import ReinforcementPicker from '../components/ReinforcementPicker';
+import { splitFrom, withFrom } from '../lib/renforts';
 import { adminApi } from '../lib/adminApi';
 import { StatsPdfContext } from '../lib/statsPdfContext';
 import { isLockedDate, useLockedBefore } from '../lib/seasonLock';
 
-export interface Player { id: string; number: number; name: string; }
+export interface Player { id: string; number: number; name: string; from?: string; /* renfort : équipe d'origine (ex. U13F) */ }
 export interface SavedTeam { id: string; name: string; roster: Player[]; }
 export interface GameEvent { id: string; timestamp: string; period: number; clockTime: string; actionType: string; playerId: string; details?: any; }
 
@@ -363,7 +365,7 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
           match_id: matchId,
           player_id: p.id,
           player_number: p.number,
-          player_name: p.name,
+          player_name: withFrom(p.name, p.from),
           points: st.points,
           pts2_made: st.pts2Made,
           pts2_att: st.pts2Att,
@@ -401,7 +403,7 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
         match_id: matchId,
         player_id: p.id,
         player_number: p.number,
-        player_name: p.name,
+        player_name: withFrom(p.name, p.from),
         period: per,
         is_starter: (snap.startingFiveByPeriod[per] || []).includes(p.id),
         playing_time_seconds: st.totalSecs,
@@ -516,6 +518,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const [showPastConfirm, setShowPastConfirm] = useState(false);
   const [showLockedInfo, setShowLockedInfo] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
+  const [reinforcements, setReinforcements] = useState<Player[]>([]);   // joueuses d'autres équipes ajoutées à la feuille de match
+  const [showReinforcements, setShowReinforcements] = useState(false);
   useEffect(() => {
     // Juste après une connexion par mot de passe, un admin / superadmin choisit : continuer en admin ou tester un coach.
     try {
@@ -567,7 +571,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     try {
       const { data: teamsData, error } = await supabase
         .from('stats_teams')
-        .select('id, name, stats_players(id, name, number)');
+        .select('id, name, stats_players(*)');
 
       if (error) {
         console.error("Erreur chargement Supabase:", error);
@@ -580,7 +584,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         const formatted: SavedTeam[] = teamsData.map((t: any) => ({
           id: t.id,
           name: t.name,
-          roster: sortPlayersAlpha((t.stats_players || []).map((p: any) => ({
+          roster: sortPlayersAlpha((t.stats_players || []).filter((p: any) => p.role !== 'encadrement').map((p: any) => ({
             id: p.id,
             name: p.name,
             number: p.number
@@ -870,7 +874,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       const loadedRoster: Player[] = (statsData || []).map((s: any) => ({
         id: s.player_id,
         number: s.player_number || 0,
-        name: s.player_name || '?'
+        ...splitFrom(s.player_name || '?')
       }));
 
       const onCourtMarkers = (eventsData || []).filter((e: any) => e.action_type === 'ETAT:SUR_TERRAIN');
@@ -1103,7 +1107,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   };
 
   // Brouillon : l'état du match est gardé sur l'appareil, il survit à un rechargement ou à une fermeture de la page.
-  latestRef.current = { matchConfig, homeAway, matchType, selectedTeamId, newTeamName, editingRoster, selectedMatchPlayerIds, matchNumbers, game, playingTime, startingFiveByPeriod, currentMatchDbId, activeTab };
+  latestRef.current = { matchConfig, homeAway, matchType, selectedTeamId, newTeamName, editingRoster, selectedMatchPlayerIds, matchNumbers, game, playingTime, startingFiveByPeriod, currentMatchDbId, activeTab, reinforcements };
 
   useEffect(() => {
     const d = lsRead<any>(draftKey, null);
@@ -1116,6 +1120,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       setEditingRoster(d.editingRoster || []);
       setSelectedMatchPlayerIds(d.selectedMatchPlayerIds || []);
       setMatchNumbers(d.matchNumbers || {});
+      setReinforcements(d.reinforcements || []);
       setGame({ ...d.game, isClockRunning: false });
       setPlayingTime(d.playingTime || {});
       setStartingFiveByPeriod(d.startingFiveByPeriod || {});
@@ -1199,10 +1204,12 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       // On récupère les joueuses déjà en base pour cette équipe, pour fusionner par NOM
       // (clé Équipe/Nom) plutôt que par numéro ou par id local, ce qui évite les doublons
       // si "Enregistrer" est cliqué plusieurs fois de suite.
-      const { data: existingPlayers } = await supabase
+      const { data: allExisting } = await supabase
         .from('stats_players')
-        .select('id, name')
+        .select('*')
         .eq('team_id', targetTeamId);
+      // L'encadrement (fiche unique) n'est jamais une joueuse : il n'est ni rapproché ni supprimé ici.
+      const existingPlayers = (allExisting || []).filter((ep: any) => ep.role !== 'encadrement');
 
       for (const player of editingRoster) {
         const match = (existingPlayers || []).find(
@@ -1598,6 +1605,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setEditingPlayerId(null);
     setNewPlayerNumber('');
     setNewPlayerName('');
+    setReinforcements([]);   // les renforts dépendent de l'équipe choisie
     if (!teamId) {
       setNewTeamName('');
       setEditingRoster([]);
@@ -1634,7 +1642,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     }
 
     const matchRoster = sortPlayersAlpha(
-      editingRoster
+      [...editingRoster, ...reinforcements]
         .filter(p => selectedMatchPlayerIds.includes(p.id))
         .map(p => ({ ...p, number: matchNumbers[p.id] ?? p.number }))
     );
@@ -1851,7 +1859,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       // ---- Tableau principal : tient TOUJOURS sur la page 1 (la hauteur des lignes s'adapte à l'espace libre)
       const head = [['#', 'Joueuse', 'PTS', '2PTS', '3PTS', 'LF', 'TIR %', 'REB O', 'REB D', 'REB', 'AST', 'INT', 'BP', 'CT', 'CTS', 'FT', 'FS', 'ÉVAL', 'Temps']];
       const rowOf = (p: Player, st: ReturnType<typeof getPlayerStats>) => [
-        `#${p.number}`, getShortDisplayName(p, game.matchRoster), String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
+        `#${p.number}`, `${getShortDisplayName(p, game.matchRoster)}${p.from ? ` (${p.from})` : ''}`, String(st.points), `${st.pts2Made}/${st.pts2Att}`, `${st.pts3Made}/${st.pts3Att}`, `${st.ftMade}/${st.ftAttempted}`,
         pct(st.pts2Made + st.pts3Made, st.pts2Att + st.pts3Att), String(st.rebOff), String(st.rebDef), String(st.rebOff + st.rebDef),
         String(st.assists), String(st.steals), String(st.turnovers), String(st.blocks), String(st.blocksAgainst),
         String(st.fouls), String(st.foulsDrawn), String(st.evaluation), mmss(st.totalSecs)
@@ -1986,7 +1994,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     ]);
     for (const r of [ev, st, pr]) if (r.error) throw new Error(r.error.message);
 
-    const roster: Player[] = sortPlayersAlpha((st.data || []).map((s: any) => ({ id: s.player_id, number: s.player_number || 0, name: s.player_name || '?' })));
+    const roster: Player[] = sortPlayersAlpha((st.data || []).map((s: any) => ({ id: s.player_id, number: s.player_number || 0, ...splitFrom(s.player_name || '?') })));
     const pt: PlayingTimeMap = {};
     (pr.data || []).forEach((r: any) => { (pt[r.player_id] ||= {})[r.period] = r.playing_time_seconds || 0; });
     (st.data || []).forEach((s: any) => { if (!pt[s.player_id]) pt[s.player_id] = { 0: s.playing_time_seconds || 0 }; });
@@ -2378,18 +2386,23 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   >{isSheetExpanded ? '⤡' : '⤢'}</button>
                 </div>
               </div>
+              {selectedTeamId && (
+                <button onClick={() => setShowReinforcements(true)} className="mb-2 w-full rounded-xl border border-emerald-600/60 bg-emerald-600/10 py-2 text-xs font-bold text-emerald-300 hover:bg-emerald-600/20">
+                  ＋ Renfort d&apos;une autre équipe
+                </button>
+              )}
               <div className={isSheetExpanded ? 'space-y-3' : 'space-y-2 max-h-64 overflow-y-auto pr-1'}>
                 {editingRoster.length === 0 ? (
                   <p className="text-xs text-slate-500 text-center py-4">Choisis ou crée une équipe ci-dessus pour constituer la feuille de match.</p>
                 ) : (
-                  editingRoster.map(p => {
+                  [...editingRoster, ...reinforcements].map(p => {
                     const isSelected = selectedMatchPlayerIds.includes(p.id);
                     const matchNumber = matchNumbers[p.id] ?? p.number;
                     return (
-                      <div key={p.id} className={`flex items-center justify-between rounded-xl border font-bold transition ${isSheetExpanded ? 'p-4 text-base' : 'p-2 text-xs'} ${isSelected ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                      <div key={p.id} className={`flex items-center justify-between rounded-xl border font-bold transition ${isSheetExpanded ? 'p-4 text-base' : 'p-2 text-xs'} ${p.from ? (isSelected ? 'bg-emerald-500/20 border-emerald-500 text-white' : 'bg-slate-800 border-emerald-800 text-emerald-300/80') : (isSelected ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400')}`}>
                         <button onClick={() => handleToggleMatchPlayer(p.id)} className="flex items-center space-x-2 flex-1 text-left">
                           <span className="text-sm">{isSelected ? '✓' : '+'}</span>
-                          <span className="truncate">{p.name}</span>
+                          <span className="truncate">{p.name}{p.from && <span className="ml-1.5 text-[10px] font-semibold text-emerald-300">({p.from})</span>}</span>
                         </button>
                         <div className="flex items-center space-x-1 shrink-0">
                           <span className="text-[9px] text-slate-500 uppercase">N° match</span>
@@ -2400,6 +2413,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                             onChange={e => setMatchNumbers({ ...matchNumbers, [p.id]: parseInt(e.target.value) || 0 })}
                             className="w-12 bg-slate-900 border border-slate-700 rounded-lg p-1 text-center text-white"
                           />
+                          {p.from && (
+                            <button onClick={() => { setReinforcements(prev => prev.filter(x => x.id !== p.id)); setSelectedMatchPlayerIds(ids => ids.filter(id => id !== p.id)); }}
+                              title="Retirer ce renfort" className="ml-1 w-6 h-6 rounded-md bg-slate-900 text-rose-400 text-xs">✕</button>
+                          )}
                         </div>
                       </div>
                     );
@@ -2509,6 +2526,19 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               )}
             </div>
           </div>
+        )}
+
+        {showReinforcements && selectedTeamId && (
+          <ReinforcementPicker
+            targetStatsTeamId={selectedTeamId}
+            alreadyIds={[...editingRoster, ...reinforcements].map(p => p.id)}
+            onClose={() => setShowReinforcements(false)}
+            onAdd={(ps) => {
+              setReinforcements(prev => [...prev, ...ps.filter(p => !prev.some(x => x.id === p.id))]);
+              setSelectedMatchPlayerIds(ids => [...ids, ...ps.map(p => p.id).filter(id => !ids.includes(id))].slice(0, Math.max(ids.length, 10)));
+              setMatchNumbers(n => ({ ...ps.reduce((acc, p) => ({ ...acc, [p.id]: p.number }), {} as Record<string, number>), ...n }));
+            }}
+          />
         )}
 
         {showLockedInfo && (
@@ -2694,10 +2724,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                       <button
                         key={p.id}
                         onClick={() => setSelectedPlayerId(isSelected ? null : p.id)}
-                        className={`flex flex-col items-center p-2 rounded-2xl border transition bg-slate-800/90 hover:bg-slate-700/80 ${isSelected ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg scale-105' : 'border-slate-700/80'}`}
+                        className={`flex flex-col items-center p-2 rounded-2xl border transition hover:bg-slate-700/80 ${p.from ? 'bg-emerald-900/50' : 'bg-slate-800/90'} ${isSelected ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg scale-105' : p.from ? 'border-emerald-500/70' : 'border-slate-700/80'}`}
                       >
                         <span className={`text-lg font-black ${isSelected ? 'text-amber-400' : 'text-white'}`}>#{p.number}</span>
                         <span className={`text-[10px] font-bold truncate max-w-full ${isSelected ? 'text-amber-400' : 'text-white'}`}>{getShortDisplayName(p, game.matchRoster)}</span>
+                        {p.from && <span className="text-[8px] font-bold text-emerald-300 leading-none">{p.from}</span>}
                         <div className="mt-1">
                           <FoulSquares count={fouls} size="small" />
                         </div>
@@ -2976,7 +3007,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                     return (
                       <tr key={p.id} className="hover:bg-slate-800/40">
                         <td className="py-2.5 px-1 font-black text-amber-400">#{p.number}</td>
-                        <td className="py-2.5 px-1 font-bold text-slate-200">{getShortDisplayName(p, game.matchRoster)}</td>
+                        <td className="py-2.5 px-1 font-bold text-slate-200">{getShortDisplayName(p, game.matchRoster)}{p.from && <span className="ml-1 text-[9px] font-semibold text-emerald-300">({p.from})</span>}</td>
                         <td className="py-2.5 px-1 text-center font-black text-amber-300">{st.points}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.pts2Made}/{st.pts2Att}</td>
                         <td className="py-2.5 px-1 text-center text-slate-300">{st.pts3Made}/{st.pts3Att}</td>

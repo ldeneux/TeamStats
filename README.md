@@ -191,3 +191,13 @@ Même procédure de mise à jour que ci-dessus (remplacer `scripts/push_ffbb_clu
   Pas de Configuration, Direct, Statistiques en direct ni bouton Enregistrer.
 - Un admin gère les comptes consultant ; « Tester un profil » (bouton 👤) fonctionne aussi pour un consultant. L'onglet 👥 Effectif du menu Calendrier est visible aussi des coachs (pour leurs équipes).
 - À exécuter après admin_01 et admin_04 : il remplace la contrainte des profils par (superadmin, admin, coach, consultant).
+
+## Fiche joueuse unique et renforts (`sql/admin_10_merge_roster.sql`)
+- **Une seule table pour l'effectif** : `stats_players`. L'équipe chargée depuis le PDF et l'équipe TeamStats sont la même équipe ; la fiche cumule le **numéro de maillot** (TeamStats) et
+  **licence, date de naissance, catégorie, rôle, coach** (PDF). L'import complète la joueuse déjà présente (même licence, sinon même nom « Léa MARTIN ») en **gardant son numéro**, sinon la crée (maillot 0).
+  L'ancienne table `stats_club_roster` est conservée en sauvegarde (l'appli ne l'utilise plus). L'encadrement est dans la même table (`role = 'encadrement'`) et n'apparaît jamais dans les feuilles de match ;
+  l'enregistrement d'une équipe TeamStats ne le supprime jamais. Dans Effectif, le **N° de maillot** se modifie directement.
+- **Renforts** : dans la feuille de match, « ＋ Renfort d'une autre équipe » demande **d'abord l'équipe**, puis les joueuses. Équipes autorisées (même saison) : même sexe = même catégorie (autre numéro d'équipe),
+  catégorie juste en dessous ou juste au-dessus parmi celles qui existent au club (U15 F : U13 F, U15 F équipe 2, U18 F) ; autre sexe = **uniquement en U9 et U11**, même catégorie (U11 F : U11 M ; plus U9 F et U13 F).
+  Le renfort apparaît en **vert** avec son équipe d'origine entre parenthèses ; il reste vert dans le Direct (avec son équipe d'origine), dans le tableau des stats et le PDF. L'origine est enregistrée avec le nom (« Léa MARTIN (U13F) »)
+  et retrouvée quand on rouvre le match. Un coach ne lit que nom et numéro des autres équipes (fonction `renfort_candidates`), pas leurs fiches.

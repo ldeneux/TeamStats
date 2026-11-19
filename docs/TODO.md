@@ -16,7 +16,7 @@
 | 11 (b2) | Périodes / durée par défaut selon la catégorie de l'équipe choisie | **Fait** |
 | 12 (b3) | Effectifs : retrouver Clara (perdue au chargement) ; case « Coach » pour l'encadrement | **Case Coach faite** (`sql/admin_08_roster_coach.sql`) ; **Clara : non reproduite** (mon analyse du PDF la lit bien) → ajout d'un contrôle après import qui nomme toute personne non enregistrée ; à re-tester avec le PDF |
 | 13 (b4) | Badge « surclassée » calculé (âge / niveau de l'équipe, si une équipe plus jeune existe) | **Fait** |
-| 14 (c) | Feuille de match : joueuses d'une autre équipe (renfort), fond vert + provenance, vert aussi dans le Direct si possible | À faire |
+| 14 (c) | Feuille de match : joueuses d'une autre équipe (renfort), fond vert + provenance, vert aussi dans le Direct si possible | **Fait** + fusion des fiches (`sql/admin_10_merge_roster.sql` testé sur PostgreSQL) |
 | 15 (d) | Accès : un admin ne doit pas voir les comptes superadmin | **Fait** (`sql/admin_07_hide_superadmin.sql` testé sur PostgreSQL + filtrage serveur) |
 | 16 (e) | Libellés de phase : ne pas afficher « Phase 1 » quand seule la phase 2 existe | **Fait** (relancer « Charger les équipes depuis le cache » pour mettre à jour les phases déjà chargées) |
 | 17 (f) | `MiseAJourFFBB_Club.exe` aussi dans le dossier `public/` de TeamStats | À faire (attend l'exe construit par GitHub : à me fournir ou à copier dans `public/`) |
