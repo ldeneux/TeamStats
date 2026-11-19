@@ -1552,6 +1552,13 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   // Le bouton START/PAUSE garde son fonctionnement d'origine.
   const setClockRunning = (running: boolean) => setGame(prev => ({ ...prev, isClockRunning: running }));
 
+  // Fenêtre de changement pilotée à la voix : afficher / valider (sélection faite à l'écran) / fermer.
+  const voiceSubPanel = (op: 'open' | 'close' | 'validate') => {
+    if (op === 'open') { setSelectedPlayerId(null); setIsSubbing(true); }
+    else if (op === 'close') { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }
+    else validateSubstitutions();
+  };
+
   const deleteEvent = (eventId: string) => {
     const eventToDelete = game.events.find(ev => ev.id === eventId);
     if (!eventToDelete) return;
@@ -2639,7 +2646,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               scoreAway={game.scoreAway}
               period={game.period}
               clockRunning={game.isClockRunning}
-              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning }}
+              subPanel={{ open: isSubbing, outCount: selectedOutIds.length, inCount: selectedInIds.length }}
+              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning, subPanel: voiceSubPanel }}
             />
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               {matchConfig.matchDate && (

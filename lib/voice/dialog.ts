@@ -17,6 +17,8 @@ export interface VoiceView {
   scoreAway: number;
   period: number;
   clockRunning: boolean;
+  /** Fenêtre de changement de l'écran : ouverte ? nombre de sorties / d'entrées déjà cochées. */
+  subPanel?: { open: boolean; outCount: number; inCount: number };
 }
 
 /** Ce que l'interface doit exécuter (via les adaptateurs de page.tsx). */
@@ -26,7 +28,8 @@ export type VoiceAction =
   | { t: 'sub'; outs: string[]; ins: string[] }
   | { t: 'ft'; playerId: string; made: number; attempts: number }
   | { t: 'delete'; eventId: string }
-  | { t: 'clock'; running: boolean };
+  | { t: 'clock'; running: boolean }
+  | { t: 'subPanel'; op: 'open' | 'close' | 'validate' };
 
 export interface DialogResult {
   /** Phrases à dire à voix haute, dans l'ordre. */
@@ -99,7 +102,7 @@ export class VoiceDialog {
 
   // ───────── contexte d'analyse
   private ctx(view: VoiceView, prefer?: Record<string, string>): ParseCtx {
-    return { onCourt: view.onCourt, events: view.events, prefer, requireOnCourt: true };
+    return { onCourt: view.onCourt, events: view.events, prefer, requireOnCourt: true, subPanelOpen: !!view.subPanel?.open };
   }
 
   /** Première alternative qui donne une commande exécutable ; à défaut la meilleure explication. */
@@ -157,6 +160,14 @@ export class VoiceDialog {
       case 'CLOCK': {
         if (cmd.running === view.clockRunning) return { say: [cmd.running ? 'Chrono déjà lancé' : 'Chrono déjà arrêté'], actions: [] };
         return { say: [cmd.say], actions: [{ t: 'clock', running: cmd.running }] };
+      }
+      case 'SUBPANEL': {
+        const sp = view.subPanel;
+        if (cmd.op === 'open') return { say: [cmd.say], actions: [{ t: 'subPanel', op: 'open' }] };
+        if (cmd.op === 'close') return { say: [cmd.say], actions: sp?.open ? [{ t: 'subPanel', op: 'close' }] : [] };
+        if (!sp?.open) return { say: ['Aucun changement ouvert.'], actions: [] };
+        if (sp.outCount === 0 || sp.outCount !== sp.inCount) return { say: ["Il faut autant de sorties que d'entrées."], actions: [] };
+        return { say: [cmd.say], actions: [{ t: 'subPanel', op: 'validate' }] };
       }
       case 'Q_SCORE':
         return { say: [`Nous ${view.scoreHome}, eux ${view.scoreAway}`], actions: [] };

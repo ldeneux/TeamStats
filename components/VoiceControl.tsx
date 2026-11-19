@@ -19,6 +19,7 @@ export interface VoiceActions {
   submitFreeThrows: (playerId: string, made: number, attempts: number) => void;
   deleteEvent: (eventId: string) => void;
   setClockRunning: (running: boolean) => void;
+  subPanel: (op: 'open' | 'close' | 'validate') => void;
 }
 
 interface Props {
@@ -29,6 +30,7 @@ interface Props {
   scoreAway: number;
   period: number;
   clockRunning: boolean;
+  subPanel: { open: boolean; outCount: number; inCount: number };
   actions: VoiceActions;
 }
 
@@ -75,7 +77,7 @@ export default function VoiceControl(props: Props) {
     }),
     [props.roster, aliases],
   );
-  const viewRef = useRef<VoiceView>({ players: [], onCourt: [], events: [], scoreHome: 0, scoreAway: 0, period: 1, clockRunning: false });
+  const viewRef = useRef<VoiceView>({ players: [], onCourt: [], events: [], scoreHome: 0, scoreAway: 0, period: 1, clockRunning: false, subPanel: { open: false, outCount: 0, inCount: 0 } });
   viewRef.current = {
     players,
     onCourt: props.onCourtPlayerIds,
@@ -84,6 +86,7 @@ export default function VoiceControl(props: Props) {
     scoreAway: props.scoreAway,
     period: props.period,
     clockRunning: props.clockRunning,
+    subPanel: props.subPanel,
   };
   const actionsRef = useRef<VoiceActions>(props.actions);
   actionsRef.current = props.actions;
@@ -107,6 +110,7 @@ export default function VoiceControl(props: Props) {
       case 'ft': act.submitFreeThrows(a.playerId, a.made, a.attempts); break;
       case 'delete': act.deleteEvent(a.eventId); break;
       case 'clock': act.setClockRunning(a.running); break;
+      case 'subPanel': act.subPanel(a.op); break;
     }
   };
 
@@ -284,8 +288,9 @@ export default function VoiceControl(props: Props) {
           <p>Fautes : « faute de Chloé » (personnelle), « faute sur Chloé » (subie), « faute technique / antisportive / disqualifiante » (à confirmer).</p>
           <p>Lancers francs : « lancer franc Chloé », puis « premier réussi », « deuxième raté », « terminé » — ou en une phrase « Chloé 1/3 ».</p>
           <p>Changements (à confirmer par « oui ») : « remplacement Chloé, Laura par Hinde, Hanaé », « sortie de… entrée de… », « sur le terrain on a [5 prénoms] ».</p>
+          <p>Fenêtre de changement : « afficher changement », puis cocher à l’écran et « valider », ou « fermer ».</p>
           <p>Annuler : « annuler la dernière commande » ou « annuler dernière action Chloé », puis « oui ». Un changement ne s’annule pas : faire un nouveau changement.</p>
-          <p>Chrono : « démarrer chrono », « arrêter chrono », « reprise du jeu », « temps mort ». Prévoir 1 à 3 secondes de décalage entre la voix et l’effet.</p>
+          <p>Chrono : « démarrer chrono », « arrêt chrono », « début match », « reprise du jeu », « temps mort ». Prévoir 1 à 3 secondes de décalage entre la voix et l’effet.</p>
           <p>Questions : « score », « qui est sur le terrain », « combien de fautes Chloé », « fautes équipe ». Score adverse : « adversaire deux points ».</p>
           <p className="text-amber-300">Confidentialité : le navigateur envoie l’audio à son fournisseur (Google pour Chrome). Nécessite du réseau ; sans réseau, utilisez les boutons. Un casque évite que l’appli s’entende.</p>
         </div>

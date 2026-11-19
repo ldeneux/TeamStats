@@ -345,6 +345,36 @@ t('questions : score / fautes / terrain', () => {
 });
 t('score adverse enregistré', () => { const s = new Sim(); s.say('adversaire deux points'); s.say('adversaire moins deux'); assert.equal(s.away, 0); });
 
+
+// ═════════ 9. Ajouts : chrono, fenêtre de changement, variantes ═════════
+t('« arrêt chrono » / « stop chrono » / « chrono stop » / « début match » / « start chrono »', () => {
+  for (const x of ['arrêt chrono', 'arrêt du chrono', 'stop chrono', 'chrono stop']) assert.equal((parse(x) as any).running, false, x);
+  for (const x of ['début match', 'début du match', 'coup d\'envoi du match', 'start chrono', 'début chrono']) assert.equal((parse(x) as any).running, true, x);
+});
+t('faute subie : variantes de la reconnaissance', () => {
+  for (const x of ['faute subie Chloé', 'faute subi Chloé', 'fautes subies Chloé', 'faute subit Chloé', 'Chloé subie', 'faute sur Chloé']) assert.equal(ev(parse(x)).action, 'FAUTE SUBIE', x);
+});
+t('perte de balle / balle perdue / balle perdu', () => {
+  for (const x of ['perte de balle Chloé', 'balle perdue Chloé', 'Chloé balle perdu', 'perte balle de Chloé', 'Chloé perte']) assert.equal(ev(parse(x)).action, 'PERTE DE BALLE', x);
+});
+t('afficher changement / valider / fermer', () => {
+  assert.equal((parse('afficher changement') as any).op, 'open'); assert.equal((parse('affiche le changement') as any).op, 'open');
+  assert.equal((parse('ouvrir remplacement') as any).op, 'open'); assert.equal((parse('fermer') as any).op, 'close');
+  assert.equal((parse('valider changement') as any).op, 'validate');
+  const c = parseCommand('valider', PLAYERS, { onCourt: START_COURT, events: [], subPanelOpen: true }); assert.equal((c as any).op, 'validate');
+  assert.notEqual(parse('valider').type, 'SUBPANEL');
+});
+t('dialogue : fenêtre de changement', () => {
+  const s = new Sim(); assert.equal(s.said('afficher changement'), 'Changement affiché'); assert.deepEqual(s.actions, [{ t: 'subPanel', op: 'open' }]);
+  const v = s.view(); v.subPanel = { open: true, outCount: 1, inCount: 0 };
+  assert.match(s.dialog.handle(['valider'], v).say[0], /autant de sorties/);
+  v.subPanel = { open: true, outCount: 2, inCount: 2 };
+  assert.deepEqual(s.dialog.handle(['valider'], v).actions, [{ t: 'subPanel', op: 'validate' }]);
+  assert.deepEqual(s.dialog.handle(['fermer'], v).actions, [{ t: 'subPanel', op: 'close' }]);
+  v.subPanel = { open: false, outCount: 0, inCount: 0 };
+  assert.equal(s.dialog.handle(['valider'], v).say[0], "Je n'ai pas compris.");
+});
+
 // Phonétique
 t('clés phonétiques (fiche § 8)', () => {
   assert.equal(phonetic('Candice'), phonetic('Candy'));

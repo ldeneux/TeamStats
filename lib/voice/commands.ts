@@ -26,6 +26,8 @@ export interface ParseCtx {
   courtSize?: number;
   /** Levée d'ambiguïté déjà obtenue : clé = ids candidats triés et joints par « | », valeur = id choisi. */
   prefer?: Record<string, string>;
+  /** La fenêtre de changement est ouverte à l'écran (permet « valider »). */
+  subPanelOpen?: boolean;
   /** Exige qu'une joueuse soit sur le terrain pour enregistrer une action (comme l'interface). */
   requireOnCourt?: boolean;
 }
@@ -45,6 +47,7 @@ export type Cmd =
   | { type: 'SUB'; outs: string[]; ins: string[]; needsConfirm: true; say: string }
   | { type: 'SET_COURT'; ins: string[]; needsConfirm: true; say: string }
   | { type: 'NOOP'; say: string }
+  | { type: 'SUBPANEL'; op: 'open' | 'close' | 'validate'; say: string }
   | { type: 'UNDO'; playerId: string | null; eventId: string | null; needsConfirm: true; say: string }
   | { type: 'CLOCK'; running: boolean; say: string }
   | { type: 'Q_SCORE'; say: string }
@@ -191,7 +194,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\bfautes? techniques?\b|\btechniques?\b/g, ' FTECH '],
   [/\bfautes? antisportives?\b|\bantisportives?\b/g, ' FANTI '],
   [/\bfautes? disqualifiantes?\b|\bdisqualifiantes?\b/g, ' FDISQ '],
-  [/\bfautes? subies?\b|\bfautes? sur\b/g, ' FSUBIE '],
+  [/\bfautes? subi(?:e|es|s|t|te)?\b|\bfautes? sur\b|\bsubi(?:e|es|s|t|te)?\b/g, ' FSUBIE '],
   [/\bfautes? personnelles?\b|\bfautes? (?:de|du|d)\b|\bfautes?\b/g, ' FPERSO '],
   // rebonds
   [/\brebonds? (?:en )?(?:offensifs?|offensives?|off|attaque)\b/g, ' REBO '],
@@ -202,7 +205,7 @@ const RULES: Array<[RegExp, string]> = [
   // passe, interception, perte
   [/\bpasses? decisives?\b|\bpasses?\b/g, ' AST '],
   [/\binterceptions?\b|\bintercepte\b|\bvol de balle\b/g, ' STL '],
-  [/\bpertes? de balles?\b|\bballes? perdues?\b|\bpertes?\b/g, ' TOV '],
+  [/\bpertes?(?: de)? balles?\b|\bballes? perdu(?:e|es|s)?\b|\bpertes?\b/g, ' TOV '],
   // points
   [/\b1 (?:points?|pointes?|pts?)\b/g, ' P1 '],
   [/\b2 (?:points?|pointes?|pts?)\b/g, ' P2 '],
@@ -222,10 +225,15 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(?:annule|annuler|annulation|supprime|supprimer|efface|effacer)\b/g, ' UNDO '],
   // chrono
   [/\btemps morts?\b/g, ' CSTOP '],
+  [/\b(?:debuts?|coup d envoi|depart)(?: (?:du|de|des|d))? ?matchs?\b/g, ' CSTART '],
   [/\breprise(?: du jeu)?\b|\breprend\b/g, ' CSTART '],
   [/\bchronos?\b|\bchronometre\b/g, ' CHRONO '],
-  [/\b(?:arrete|arreter|arretez|stoppe|stopper|pause|coupe|couper)\b/g, ' VSTOP '],
-  [/\b(?:demarre|demarrer|demarrez|lance|lancer|lancez|relance|relancer|start|go)\b/g, ' VSTART '],
+  [/\b(?:arrete|arreter|arretez|arrets?|stop|stoppe|stopper|pause|coupe|couper)\b/g, ' VSTOP '],
+  [/\b(?:demarre|demarrer|demarrez|debuts?|depart|commence|commencer|lance|lancer|lancez|relance|relancer|start|go)\b/g, ' VSTART '],
+  // fenêtre de changement : afficher / valider / fermer
+  [/\b(?:afficher|affiche|affichez|ouvre|ouvrir|ouvrez|montre|montrer)(?: (?:le|la|les|l|une|un))?(?: fenetre)?(?: (?:de|des|du|d))? ?(?:changements?|remplacements?|joueuses?)\b/g, ' PANELOPEN '],
+  [/\b(?:valider|valide|validez)(?: (?:le|la|les))? (?:changements?|remplacements?)\b/g, ' PANELVALID '],
+  [/\b(?:fermer|ferme|fermez|masque|masquer)\b/g, ' PANELCLOSE '],
   // changements
   [/\b(?:remplacent|remplace)\b/g, ' REPL '],
   [/\b(?:changements?|remplacements?|change)\b/g, ' SUBX '],
@@ -233,7 +241,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(?:entrees?|entrent|entrant|entrants|rentrent|rentre|rentrer|entre)\b/g, ' INM '],
   [/\bpar\b/g, ' PAR '],
   // fin de séquence de lancers francs
-  [/\b(?:termine|terminee|termines|fini|finie|finis|fin|c est bon|ca y est|voila|valide|valides|ok|oui)\b/g, ' DONE '],
+  [/\b(?:termine|terminee|termines|fini|finie|finis|fin|c est bon|ca y est|voila|valide|valides|valider|validez|ok|oui)\b/g, ' DONE '],
 ];
 
 // Petits mots ignorés (le prénom ou le nombre qui suit compte seul). « la / le / numéro » sont traités à part.
@@ -475,6 +483,13 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
     const r = resolveTok(desig[0], 'any', env);
     if (!r.ok) return r.kind === 'ask' ? askName(r, env) : { type: 'REFUSE', say: r.say };
     return { type: 'Q_FOULS', playerId: r.id, say: `Fautes de ${designation(env, r.id, r.byNumber)}` };
+  }
+
+  // ───── Fenêtre de changement (écran)
+  if (has('PANELOPEN')) return { type: 'SUBPANEL', op: 'open', say: 'Changement affiché' };
+  if (has('PANELCLOSE')) return { type: 'SUBPANEL', op: 'close', say: 'Fermé' };
+  if (has('PANELVALID') || (has('DONE') && ctx.subPanelOpen && !desig.length && !unknown.length && codes.every((x) => x === 'DONE'))) {
+    return { type: 'SUBPANEL', op: 'validate', say: 'Changement validé' };
   }
 
   // ───── Chrono
