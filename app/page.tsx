@@ -2784,6 +2784,17 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   })
                 )}
               </div>
+              {game.matchRoster.length > 0 && (
+                <p className="mt-2 text-[10px] leading-snug text-slate-400">
+                  <span className="font-bold text-slate-300">Joueuses disponibles sur le banc : </span>
+                  {availableBenchPlayers.length === 0
+                    ? 'aucune'
+                    : [...availableBenchPlayers]
+                        .sort((a, b) => a.number - b.number)
+                        .map(p => `#${p.number} ${getShortDisplayName(p, game.matchRoster)}`)
+                        .join(' · ')}
+                </p>
+              )}
             </div>
 
             {!isSubbing && (
