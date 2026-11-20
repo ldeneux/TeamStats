@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ClubMatch, ClubPhase, ClubStanding, fmtShortDate, fmtTime, loadPhaseContent,
 } from '../lib/clubDb';
-import { ffbbAssetUrl } from '../lib/clubTeams';
+import { ffbbAssetUrl, tourLabel } from '../lib/clubTeams';
 import { supabase } from '../lib/supabase';
 import { useStatsPdf } from '../lib/statsPdfContext';
 
@@ -26,7 +26,7 @@ export function Crest({ asset, name, size = 8 }: { asset: string | null; name: s
 }
 
 const isExempt = (n: string | null) => !n || n.trim().toLowerCase() === 'exempt';
-const journeeLabel = (j: string) => (Number.isNaN(Number(j)) ? j : `${j}${j === '1' ? 're' : 'e'} journée`);
+const journeeLabel = (j: string, cup = false) => (cup ? tourLabel(j) : Number.isNaN(Number(j)) ? j : `${j}${j === '1' ? 're' : 'e'} journée`);
 
 function journeeOptions(matches: ClubMatch[]): string[] {
   const set = new Set<string>();
@@ -98,7 +98,7 @@ function MatchCard({ m, stats }: { m: ClubMatch; stats?: StatsHook }) {
 // ---------------------------------------------------------------------------------------
 // Calendrier & résultats
 // ---------------------------------------------------------------------------------------
-function CalendrierTab({ matches, stats }: { matches: ClubMatch[]; stats?: StatsHook }) {
+function CalendrierTab({ matches, stats, cup = false }: { matches: ClubMatch[]; stats?: StatsHook; cup?: boolean }) {
   const [scope, setScope] = useState<'us' | 'poule'>('us');
   const [mode, setMode] = useState<'une' | 'toutes'>('toutes');
   const scoped = useMemo(() => (scope === 'poule' ? matches : matches.filter((m) => m.us_is_team1 !== null)), [matches, scope]);
@@ -118,7 +118,7 @@ function CalendrierTab({ matches, stats }: { matches: ClubMatch[]; stats?: Stats
           ))}
         </div>
         <div className="ml-auto flex overflow-hidden rounded-full border border-slate-700 bg-slate-800 text-xs">
-          {([['une', 'Une journée'], ['toutes', 'Toutes']] as const).map(([k, l]) => (
+          {([['une', cup ? 'Un tour' : 'Une journée'], ['toutes', cup ? 'Tous' : 'Toutes']] as const).map(([k, l]) => (
             <button key={k} onClick={() => setMode(k)} className={`px-3 py-1.5 font-semibold ${mode === k ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}>{l}</button>
           ))}
         </div>
@@ -135,7 +135,7 @@ function CalendrierTab({ matches, stats }: { matches: ClubMatch[]; stats?: Stats
       {mode === 'une' && options.length > 0 && (
         <div className="flex items-center justify-center gap-3">
           <button disabled={idx <= 0} onClick={() => setPicked(options[idx - 1])} className="w-9 h-9 rounded-lg bg-slate-800 text-lg font-bold text-white disabled:opacity-30">‹</button>
-          <span className="min-w-[8rem] text-center text-sm font-black uppercase tracking-tight text-amber-400">{journee ? journeeLabel(journee) : ''}</span>
+          <span className="min-w-[8rem] text-center text-sm font-black uppercase tracking-tight text-amber-400">{journee ? journeeLabel(journee, cup) : ''}</span>
           <button disabled={idx < 0 || idx >= options.length - 1} onClick={() => setPicked(options[idx + 1])} className="w-9 h-9 rounded-lg bg-slate-800 text-lg font-bold text-white disabled:opacity-30">›</button>
         </div>
       )}
@@ -143,7 +143,7 @@ function CalendrierTab({ matches, stats }: { matches: ClubMatch[]; stats?: Stats
       {mode === 'toutes'
         ? options.map((j) => (
             <div key={j}>
-              <p className="mb-1.5 rounded bg-slate-800/80 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-400">{journeeLabel(j)}</p>
+              <p className="mb-1.5 rounded bg-slate-800/80 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-400">{journeeLabel(j, cup)}</p>
               <div className="space-y-2">{scoped.filter((m) => m.numero_journee === j).sort(sortByDate).map((m) => <MatchCard key={m.id} m={m} stats={stats} />)}</div>
             </div>
           ))
@@ -301,9 +301,15 @@ export default function ClubCalendar({ phase }: { phase: ClubPhase }) {
     let alive = true;
     setData(null);
     setError('');
-    loadPhaseContent(phase.id).then((d) => { if (alive) setData(d); }).catch((e) => { if (alive) setError(e.message || String(e)); });
+    loadPhaseContent(phase).then((d) => { if (alive) setData(d); }).catch((e) => { if (alive) setError(e.message || String(e)); });
     return () => { alive = false; };
   }, [phase.id]);
+
+  // Coupe regroupée : le classement est celui du DERNIER tour (ses matchs seulement).
+  const lastTour = phase.tours ? String(phase.tours[phase.tours.length - 1].tour) : null;
+  const classMatches = data ? (lastTour ? data.matches.filter((m) => m.numero_journee === lastTour) : data.matches) : [];
+  const mine = classMatches.find((m) => m.us_is_team1 !== null);
+  const ourEng = lastTour ? (mine ? (mine.us_is_team1 ? mine.team1_engagement_id : mine.team2_engagement_id) : null) : phase.engagement_id;
 
   return (
     <div className="space-y-3">
@@ -316,8 +322,8 @@ export default function ClubCalendar({ phase }: { phase: ClubPhase }) {
       {pdfError && <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-300 break-words">PDF impossible : {pdfError}</p>}
       {!data && !error && <p className="py-6 text-center text-sm text-slate-400">Chargement…</p>}
       {data && (tab === 'calendrier'
-        ? <CalendrierTab matches={data.matches} stats={statsHook} />
-        : <ClassementTab standings={data.standings} matches={data.matches} ourEngagement={phase.engagement_id} />)}
+        ? <CalendrierTab matches={data.matches} stats={statsHook} cup={!!phase.tours} />
+        : <ClassementTab standings={data.standings} matches={classMatches} ourEngagement={ourEng} />)}
     </div>
   );
 }

@@ -201,3 +201,10 @@ Même procédure de mise à jour que ci-dessus (remplacer `scripts/push_ffbb_clu
   catégorie juste en dessous ou juste au-dessus parmi celles qui existent au club (U15 F : U13 F, U15 F équipe 2, U18 F) ; autre sexe = **uniquement en U9 et U11**, même catégorie (U11 F : U11 M ; plus U9 F et U13 F).
   Le renfort apparaît en **vert** avec son équipe d'origine entre parenthèses ; il reste vert dans le Direct (avec son équipe d'origine), dans le tableau des stats et le PDF. L'origine est enregistrée avec le nom (« Léa MARTIN (U13F) »)
   et retrouvée quand on rouvre le match. Un coach ne lit que nom et numéro des autres équipes (fonction `renfort_candidates`), pas leurs fiches.
+
+## Coupes : un tour = un regroupement (correctif du 18/11)
+Dans FFBB, chaque **tour** d\x27une coupe est une « compétition » distincte (« 2ème tour Coupe du Rhône… ») et le numéro de journée d\x27un match de coupe est un numéro de match (14, 10…), pas un tour.
+- À la lecture du cache, le numéro de journée d\x27un match de coupe devient le **tour** (déduit du nom : sans mention = 1er tour). 
+- À l\x27affichage, les tours d\x27une même coupe sont regroupés en **une seule entrée « Coupe »**, avec les sélecteurs « Un tour / Tous » et les titres « 1er tour », « 2e tour »…
+  Chaque tour montre tous les matchs de la poule pour ce tour. Le classement affiché est celui du dernier tour. Dans Administration, chaque tour garde ses n° de phase et de poule FFBB.
+- Les données déjà chargées sont corrigées à l\x27affichage sans rechargement ; relancer « Charger les équipes depuis le cache » met aussi à jour la base (liste « Joué / À venir » du Match : « T1 » au lieu de « J14 »).

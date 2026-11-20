@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "test:voice": "tsc --outDir .voice-test --rootDir . --module commonjs --target es2019 --strict --skipLibCheck --esModuleInterop tests/voice.test.ts && node .voice-test/tests/voice.test.js"
+    "start": "next start"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

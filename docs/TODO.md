@@ -20,7 +20,7 @@
 | 15 (d) | Accès : un admin ne doit pas voir les comptes superadmin | **Fait** (`sql/admin_07_hide_superadmin.sql` testé sur PostgreSQL + filtrage serveur) |
 | 16 (e) | Libellés de phase : ne pas afficher « Phase 1 » quand seule la phase 2 existe | **Fait** (relancer « Charger les équipes depuis le cache » pour mettre à jour les phases déjà chargées) |
 | 17 (f) | `MiseAJourFFBB_Club.exe` aussi dans le dossier `public/` de TeamStats | À faire (attend l'exe construit par GitHub : à me fournir ou à copier dans `public/`) |
-| 18 (g) | Mise à jour du mode d'emploi (**en tout dernier**, après les points ci-dessus) | À faire |
+| 18 (g) | Mise à jour du mode d'emploi (**en tout dernier**, après les points ci-dessus) | **Fait** (18 pages ; étape 13, renforts à l'étape 3, annexe A refondue). Reste à jour si f) ou de nouveaux changements |
 
 ## Notes pour 6 et 7
 - 6 : réalisé comme une **vraie connexion** au compte coach (jeton à usage unique généré par le serveur) : on voit exactement ce que voit ce coach, droits réels (RLS) compris ; un bandeau permet de revenir à son compte.
@@ -75,3 +75,6 @@ construit par GitHub Actions : à me fournir ou à copier à la main dans `publi
    les poules déjà visibles dans la page de la phase et sans le club ne coûtent plus aucune requête. Le nombre de matchs affiché est maintenant celui de la poule.
 3. 404 : le message donne les adresses essayées ; une copie de la page de chaque équipe en erreur (8 au plus) est enregistrée dans le dossier `diagnostic`.
    **« CRMLSM » reste à confirmer** : si l'erreur persiste, envoyer le message complet et le dossier `diagnostic`.
+
+### Correctif du 18/11 : coupes
+Tours de coupe regroupés en une entrée, journée = tour (voir README). À vérifier sur ton cache réel (équipe Seniors M équipe 2).

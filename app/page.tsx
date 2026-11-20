@@ -10,7 +10,6 @@ import { splitFrom, withFrom } from '../lib/renforts';
 import { adminApi } from '../lib/adminApi';
 import { StatsPdfContext } from '../lib/statsPdfContext';
 import { isLockedDate, useLockedBefore } from '../lib/seasonLock';
-import VoiceControl from '../components/VoiceControl';
 
 export interface Player { id: string; number: number; name: string; from?: string; /* renfort : équipe d'origine (ex. U13F) */ }
 export interface SavedTeam { id: string; name: string; roster: Player[]; }
@@ -1486,13 +1485,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     });
 
     if (details.length === 0) return;
-    submitFreeThrows(selectedPlayerId, points, details.length);
-  };
-
-  // Enregistre un événement LANCERS FRANCS (x/n) de x points. Utilisé par le bouton et par la commande vocale.
-  const submitFreeThrows = (playerId: string, made: number, attempts: number) => {
-    if (!playerId || attempts < 1 || made < 0 || made > attempts) return;
-    recordEvent(`LANCERS FRANCS (${made}/${attempts})`, playerId, made);
+    recordEvent(`LANCERS FRANCS (${points}/${details.length})`, selectedPlayerId, points);
   };
 
   const toggleSelectOut = (id: string) => {
@@ -1509,33 +1502,31 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     }
   };
 
-  // Applique un changement (sortantes / entrantes). Utilisé par le bouton « Valider » et par la commande vocale.
-  // Règle conservée : match non commencé -> pas d'événement. Cinq de départ vide (outIds vide) -> fixé sans événement.
-  const applySubstitution = (outIds: string[], inIds: string[]) => {
-    const settingStart = outIds.length === 0 && inIds.length > 0 && game.onCourtPlayerIds.length === 0;
-    if (!settingStart && (outIds.length !== inIds.length || outIds.length === 0)) return;
+  const validateSubstitutions = () => {
+    if (selectedOutIds.length !== selectedInIds.length || selectedOutIds.length === 0) return;
+
+    const matchNotStarted = game.period === 1 && game.clockSeconds === game.config.periodMinutes * 60 && game.events.length === 0;
 
     setGame(prev => {
-      const matchNotStarted = prev.period === 1 && prev.clockSeconds === prev.config.periodMinutes * 60 && prev.events.length === 0;
       const updatedOnCourt = [
-        ...prev.onCourtPlayerIds.filter(id => !outIds.includes(id)),
-        ...inIds
+        ...prev.onCourtPlayerIds.filter(id => !selectedOutIds.includes(id)),
+        ...selectedInIds
       ];
 
-      if (matchNotStarted || outIds.length === 0) {
+      if (matchNotStarted) {
         return { ...prev, onCourtPlayerIds: updatedOnCourt };
       }
 
-      const pOutNames = outIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
-      const pInNames = inIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
+      const pOutNames = selectedOutIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
+      const pInNames = selectedInIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
 
       const subEvent: GameEvent = {
         id: Date.now().toString(),
         timestamp: new Date().toLocaleTimeString(),
         period: prev.period,
         clockTime: formatTime(prev.clockSeconds),
-        actionType: `REMPLACEMENT (${outIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
-        playerId: inIds[0]
+        actionType: `REMPLACEMENT (${selectedOutIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
+        playerId: selectedInIds[0]
       };
 
       return { ...prev, onCourtPlayerIds: updatedOnCourt, events: [subEvent, ...prev.events] };
@@ -1544,19 +1535,6 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setIsSubbing(false);
     setSelectedOutIds([]);
     setSelectedInIds([]);
-  };
-
-  const validateSubstitutions = () => applySubstitution(selectedOutIds, selectedInIds);
-
-  // Démarre / arrête le chrono par mise à jour fonctionnelle (jamais d'état périmé) : commande vocale.
-  // Le bouton START/PAUSE garde son fonctionnement d'origine.
-  const setClockRunning = (running: boolean) => setGame(prev => ({ ...prev, isClockRunning: running }));
-
-  // Fenêtre de changement pilotée à la voix : afficher / valider (sélection faite à l'écran) / fermer.
-  const voiceSubPanel = (op: 'open' | 'close' | 'validate') => {
-    if (op === 'open') { setSelectedPlayerId(null); setIsSubbing(true); }
-    else if (op === 'close') { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }
-    else validateSubstitutions();
   };
 
   const deleteEvent = (eventId: string) => {
@@ -2536,7 +2514,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                           <div className="text-[10px] text-slate-500 mt-1 truncate">
                             {d ? d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Date inconnue'}
                             {hasTime && d ? ` à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}
-                            {u.numero_journee ? ` · J${u.numero_journee}` : ''}
+                            {u.numero_journee ? ` · ${/coupe|tour\b/i.test(String(u.division_label || '')) ? 'T' : 'J'}${u.numero_journee}` : ''}
                             {` · ID : ${u.ffbb_rencontre_id}`}
                             {playedCal && <span className="text-emerald-400"> · joué, stats non saisies</span>}
                           </div>
@@ -2638,17 +2616,6 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
-            <VoiceControl
-              roster={game.matchRoster}
-              onCourtPlayerIds={game.onCourtPlayerIds}
-              events={game.events}
-              scoreHome={game.scoreHome}
-              scoreAway={game.scoreAway}
-              period={game.period}
-              clockRunning={game.isClockRunning}
-              subPanel={{ open: isSubbing, outCount: selectedOutIds.length, inCount: selectedInIds.length }}
-              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning, subPanel: voiceSubPanel }}
-            />
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               {matchConfig.matchDate && (
                 <p className="text-center text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">

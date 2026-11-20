@@ -3,4 +3,3 @@ node_modules
 .env.local
 .vercel
 *.log
-.voice-test

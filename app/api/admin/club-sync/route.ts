@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 import { authenticate, fail, HttpError, type DB } from '@/lib/serverAuth';
 import { findAssetCandidates, pouleFromPages, type AssetCandidate, type FfbbPoule } from '@/lib/ffbbPoule';
 import {
-  clubEngagementsIn, competitionUrl, currentSeason, explicitPhaseNumber, identifyTeam, normName, seasonOfIso, statsTeamName,
+  clubEngagementsIn, competitionUrl, cupTourNumber, currentSeason, explicitPhaseNumber, identifyTeam, isCup, normName, seasonOfIso, statsTeamName,
 } from '@/lib/clubTeams';
 
 export const dynamic = 'force-dynamic';
@@ -114,7 +114,8 @@ async function processPoule(db: DB, pouleId: string, data: any, fetchedAt: strin
       return {
         phase_id: phaseId,
         ffbb_rencontre_id: r.id,
-        numero_journee: r.numeroJournee,
+        // Coupe : le « numéro de journée » FFBB est un numéro de match ; on enregistre le TOUR (déduit du nom de la compétition).
+        numero_journee: isCup(poule.competitionName) ? String(cupTourNumber(poule.competitionName)) : r.numeroJournee,
         match_date: toTimestamp(r.date_rencontre),
         status: r.joue ? 'joue' : 'a_venir',
         team1_name: r.nomEquipe1, team1_score: r.resultatEquipe1, team1_logo_asset: r.logo1, team1_engagement_id: r.engagement1,

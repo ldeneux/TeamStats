@@ -7,7 +7,7 @@ import RosterPanel from './RosterPanel';
 import { adminApi } from '../lib/adminApi';
 import { supabase } from '../lib/supabase';
 import { ClubPhase, ClubTeam, fmtDateTimeLocal, fmtDay, loadClubTeams, loadPhases, phaseLabels, sortTeams } from '../lib/clubDb';
-import { currentSeason, displayCompetitionName, ffbbAssetUrl } from '../lib/clubTeams';
+import { currentSeason, displayCompetitionName, ffbbAssetUrl, tourLabel } from '../lib/clubTeams';
 import { isLockedSeason, useLockedBefore } from '../lib/seasonLock';
 
 // Programme à lancer depuis un PC pour (re)charger le cache FFBB (même fichier que dans l'appli Multisports).
@@ -198,9 +198,15 @@ export default function AdminTeams() {
                           : <span className="font-bold">{displayCompetitionName(p.competition_name, p.competition_code)}</span>}
                         {p.poule_label ? <span className="text-slate-300"> - {/^poule/i.test(p.poule_label) ? p.poule_label.replace(/^Poule/, 'poule') : `poule ${p.poule_label}`}</span> : null}
                       </p>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        n° de phase FFBB {p.competition_id || '—'} · n° de poule {p.poule_id} · {p.matches_count} match(s) · {fmtDay(p.starts_on)} → {fmtDay(p.ends_on)}
-                      </p>
+                      {p.tours ? p.tours.map((t) => (
+                        <p key={t.phaseId} className="mt-1 text-[11px] text-slate-500">
+                          <span className="font-bold text-slate-400">{tourLabel(t.tour)}</span> : n° de phase FFBB {t.competition_id || '—'} · n° de poule {t.poule_id} · {t.matches_count} match(s) · {fmtDay(t.starts_on)} → {fmtDay(t.ends_on)}
+                        </p>
+                      )) : (
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          n° de phase FFBB {p.competition_id || '—'} · n° de poule {p.poule_id} · {p.matches_count} match(s) · {fmtDay(p.starts_on)} → {fmtDay(p.ends_on)}
+                        </p>
+                      )}
                       <p className="text-[11px] text-slate-600">{p.our_team_name || ''}{p.cache_fetched_at ? ` · cache du ${fmtDateTimeLocal(p.cache_fetched_at)}` : ''}</p>
                     </button>
                   </li>

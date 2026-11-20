@@ -1,6 +1,6 @@
 // Accès base (côté navigateur, RLS appliquée) aux équipes du club, phases, matchs et classements.
 import { supabase } from './supabase';
-import { isCup } from './clubTeams';
+import { cupBaseName, cupTourNumber, isCup } from './clubTeams';
 
 export interface ClubTeam {
   id: string; season: string; code: string; label: string; category: string | null; sexe: 'F' | 'M' | 'X' | null;
@@ -11,6 +11,9 @@ export interface ClubPhase {
   competition_code: string | null; competition_url: string | null; poule_id: string; poule_label: string | null;
   engagement_id: string | null; our_team_name: string | null; logo_asset: string | null; starts_on: string | null;
   ends_on: string | null; matches_count: number; cache_fetched_at: string | null; last_sync_at: string;
+  // Coupe seulement (calculé à l'affichage, pas en base) : les tours d'une même coupe sont regroupés en UNE entrée.
+  groupIds?: string[];
+  tours?: { phaseId: string; tour: number; name: string; competition_id: string | null; poule_id: string; matches_count: number; starts_on: string | null; ends_on: string | null }[];
 }
 export interface ClubMatch {
   id: string; phase_id: string; ffbb_rencontre_id: string; numero_journee: string | null; match_date: string | null;
@@ -52,16 +55,54 @@ export async function loadClubTeams(): Promise<ClubTeam[]> {
 export async function loadPhases(clubTeamId: string): Promise<ClubPhase[]> {
   const { data, error } = await supabase.from('stats_club_phases').select('*').eq('club_team_id', clubTeamId);
   if (error) throw new Error(error.message);
-  return sortPhases((data ?? []) as ClubPhase[]);
+  return mergeCupPhases((data ?? []) as ClubPhase[]);
 }
-export async function loadPhaseContent(phaseId: string): Promise<{ matches: ClubMatch[]; standings: ClubStanding[] }> {
+
+// Une coupe se joue en plusieurs TOURS, chacun étant une « phase » FFBB distincte (« 2ème tour Coupe du Rhône… »). On les regroupe en une seule
+// entrée « Coupe du Rhône… - poule A » ; ses matchs sont rangés par tour (1er tour, 2e tour…). Les phases de championnat restent séparées.
+export function mergeCupPhases(phases: ClubPhase[]): ClubPhase[] {
+  const out: ClubPhase[] = [];
+  const groups = new Map<string, ClubPhase[]>();
+  for (const p of phases) {
+    if (!isCup(p.competition_name)) { out.push(p); continue; }
+    const key = cupBaseName(p.competition_name).toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), p]);
+  }
+  for (const list of Array.from(groups.values())) {
+    const sorted = [...list].sort((a, b) => cupTourNumber(a.competition_name) - cupTourNumber(b.competition_name) || String(a.starts_on ?? '').localeCompare(String(b.starts_on ?? '')));
+    const tours = sorted.map((p, i) => ({
+      phaseId: p.id, tour: new Set(sorted.map((x) => cupTourNumber(x.competition_name))).size === sorted.length ? cupTourNumber(p.competition_name) : i + 1,
+      name: p.competition_name || '', competition_id: p.competition_id, poule_id: p.poule_id, matches_count: p.matches_count, starts_on: p.starts_on, ends_on: p.ends_on,
+    }));
+    const starts = sorted.map((p) => p.starts_on).filter(Boolean).sort() as string[];
+    const ends = sorted.map((p) => p.ends_on).filter(Boolean).sort() as string[];
+    out.push({
+      ...sorted[0], competition_name: cupBaseName(sorted[0].competition_name),
+      starts_on: starts[0] ?? null, ends_on: ends[ends.length - 1] ?? null,
+      matches_count: sorted.reduce((n, p) => n + p.matches_count, 0), groupIds: sorted.map((p) => p.id), tours,
+    });
+  }
+  return sortPhases(out);
+}
+
+// Contenu d'une phase ; pour une coupe regroupée : les matchs de tous ses tours, avec le TOUR comme numéro de journée.
+export async function loadPhaseContent(phase: ClubPhase): Promise<{ matches: ClubMatch[]; standings: ClubStanding[] }> {
+  const ids = phase.groupIds ?? [phase.id];
   const [m, s] = await Promise.all([
-    supabase.from('stats_club_matches').select('*').eq('phase_id', phaseId).order('match_date', { ascending: true }),
-    supabase.from('stats_club_standings').select('*').eq('phase_id', phaseId),
+    supabase.from('stats_club_matches').select('*').in('phase_id', ids).order('match_date', { ascending: true }),
+    supabase.from('stats_club_standings').select('*').in('phase_id', ids),
   ]);
   if (m.error) throw new Error(m.error.message);
   if (s.error) throw new Error(s.error.message);
-  return { matches: (m.data ?? []) as ClubMatch[], standings: (s.data ?? []) as ClubStanding[] };
+  let matches = (m.data ?? []) as ClubMatch[];
+  let standings = (s.data ?? []) as (ClubStanding & { phase_id?: string })[];
+  if (phase.tours) {
+    const tourOf = new Map(phase.tours.map((t) => [t.phaseId, t.tour]));
+    matches = matches.map((x) => ({ ...x, numero_journee: String(tourOf.get(x.phase_id) ?? 1) }));
+    const lastPhase = phase.tours[phase.tours.length - 1].phaseId;                 // classement : celui du dernier tour
+    standings = standings.filter((x) => x.phase_id === lastPhase);
+  }
+  return { matches, standings };
 }
 
 export const sortPhases = (phases: ClubPhase[]) =>

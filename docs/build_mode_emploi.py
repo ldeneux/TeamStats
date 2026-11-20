@@ -15,7 +15,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, KeepTogether, PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
+from reportlab.platypus import (BaseDocTemplate, Flowable, CondPageBreak, Frame, KeepTogether, PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else 'base_v1.pdf'
 OUT = sys.argv[2] if len(sys.argv) > 2 else 'out.pdf'
@@ -152,6 +152,11 @@ def icon_admin(c, x, y, s):
         a = k * math.pi / 4
         c.line(cx + 5.2 * math.cos(a), cy + 5.2 * math.sin(a), cx + 7.2 * math.cos(a), cy + 7.2 * math.sin(a))
 
+def icon_user(c, x, y, s):
+    icon_square(c, x, y, s, HexColor('#475569')); c.setFillColor(white)
+    c.circle(x + s / 2, y + s * 0.62, 3.6, fill=1, stroke=0)
+    p = c.beginPath(); p.moveTo(x + 5, y + 4.5); p.curveTo(x + 5, y + 11.5, x + s - 5, y + 11.5, x + s - 5, y + 4.5); p.close(); c.drawPath(p, fill=1, stroke=0)
+
 # ---------- maquettes d'écran (même esprit que celles du guide : panneau sombre + repères numérotés)
 class Panel(Flowable):
     W, H = CW, 100
@@ -284,7 +289,7 @@ def page_accueil():
            ('Étape 7 · Changements, périodes et prolongations', 7), ('Étape 8 · Enregistrer et retrouver un match', 8),
            ('Étape 9 · Statistiques et rapports PDF', 9), ("Étape 10 · Utiliser l'appli sans réseau", 10),
            ('Étape 11 · Historique, aide-mémoire et dépannage', 11), ('Étape 12 · Le menu Calendrier', 12),
-           ('Annexe A · Module administrateur', 13)]
+           ('Étape 13 · Mon compte et nouveautés', 13), ('Annexe A · Module administrateur', 14)]
     s += [TocLine(t, p) for t, p in toc]
     s += [H2('Les boutons à connaître'), P('En haut à droite, une petite barre donne accès à tout, sur chaque écran :', ParagraphStyle('x', parent=body, spaceAfter=4))]
     s += [IconRow('config', 'Configuration', "Créer l'équipe, préparer le match, choisir les joueuses."),
@@ -293,11 +298,12 @@ def page_accueil():
           IconRow('histo', 'Historique', "Toutes les actions dans l'ordre, pour corriger."),
           IconRow(None, 'Calendrier', "Calendrier, résultats et classement des équipes ; stats PDF d'un match.", icon_calendar),
           IconRow(None, 'Administration', "Réservé aux admin : équipes, calendriers, effectifs et accès des coachs.", icon_admin),
-          IconRow('save', 'Enregistrer', 'Envoie le match et les statistiques dans la base.')]
+          IconRow('save', 'Enregistrer', 'Envoie le match et les statistiques dans la base.'),
+          IconRow(None, 'Mon compte', "Mot de passe ; pour un admin : tester ce que voit un coach.", icon_user)]
     s += [Spacer(1, 0),
-          Callout('note', 'Connexion', "À l'ouverture, saisissez l'e-mail et le mot de passe donnés par l'administrateur. Trois profils : "
-                  f"{b('superadmin')} (accès illimité), {b('admin')} (toutes les équipes ; gère le club et les comptes) et {b('coach')} "
-                  "(seulement les équipes qui lui sont ouvertes ; ne crée pas d'équipe) : voir l'annexe A. Le bouton de déconnexion est en haut à gauche. "
+          Callout('note', 'Connexion', "À l'ouverture, saisissez l'e-mail et le mot de passe donnés par l'administrateur. Quatre profils : "
+                  f"{b('superadmin')} (accès illimité), {b('admin')} (toutes les équipes ; gère le club et les comptes), {b('coach')} "
+                  f"(modifie les équipes qui lui sont ouvertes) et {b('consultant')} (les lit seulement) : voir l'annexe A. Déconnexion en haut à gauche. "
                   "Sans réseau, l'appli s'ouvre avec le dernier compte connecté."),
           Callout('good', 'Pensez à enregistrer.', "Le match est gardé sur l'appareil même si la page se ferme, mais seul le bouton Enregistrer (la disquette) "
                   "l'envoie dans la base. Sans réseau, il le met de côté et l'envoie dès le retour de la connexion (étape 10).")]
@@ -310,10 +316,10 @@ def page_calendrier():
            f"{b('Chaque personne ne voit que ses équipes')} : un coach celles qui lui sont ouvertes, un admin toutes."),
          MockCalendar(), P("Menu Calendrier : choix de l'équipe, de la saison et de la phase", caption),
          NumItem(1, f"{b('Touchez l’image de l’équipe')} (U13 F, U15 F…), la même que sur le site de la FFBB. Avec une seule équipe, elle est déjà choisie ; votre dernier choix est retenu."),
-         NumItem(2, f"{b('La saison')} : celle en cours par défaut ; la liste permet de revoir une saison passée."),
+         NumItem(2, f"{b('La saison')} : celle en cours par défaut ; la liste permet de revoir une saison passée (« historique », en lecture seule)."),
          NumItem(3, f"{b('La phase')} : {chip('Phase 1', 'yellow')} {chip('Phase 2', 'gray')} {chip('Coupe', 'gray')}… La phase en cours s'ouvre seule. "
-                    "La compétition et la poule sont rappelées dessous (ex. Départementale féminine U15 - Division 2 · Poule C)."),
-         NumItem(4, f"{b('Deux onglets')} : {chip('Calendrier & résultats', 'yellow')} et {chip('Classement', 'gray')}."),
+                    "La compétition et la poule sont rappelées dessous (ex. Départementale féminine U15 - Division 2 · Poule C). Une coupe est une seule entrée {chip('Coupe', 'gray')}, rangée par tours (1er tour, 2e tour…)."),
+         NumItem(4, f"{b('Deux onglets')} : {chip('Calendrier & résultats', 'yellow')} et {chip('Classement', 'gray')}. Au-dessus, {chip('Calendrier', 'yellow')} / {chip('Effectif', 'gray')} : l'effectif de l'équipe, en lecture seule."),
          NumItem(5, f"{b('L’icône graphique')} apparaît sous le score d'un match dont les statistiques sont saisies : un toucher télécharge le PDF du match."),
          H2('Calendrier & résultats'),
          P(f"{chip('Notre équipe', 'yellow')} / {chip('Toute la poule', 'gray')} ; {chip('Une journée', 'yellow')} (avec les flèches ‹ ›) / {chip('Toutes', 'gray')}. "
@@ -326,38 +332,76 @@ def page_calendrier():
            "Le match que vous seriez en train de saisir n'est pas touché. Pas d'icône : aucune statistique saisie, match d'une autre équipe, ou pas de réseau.")]
     return s
 
+# ================================================================== ÉTAPE 13 : mon compte et nouveautés
+def _table(rows, widths, head=('', '')):
+    t = Table([[Paragraph(h, ParagraphStyle('th', fontName='Poppins-Bold', fontSize=8.5, textColor=white)) for h in head]] + rows, colWidths=widths)
+    t.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), NAVY), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                           ('ROWBACKGROUNDS', (0, 1), (-1, -1), [white, HexColor('#F1F5F9')]), ('LINEBELOW', (0, 0), (-1, -1), 0.5, LINE),
+                           ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5), ('LEFTPADDING', (0, 0), (-1, -1), 7)]))
+    return t
+
+def page_nouveautes():
+    defaults = _table([[Paragraph(a, cellb), Paragraph(b_, cell), Paragraph(c_, cell)] for a, b_, c_ in (
+        ('U9 et moins', '6 périodes de 4 min', 'non (le nul est possible)'),
+        ('U11', '8 périodes de 4 min', 'non (le nul est possible)'),
+        ('U13', '4 périodes de 8 min', 'oui, 5 min'),
+        ('U15 et plus, seniors', '4 périodes de 10 min', 'oui, 5 min'))], [120, 190, CW - 310], ('Catégorie', 'Périodes', 'Prolongation'))
+    s = [Banner(13, 'Mon compte et nouveautés', 'Mot de passe, tester un profil, périodes par défaut, saisons clôturées'),
+         H2('Mon compte (le bonhomme gris)'),
+         NumItem(1, f"{b('Changer mon mot de passe')} : touchez le bouton {chip('Mon compte', 'gray')} (le bonhomme gris, à côté de la déconnexion, visible aussi sur téléphone), saisissez le nouveau mot de passe deux fois, puis "
+                    f"{chip('Enregistrer le mot de passe', 'yellow')}. L'appli n'impose aucune règle ; le serveur refuse seulement moins de 6 caractères."),
+         NumItem(2, f"{b('Se connecter en tant que… (admin et superadmin)')} : juste après la connexion, une fenêtre propose {chip('Continuer en admin', 'green')} ou de {b('tester un coach ou un consultant')}, "
+                    "sans connaître son mot de passe. Vous avez alors exactement ses équipes et ses droits : c'est le moyen de vérifier ce qu'il voit. Un bandeau bleu propose "
+                    f"{chip('Revenir à mon compte', 'blue')}. Le même choix est dans « Mon compte »."),
+         Callout('warn', 'Pendant un test', "Ce que vous enregistrez est enregistré pour de vrai, au nom de ce compte. Un seul onglet du navigateur, et revenez à votre compte avant de fermer la page."),
+         H2('Périodes par défaut selon la catégorie'),
+         P("Dès que vous choisissez l'équipe (ou un match du calendrier), le nombre et la durée des périodes se règlent selon la catégorie. Vous pouvez les modifier ensuite ; rien ne change si un match est déjà en cours."),
+         defaults, Spacer(1, 6),
+         P(f"Le champ {chip('Heure', 'gray')} de la configuration se remplit tout seul depuis le calendrier ; la {b('date et l’heure du match')} s'affichent en petit au-dessus du score du Direct, pour retrouver ce que vous avez préparé."),
+         H2('Saisons terminées : lecture seule'),
+         P(f"Tout ce qui date d'{b('avant le 1er septembre de la saison en cours')} est verrouillé, pour tout le monde (admin et superadmin compris) : matchs, statistiques, équipes, joueuses, calendriers et effectifs. "
+           "La consultation, l'historique et le PDF des statistiques restent possibles."),
+         NumItem(1, f"Dans la liste {chip('JOUÉ', 'green')} de la loupe, un match ancien porte un {b('cadenas')} et n'a plus de corbeille ; à son ouverture, un bandeau indique « lecture seule » et la disquette explique que l'enregistrement est refusé."),
+         NumItem(2, "Dans Calendrier et Administration, les saisons passées sont marquées « historique ». Une correction exceptionnelle ne peut se faire que par le superadmin, directement dans la base (annexe A).")]
+    return s
+
 # ================================================================== ANNEXE A : module administrateur
 def page_annexe():
     def prof(role, desc): return [Paragraph(role, cellb), Paragraph(desc, cell)]
-    t = Table([[Paragraph('Profil', ParagraphStyle('th', fontName='Poppins-Bold', fontSize=8.5, textColor=white)),
-                Paragraph('Ce qu\'il permet', ParagraphStyle('th2', fontName='Poppins-Bold', fontSize=8.5, textColor=white))],
-               prof('superadmin', "Accès illimité. Fait tout ce que fait l'admin, et seul à pouvoir créer, modifier ou supprimer un compte superadmin."),
-               prof('admin', "Voit toutes les équipes. Crée et modifie les équipes, les joueuses, les matchs. Utilise le menu Administration, gère les comptes admin et coach."),
-               prof('coach', "Ne voit que les équipes qui lui sont affectées, saison par saison ; peut tout y faire (joueuses, matchs, stats, export, calendrier) sauf créer ou supprimer une équipe."),
-               prof('Sans profil', "Peut se connecter mais voit seulement « Accès non autorisé ».")],
-              colWidths=[96, CW - 96])
-    t.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), NAVY), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                           ('ROWBACKGROUNDS', (0, 1), (-1, -1), [white, HexColor('#F1F5F9')]),
-                           ('LINEBELOW', (0, 0), (-1, -1), 0.5, LINE), ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-                           ('LEFTPADDING', (0, 0), (-1, -1), 7)]))
-    rows = [("Un coach ne voit aucune équipe", "Vérifiez qu'il a le profil coach et qu'au moins une équipe lui est affectée pour la saison (Administration > Accès). Il doit rouvrir l'appli avec du réseau."),
+    t = _table([prof('superadmin', "Accès illimité. Fait tout ce que fait l'admin, et seul à pouvoir créer, modifier ou supprimer un compte superadmin. Ne peut pas être supprimé s'il est le dernier."),
+                prof('admin', "Voit toutes les équipes. Crée et modifie les équipes, les joueuses, les matchs. Utilise le menu Administration ; gère les comptes admin, coach et consultant (il ne voit pas les superadmin)."),
+                prof('coach', "Ne voit que les équipes qui lui sont affectées, saison par saison ; peut y faire tout le travail de match (joueuses, saisie, stats, exports, calendrier) sauf créer ou supprimer une équipe."),
+                prof('consultant', "Lit les équipes qui lui sont affectées et ne modifie rien : menu Calendrier seulement (calendrier, classement, effectif, PDF des matchs enregistrés). La base refuse toute écriture."),
+                prof('Sans profil', "Peut se connecter mais voit seulement « Accès non autorisé ».")], [96, CW - 96], ('Profil', "Ce qu'il permet"))
+    rows = [("Un coach ne voit aucune équipe", "Vérifiez qu'il a le profil coach (ou consultant) et qu'au moins une équipe lui est affectée pour la saison (Administration > Accès). Il doit rouvrir l'appli avec du réseau."),
             ("Une vignette n'a pas d'image", "Ouvrez l'équipe, « Chercher dans les données FFBB » et touchez la bonne image ; on peut aussi coller son adresse api.ffbb.com/assets/…"),
             ("Résultats ou classement pas à jour", "Relancez MiseAJourFFBB_Club.exe depuis un PC, puis « Charger les équipes depuis le cache ». Recharger est sans risque."),
             ("Une équipe n'a qu'une phase alors que le site FFBB en montre deux", "Relancez la dernière version de MiseAJourFFBB_Club.exe : elle cherche aussi les autres phases de la compétition. Si une phase manque encore, le programme enregistre une copie de la page dans son dossier « diagnostic » : transmettez-la pour adapter la lecture."),
-            ("Le programme affiche « HTTP 404 » pour une équipe", "Compétition régionale ou autre niveau : la dernière version essaie plusieurs adresses (comité, puis ligue). Si l'erreur persiste, notez le nom de la compétition indiqué dans la ligne du journal."),
+            ("Le programme affiche « HTTP 403 » ou « 404 »", "403 : blocage temporaire du site, le programme réessaie seul (pauses) ; sinon relancez plus tard. 404 : le message donne les adresses essayées ; notez-les avec le nom de la compétition."),
             ("Une équipe manque", "Elle n'a pas de poule dans le cache (pas encore engagée, ou exe non relancé). Le détail du chargement liste les poules ignorées ou en erreur."),
+            ("Après l'import d'un effectif, une personne manque", "L'appli relit la base et nomme toute personne non enregistrée (« 14 / 15 enregistrées »). Réimportez ; si elle manque encore, transmettez le message."),
+            ("Un renfort est introuvable ou « fonction manquante »", "Exécutez admin_10_merge_roster.sql ; l'équipe doit être liée au club (Administration > Équipes) et l'équipe d'origine doit avoir des joueuses."),
+            ("Une modification est refusée sur un ancien match", "Saison clôturée (avant le 1er septembre) : lecture seule pour tous. Correction exceptionnelle par le superadmin, directement en base."),
             ("Un match est introuvable par son numéro", "Il n'est pas dans le calendrier de vos équipes : relancez le chargement, ou passez le match en AMICAL."),
-            ("Message « permission denied » ou « table introuvable »", "Les scripts SQL de l'installation n'ont pas tous été exécutés (admin_01, admin_03, admin_04), ou le compte n'a pas le profil admin / superadmin.")]
-    faq = Table([[Paragraph('Situation', ParagraphStyle('th3', fontName='Poppins-Bold', fontSize=8.5, textColor=white)), Paragraph('Que faire ?', ParagraphStyle('th4', fontName='Poppins-Bold', fontSize=8.5, textColor=white))]]
-                + [[Paragraph(a, cellb), Paragraph(b_, cell)] for a, b_ in rows], colWidths=[150, CW - 150])
-    faq.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), NAVY), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('ROWBACKGROUNDS', (0, 1), (-1, -1), [white, HexColor('#F1F5F9')]),
-                             ('LINEBELOW', (0, 0), (-1, -1), 0.5, LINE), ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5), ('LEFTPADDING', (0, 0), (-1, -1), 7)]))
+            ("Message « permission denied » ou « table introuvable »", "Un script SQL de l'installation n'a pas été exécuté (voir la liste), ou le compte n'a pas le profil admin / superadmin.")]
+    faq = _table([[Paragraph(a, cellb), Paragraph(b_, cell)] for a, b_ in rows], [150, CW - 150], ('Situation', 'Que faire ?'))
+    scripts = _table([[Paragraph(a, cellb), Paragraph(b_, cell)] for a, b_ in (
+        ('security_01', 'Profils et règles de sécurité de base.'),
+        ('admin_01_club_calendar', 'Superadmin, équipes du club par saison, phases, calendriers, classements.'),
+        ('admin_03_roster', "Effectif (import du PDF de l'extranet)."),
+        ('admin_04_role_coach', "Le profil « analyst » devient « coach » (seulement si des comptes existaient déjà)."),
+        ('admin_05_season_lock', 'Saisons terminées en lecture seule.'),
+        ('admin_06_last_superadmin', 'Interdit de supprimer le dernier superadmin ; droits pour l\'accès de secours.'),
+        ('admin_07_hide_superadmin', 'Un admin ne voit pas les comptes superadmin.'),
+        ('admin_08_roster_coach', "Case « Coach » de l'encadrement."),
+        ('admin_09_role_consultant', 'Profil consultant (lecture seule).'),
+        ('admin_10_merge_roster', 'Fiche joueuse unique (maillot + licence) et fonction des renforts.'))], [140, CW - 140], ('Script SQL (dans cet ordre)', 'À quoi il sert'))
     s = [Banner('A', 'Module administrateur', 'Équipes du club, calendriers, effectifs et accès'),
          P(f"Réservé aux profils {b('admin')} et {b('superadmin')} : le bouton {b('Administration')} (la roue violette, en haut à droite) n'existe pas pour un coach. "
            "Un bandeau d'icônes en haut de l'écran choisit la section : Équipes & calendriers, ou Accès."),
          t, Spacer(1, 4),
          H2('Équipes & calendriers'),
-         MockAdmin(), P("Administration > Équipes & calendriers", caption),
+         KeepTogether([MockAdmin(), P("Administration > Équipes & calendriers", caption)]),
          NumItem(1, f"{b('Le bandeau')} : {chip('Équipes & calendriers', 'yellow')} ou {chip('Accès', 'gray')}."),
          NumItem(2, f"{b('Charger les équipes depuis le cache.')} Le site de la FFBB bloque les serveurs : le cache FFBB est rempli par le programme "
                     f"{chip('MiseAJourFFBB_Club.exe', 'blue')} à lancer depuis un PC (le lien est dans l'écran). Le bouton lit ensuite ce cache, "
@@ -366,45 +410,52 @@ def page_annexe():
          NumItem(3, f"{b('Une vignette par équipe')} (U11 F, U13 F, U15 F · équipe 2…), avec l'image FFBB du niveau. L'équipe TeamStats correspondante, "
                     "« SATHONAY U15F - 2026/2027 », est créée automatiquement (ou reprise si elle existe déjà avec ce nom)."),
          NumItem(4, f"{b('Deux onglets par équipe')} : {chip('Effectif', 'yellow')} et {chip('Phases & calendrier', 'gray')}. Les phases s'affichent ainsi : "
-                    "« Phase 1 : Départementale féminine U15 - Division 2 - poule C », avec le numéro de phase et de poule FFBB ; "
+                    "« Phase 1 : Départementale féminine U15 - Division 2 - poule C » (le numéro vient du libellé FFBB), avec le numéro de phase et de poule FFBB ; "
                     "un toucher sur une phase affiche son calendrier et son classement."),
-         NumItem(5, f"{b('Importer un PDF extranet FFBB')} : l'effectif de l'équipe (voir ci-dessous).")]
-
-    s += [PageBreak(), H2('Effectif : importer le trombinoscope de l\'extranet FFBB'),
-          MockRoster(), P("Aperçu avant import (les photos ne sont jamais lues)", caption),
-          NumItem(1, f"Dans l'extranet FFBB, téléchargez le {b('trombinoscope PDF')} de l'équipe. Dans TeamStats : l'équipe, onglet {chip('Effectif', 'yellow')}, "
-                     f"{chip('Importer un PDF extranet FFBB', 'blue')}. Le PDF est lu sur votre appareil : seuls {b('nom, prénom, n° de licence, date de naissance et sexe')} sont gardés, jamais les photos."),
-          NumItem(2, f"{b('Affectation')} : chaque personne est rattachée à l'équipe indiquée dans le PDF (« U11 FILLES », n° 1 = U11 F ; n° 2 = U11 F · équipe 2). "
-                     "Si l'équipe n'est pas renseignée, c'est la date de naissance qui décide : âge = année de fin de saison - année de naissance "
-                     "(10 ou 11 ans : U11 ; 12-13 ans : U13…), à sexe égal."),
-          Paragraph("Chaque ligne se corrige avant l'import : décocher, changer d'équipe ou de rôle. Les adultes d'une équipe de jeunes sont proposés en "
-                    f"{chip('encadrement', 'gray')}. Un code « D11 » sur la fiche FFBB s'affiche en badge {b('Surclassement U11')} (joueuse U9 qui joue en U11).",
-                    ParagraphStyle('ind', parent=body, leftIndent=25.5)),
-          NumItem(2 + 1, f"{chip('Importer', 'green')} : réimporter est sans risque (une personne = une ligne par équipe, clé : n° de licence). "
-                         "L'option « retirer de l'équipe les personnes absentes de ce PDF » est décochée par défaut. Dans la liste, on peut changer une personne d'équipe, de rôle, ou la retirer."),
-          Callout('note', 'Données personnelles', "Noms, licences et dates de naissance de mineurs : l'effectif n'est lisible que par les admin et par les comptes affectés à l'équipe. "
-                  "Il est distinct de la liste des joueuses saisie à l'étape 1."),
-          H2('Accès : comptes et équipes des coachs'),
-          NumItem(1, f"{chip('Nouveau compte', 'blue')} : e-mail, nom affiché, mot de passe (le bouton {chip('Générer', 'gray')} en propose un) et profil. "
-                     f"{b('Notez le mot de passe maintenant')} : il ne s'affiche plus ensuite. Le compte est actif tout de suite."),
-          NumItem(2, f"{b('Modifier un compte')} : touchez la ligne de la personne. Changez le nom, le {b('profil')} (coach, admin…), éventuellement le mot de passe, "
-                     f"puis touchez {chip('Enregistrer', 'green')} : rien n'est modifié avant. Un compte « sans profil » peut se connecter mais ne voit rien."),
-          NumItem(3, f"{b('Affecter des équipes à un coach')} : donnez-lui d'abord le profil {chip('coach', 'blue')} et enregistrez. La liste « Équipes affectées » apparaît : "
-                     "choisissez la saison, puis touchez une ou plusieurs vignettes (une coche verte = équipe ouverte ; un nouveau toucher la retire). "
-                     "Exemple : U13 F en 2025-2026, U15 F ou U15 M en 2026-2027. L'affectation est immédiate et ouvre aussi l'équipe dans le direct et les statistiques."),
-          NumItem(4, f"{b('Désactiver')} un compte (la personne ne peut plus se connecter) ou le {b('supprimer')} : boutons en bas de la fiche. Un admin ou un superadmin voit toutes les équipes : rien à affecter."),
-          Callout('note', 'Qui peut modifier qui ?', "Un admin gère les comptes admin et coach ; seul le superadmin gère les superadmin. "
-                  "Personne ne peut changer son propre rôle, se désactiver ou se supprimer."),
-          PageBreak(), H2('Installation (une seule fois, par la personne qui gère la base)'),
-          NumItem(1, f"Dans l'éditeur SQL de Supabase, exécutez dans l'ordre : {chip('security_01', 'gray')} (profils et règles), {chip('admin_01_club_calendar', 'gray')} "
-                     f"(superadmin, équipes, calendriers), {chip('admin_03_roster', 'gray')} (effectifs), puis {chip('admin_04_role_coach', 'gray')} si des comptes existaient déjà "
-                     "avec l'ancien profil « analyst » (il devient « coach », droits inchangés)."),
-          NumItem(2, "Désignez le premier superadmin : la requête est à la fin de admin_01_club_calendar.sql (une ligne, avec votre adresse e-mail)."),
-          NumItem(3, "Sur Vercel (Settings > Environment Variables), ajoutez SUPABASE_SERVICE_ROLE_KEY (la clé « service_role » de Supabase, Project Settings > API) : "
-                     "elle sert à lister et créer les comptes. Elle ne doit jamais être partagée."),
-          Callout('warn', "À faire une fois : fermer l'inscription libre.", "Supabase, Authentication, Sign In / Providers : désactivez « Allow new users to sign up ». "
-                  "Les comptes se créent désormais depuis Administration > Accès."),
-          H2('Un souci ? Réponses rapides (administrateur)'), faq]
+         NumItem(5, f"{b('Importer un PDF extranet FFBB')} : l'effectif de l'équipe (voir ci-dessous)."),
+         CondPageBreak(170), H2("Effectif : une fiche unique par joueuse"),
+         P("Une équipe chargée depuis le PDF et l'équipe TeamStats sont la même équipe : la fiche d'une joueuse cumule le " + b('numéro de maillot') + " (saisi dans TeamStats) et la "
+           + b('licence, la date de naissance, la catégorie') + " (PDF de l'extranet). Il n'y a qu'une seule liste, que l'on retrouve à l'étape 1 et ici."),
+         KeepTogether([MockRoster(), P("Aperçu avant import (les photos ne sont jamais lues ; données fictives)", caption)]),
+         NumItem(1, f"Dans l'extranet FFBB, téléchargez le {b('trombinoscope PDF')} de l'équipe. Dans TeamStats : l'équipe, onglet {chip('Effectif', 'yellow')}, "
+                    f"{chip('Importer un PDF extranet FFBB', 'blue')}. Le PDF est lu sur votre appareil : seuls {b('nom, prénom, n° de licence, date de naissance et sexe')} sont gardés, jamais les photos."),
+         NumItem(2, f"{b('Affectation')} : chaque personne est rattachée à l'équipe indiquée dans le PDF (« U11 FILLES », n° 1 = U11 F ; n° 2 = U11 F · équipe 2). "
+                    "Sinon c'est la date de naissance qui décide : âge = année de fin de saison - année de naissance (10 ou 11 ans : U11 ; 12-13 ans : U13…), à sexe égal."),
+         Paragraph("Chaque ligne se corrige avant l'import : décocher, changer d'équipe ou de rôle. Les adultes d'une équipe de jeunes sont proposés en "
+                   f"{chip('encadrement', 'gray')} ; le {b('premier encadrant')} d'une équipe sans coach est coché {chip('Coach', 'green')} (on peut en cocher plusieurs). "
+                   f"Le badge {b('Surclassement U13')} apparaît quand une joueuse joue dans une catégorie plus haute que celle de son âge {b('et')} qu'une équipe plus jeune existe au club "
+                   "(pas de badge en U11 F si l'équipe U9 F n'existe pas). Le code de la fiche FFBB (ex. « D11 ») reste affiché.", ParagraphStyle('ind', parent=body, leftIndent=25.5)),
+         NumItem(3, f"{chip('Importer', 'green')} : la joueuse déjà présente dans TeamStats (même licence, sinon même nom) est {b('complétée en gardant son numéro de maillot')} ; les autres sont créées "
+                    "avec le maillot 0, à régler dans la liste (case N°). Réimporter est sans risque. L'option « retirer de l'équipe les absents du PDF » est décochée par défaut et ne touche jamais les fiches saisies à la main. "
+                    "Un contrôle relit la base (« 15 / 15 enregistrées »)."),
+         Callout('note', 'Données personnelles', "Noms, licences et dates de naissance de mineurs : lisibles seulement par les admin et par les comptes affectés à l'équipe (coach, consultant : onglet Effectif du menu Calendrier, lecture seule). "
+                 "L'encadrement n'apparaît jamais dans les feuilles de match."),
+         H2('Accès : comptes et équipes'),
+         NumItem(1, f"{chip('Nouveau compte', 'blue')} : e-mail, nom affiché, mot de passe (le bouton {chip('Générer', 'gray')} en propose un) et profil. "
+                    f"{b('Notez le mot de passe maintenant')} : il ne s'affiche plus ensuite. Le compte est actif tout de suite."),
+         NumItem(2, f"{b('Modifier un compte')} : touchez la ligne de la personne. Changez le nom, le {b('profil')} (coach, consultant, admin…), éventuellement le mot de passe, "
+                    f"puis touchez {chip('Enregistrer', 'green')} : rien n'est modifié avant."),
+         NumItem(3, f"{b('Affecter des équipes à un coach ou un consultant')} : donnez-lui d'abord son profil et enregistrez. La liste « Équipes affectées » apparaît : "
+                    "choisissez la saison, puis touchez une ou plusieurs vignettes (coche verte = équipe ouverte ; un nouveau toucher la retire). "
+                    "Exemple : U13 F en 2025-2026, U15 F ou U15 M en 2026-2027. L'affectation est immédiate. Un admin ou superadmin voit toutes les équipes : rien à affecter."),
+         NumItem(4, f"{b('Désactiver')} un compte (il ne peut plus se connecter) ou le {b('supprimer')} : boutons en bas de la fiche. {b('Tester')} ce que voit un coach : bouton Mon compte (étape 13)."),
+         Callout('note', 'Qui peut modifier qui ?', "Un admin gère les comptes admin, coach et consultant ; seul le superadmin gère les superadmin (invisibles pour un admin). "
+                 "Personne ne peut changer son propre profil, se désactiver ou se supprimer."),
+         CondPageBreak(170), H2('Installation (une seule fois, par la personne qui gère la base)'),
+         NumItem(1, f"Dans l'éditeur SQL de Supabase, exécutez les scripts du dossier {chip('sql', 'gray')} dans cet ordre (chacun se rejoue sans risque) :"),
+         scripts, Spacer(1, 6),
+         NumItem(2, "Désignez le premier superadmin : la requête est à la fin de admin_01_club_calendar.sql (une ligne, avec votre adresse e-mail)."),
+         NumItem(3, f"Sur Vercel (Settings > Environment Variables), ajoutez {chip('SUPABASE_SERVICE_ROLE_KEY', 'gray')} (la clé « service_role » de Supabase : lister et créer les comptes, tester un profil) "
+                    f"et, pour l'accès de secours, {chip('EMERGENCY_SUPERADMIN_EMAIL', 'gray')} et {chip('EMERGENCY_ACCESS_SECRET', 'gray')}. Aucune ne doit être partagée."),
+         Callout('warn', "À faire une fois : fermer l'inscription libre.", "Supabase, Authentication, Sign In / Providers : désactivez « Allow new users to sign up ». "
+                 "Les comptes se créent désormais depuis Administration > Accès."),
+         H2('Ne jamais perdre l’accès'),
+         NumItem(1, f"{b('Protection automatique')} : la base refuse de supprimer ou de rétrograder le {b('dernier superadmin')}, depuis l'appli comme depuis Supabase. Créez un second superadmin avant de toucher au premier."),
+         NumItem(2, f"{b('Accès de secours')} : si l'accès est perdu malgré tout, le lien discret « Accès de secours » de l'écran de connexion demande un {b('code de secours')} (la variable EMERGENCY_ACCESS_SECRET, "
+                    "rangée dans votre gestionnaire de mots de passe) et un nouveau mot de passe : le serveur recrée ou répare le compte du propriétaire (l'adresse de EMERGENCY_SUPERADMIN_EMAIL) et vous connecte. "
+                    "Il ne donne accès à rien d'autre, et chaque usage est journalisé."),
+         NumItem(3, f"{b('Sans l’appli')} : avec votre compte Supabase, recréez le compte dans Authentication > Users puis exécutez la requête SQL indiquée en tête de admin_06_last_superadmin.sql."),
+         H2('Un souci ? Réponses rapides (administrateur)'), faq]
     return s
 
 # ================================================================== retouches des pages d'origine (superposition)
@@ -445,6 +496,13 @@ def patch_page4(c):  # étape 2 : la loupe
                      "Passez en AMICAL et tapez le nom de l'adversaire, ou prévenez la personne qui gère l'application.")]
     flow_at(c, items, LM, 524)
 
+def patch_page5(c):  # étape 3 : renforts
+    flow_at(c, [Callout('good', "Renfort d'une autre équipe.",
+                        f"Au-dessus de la liste, {chip('+ Renfort d’une autre équipe', 'green')} : choisissez {b('d’abord l’équipe')} d’origine, puis les joueuses. Autorisées : même catégorie (autre équipe), catégorie juste en dessous ou "
+                        "au-dessus (U15 F : U13 F, U15 F équipe 2, U18 F) ; l'autre sexe seulement en U9 et U11, dans la même catégorie. Le renfort est en vert avec son équipe entre parenthèses (ex. U13F) ; "
+                        "il compte dans les 10 joueuses maximum, reste vert dans le Direct et figure dans les statistiques. Changer d'équipe remet les renforts à zéro.")], LM, 674)
+
+
 def patch_page8(c):  # étape 7 : le chrono suit la période choisie
     c.setFillColor(white); c.rect(40, PH - 376, PW - 80, 376 - 343, fill=1, stroke=0)
     flow_at(c, [NumItem(2, f"Le chrono {b('se règle seul')} sur la nouvelle période : durée complète si rien n'y a encore été saisi, sinon temps restant d'après les statistiques déjà "
@@ -472,13 +530,14 @@ def main():
     w = PdfWriter()
     w.add_page(base.pages[0])                                       # couverture (inchangée)
     for p in build(page_accueil(), 1).pages: w.add_page(p)          # accueil / programme (reconstruit)
-    patches = {2: patch_page3, 3: patch_page4, 7: patch_page8, 8: patch_page9}      # index dans le PDF d'origine
+    patches = {2: patch_page3, 3: patch_page4, 4: patch_page5, 7: patch_page8, 8: patch_page9}      # index dans le PDF d'origine
     for i in range(2, 12):                                          # étapes 1 à 11 (pages d'origine)
         pg = base.pages[i]
         if i in patches: pg.merge_page(overlay(i, patches[i]))
         w.add_page(pg)
     for p in build(page_calendrier(), 12).pages: w.add_page(p)      # étape 12
-    for p in build(page_annexe(), 13).pages: w.add_page(p)          # annexe A
+    for p in build(page_nouveautes(), 13).pages: w.add_page(p)      # étape 13
+    for p in build(page_annexe(), 14).pages: w.add_page(p)          # annexe A
     w.add_metadata({'/Title': "TeamStats - Mode d'emploi", '/Author': 'Olympic Sathonay', '/Subject': 'Suivi de match et statistiques'})
     with open(OUT, 'wb') as f: w.write(f)
     print('pages :', len(w.pages))

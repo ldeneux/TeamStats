@@ -81,6 +81,13 @@ export function displayCompetitionName(name: string | null, code: string | null)
 }
 export const isCup = (competitionName: string | null) => /coupe|tour\b|challenge|trophee/i.test(competitionName || '');
 
+// Tour d'une coupe : chaque tour est une « compétition » FFBB à part (« 2ème tour Coupe du Rhône… » = tour 2) ; sans mention = 1er tour.
+// Le numéro de journée d'un match de coupe n'est PAS le tour (c'est un numéro de match) : on s'appuie sur le nom de la compétition.
+const TOUR_RE = /^\s*(\d+)\s*(?:er|ère|ere|e|ème|eme|nd|d)?\s*tour\b\s*[-:–]?\s*/i;
+export const cupTourNumber = (name: string | null | undefined): number => { const m = TOUR_RE.exec(name || ''); return m ? parseInt(m[1], 10) : 1; };
+export const cupBaseName = (name: string | null | undefined): string => (name || '').replace(TOUR_RE, '').trim();
+export const tourLabel = (n: number | string) => (Number(n) === 1 ? '1er tour' : `${n}e tour`);
+
 // Nom de l'équipe TeamStats associée : « SATHONAY U15F - 2026/2027 ».
 export const statsTeamName = (code: string, season: string) => `${CLUB_SHORT_NAME} ${code} - ${season.replace('-', '/')}`;
 
