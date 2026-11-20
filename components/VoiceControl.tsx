@@ -23,6 +23,8 @@ export interface VoiceActions {
   /** Retour visuel : sélectionne la joueuse et allume la touche (action = libellé d'événement, ou « CHRONO »). */
   highlight: (playerId: string | null, action: string) => void;
   selectPlayer: (playerId: string | null) => void;
+  /** Affiche les lancers francs en cours dans le panneau de l'écran. */
+  ftView: (playerId: string | null, attempts: [boolean | null, boolean | null, boolean | null]) => void;
 }
 
 interface Props {
@@ -108,7 +110,7 @@ export default function VoiceControl(props: Props) {
 
   // ───── Exécution des actions décidées par le dialogue (via les adaptateurs de page.tsx)
   // Durée pendant laquelle la joueuse et la touche restent allumées avant que l'événement soit enregistré.
-  const SHOW_BEFORE_MS = 500;
+  const SHOW_BEFORE_MS = 250;
   const apply = async (a: VoiceAction) => {
     switch (a.t) {
       case 'event':
@@ -123,6 +125,7 @@ export default function VoiceControl(props: Props) {
       case 'clock': actionsRef.current.highlight(null, 'CHRONO'); actionsRef.current.setClockRunning(a.running); break;
       case 'subPanel': actionsRef.current.subPanel(a.op); break;
       case 'select': actionsRef.current.selectPlayer(a.playerId); break;
+      case 'ftView': actionsRef.current.ftView(a.playerId, a.attempts); break;
     }
   };
 
@@ -220,6 +223,20 @@ export default function VoiceControl(props: Props) {
   };
 
   const namedPlayers = props.roster.filter((p) => firstNameOf(p.name));
+
+  // Exemples de l'aide : prénoms et numéros tirés au hasard (parmi l'effectif du match si possible).
+  const rosterKey = props.roster.map((p) => p.id).join('|');
+  const ex = useMemo(() => {
+    const shuffle = <T,>(a: T[]): T[] => { const r = [...a]; for (let i = r.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [r[i], r[j]] = [r[j], r[i]]; } return r; };
+    const cap = (n: string) => n.charAt(0).toUpperCase() + n.slice(1).toLowerCase();
+    const FALLBACK = ['Léa', 'Manon', 'Inès', 'Camille', 'Jade', 'Zoé', 'Emma', 'Lina', 'Sarah', 'Clara', 'Nora', 'Louise', 'Eva', 'Lola', 'Julie'];
+    const names = shuffle(props.roster.map((p) => firstNameOf(p.name)).filter(Boolean).map(cap));
+    const p = [...names, ...shuffle(FALLBACK.filter((f) => !names.includes(f)))].slice(0, 10);
+    const rn = shuffle(props.roster.map((x) => x.number));
+    const n = [...rn, ...shuffle(Array.from({ length: 30 }, (_, i) => i + 1).filter((x) => !rn.includes(x)))].slice(0, 5);
+    return { p, n };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rosterKey]);
   const statusText = !enabled ? 'Voix coupée' : engineState === 'listening' ? dialogStatus : STATE_LABEL[engineState];
   const waiting = enabled && dialogStatus !== 'À l’écoute';
 
@@ -300,17 +317,18 @@ export default function VoiceControl(props: Props) {
 
       {showHelp && (
         <div className="text-[11px] text-slate-300 bg-slate-950/60 border border-slate-800 rounded-xl p-3 space-y-1.5 leading-snug">
-          <p className="font-bold text-slate-100">Commandes (prénom ou « la 5 » pour le numéro)</p>
-          <p>Tirs : « Chloé deux points », « raté à trois points pour Chloé ».</p>
-          <p>Actions : « interception », « rebond offensif / défensif », « passe décisive », « perte de balle de », « contre de », « Chloé contrée ».</p>
-          <p>Fautes : « faute de Chloé » (personnelle), « faute sur Chloé » (subie), « faute technique / antisportive / disqualifiante » (à confirmer).</p>
-          <p>Lancers francs : « lancer franc Chloé », puis « premier réussi », « deuxième raté », « terminé » — ou en une phrase « Chloé 1/3 ».</p>
-          <p>Changements (à confirmer par « oui ») : « remplacement Chloé, Laura par Hinde, Hanaé », « sortie de… entrée de… », « sur le terrain on a [5 prénoms] ».</p>
-          <p>Sélection : « sélectionne Chloé », « sélectionner la 5 », « désélectionner ». La joueuse sélectionnée sert ensuite de joueuse par défaut : « deux points » suffit.</p>
-          <p>Fenêtre de changement : « afficher changement », puis cocher à l’écran et « valider », ou « fermer ».</p>
-          <p>Annuler : « annuler la dernière commande » ou « annuler dernière action Chloé », puis « oui ». Un changement ne s’annule pas : faire un nouveau changement.</p>
-          <p>Chrono : « démarrer chrono », « arrêt chrono », « début match », « reprise du jeu », « temps mort ». Prévoir 1 à 3 secondes de décalage entre la voix et l’effet.</p>
-          <p>Questions : « score », « qui est sur le terrain », « combien de fautes Chloé », « fautes équipe ». Score adverse : « adversaire deux points ».</p>
+          <p className="font-bold text-slate-100">Commandes vocales (les prénoms et numéros ci-dessous sont des exemples tirés au hasard)</p>
+          <p><b>Désigner une joueuse</b> : son prénom, ou son numéro (« la {ex.n[0]} », « le {ex.n[1]} », « numéro {ex.n[2]} », « {ex.n[3]} »). L’ordre est libre : « {ex.p[0]} deux points » = « deux points pour {ex.p[0]} ». Les actions sont enregistrées tout de suite, sans validation ; pour corriger, dites « annule ».</p>
+          <p><b>Sélectionner</b> : « sélectionne {ex.p[1]} », « sélectionner la {ex.n[4]} », « désélectionner ». La joueuse sélectionnée (ou touchée à l’écran) sert de joueuse par défaut : « deux points », « interception », « lancer franc » suffisent.</p>
+          <p><b>Chrono</b> : « démarrer chrono », « démarrer le match », « début match », « reprise du jeu » ; « arrêt chrono », « arrêter chrono », « stop chrono », « temps mort ». Prévoir 1 à 3 secondes de décalage entre la voix et l’effet.</p>
+          <p><b>Tirs</b> : « {ex.p[2]} deux points », « 3 points pour {ex.p[3]} », « raté à trois points pour {ex.p[4]} », « tir à 2 points manqué {ex.p[5]} ».</p>
+          <p><b>Autres actions</b> : « interception {ex.p[6]} », « rebond offensif / défensif {ex.p[7]} », « passe décisive {ex.p[8]} », « perte de balle de {ex.p[9]} » ou « balle perdue », « contre de {ex.p[0]} », « {ex.p[1]} contrée ». « Rebond » seul : l’appli demande offensif ou défensif.</p>
+          <p><b>Fautes</b> : « faute de {ex.p[2]} » (personnelle), « faute sur {ex.p[3]} » ou « faute subie » ; « faute technique / antisportive / disqualifiante {ex.p[4]} ». Annonce de la 4e et de la 5e faute (« elle sort »).</p>
+          <p><b>Lancers francs</b> : « lancer franc » (joueuse sélectionnée) ou « lancer franc {ex.p[5]} » ; les tentatives s’affichent à l’écran : « premier réussi », « deuxième raté » ou simplement « réussi » / « raté ». Après la 3e tentative, ou « terminé », c’est enregistré. En une phrase : « {ex.p[6]} 1/3 », « {ex.p[7]} deux sur trois ». « Annule » abandonne la série.</p>
+          <p><b>Changements</b> (à confirmer par « oui ») : « remplacement {ex.p[8]}, {ex.p[9]} par {ex.p[0]}, {ex.p[1]} », « sortie de … entrée de … », « sur le terrain on a [5 prénoms ou numéros] ». Fenêtre : « afficher changement », puis « valider » ou « fermer ».</p>
+          <p><b>Annuler</b> : « annule la dernière commande » ou « annule dernière action {ex.p[2]} » : immédiat, sans validation. Un changement ne s’annule pas : faire un nouveau changement.</p>
+          <p><b>Score adverse</b> : « adversaire deux points », « adversaire moins un ». <b>Questions</b> : « score », « qui est sur le terrain », « combien de fautes {ex.p[3]} », « fautes équipe ».</p>
+          <p><b>Réponses</b> : « oui » / « non » pour un changement ; si l’appli attend une réponse et que vous dites une autre commande complète, elle abandonne l’attente et exécute la nouvelle.</p>
           <p className="text-amber-300">Confidentialité : le navigateur envoie l’audio à son fournisseur (Google pour Chrome). Nécessite du réseau ; sans réseau, utilisez les boutons. Un casque évite que l’appli s’entende.</p>
         </div>
       )}

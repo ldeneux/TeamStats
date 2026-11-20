@@ -19,6 +19,7 @@ class Sim {
   onCourt = [...START_COURT];
   home = 0; away = 0; period = 1; clock = false; seq = 0;
   actions: VoiceAction[] = [];
+  ftViews: VoiceAction[] = []; // affichage des lancers francs à l'écran (non comptés comme actions)
   dialog: VoiceDialog;
   players = PLAYERS;
   constructor(opts?: ConstructorParameters<typeof VoiceDialog>[0]) { this.dialog = new VoiceDialog(opts); }
@@ -28,7 +29,8 @@ class Sim {
   say(...alts: string[]): DialogResult {
     const r = this.dialog.handle(alts, this.view());
     for (const a of r.actions) this.apply(a);
-    this.actions.push(...r.actions);
+    this.actions.push(...r.actions.filter((a) => a.t !== 'ftView'));
+    this.ftViews.push(...r.actions.filter((a) => a.t === 'ftView'));
     return r;
   }
   said(...alts: string[]): string { return this.say(...alts).say.join(' | '); }
@@ -87,8 +89,8 @@ t('contre subi X', () => assert.equal(ev(parse('contre subi Chloé')).action, 'C
 t('faute sur X = subie', () => assert.equal(ev(parse('Faute sur Chloé')).action, 'FAUTE SUBIE'));
 t('faute de X = personnelle', () => assert.equal(ev(parse('Faute de Chloé')).action, 'FAUTE PERSONNELLE'));
 t('faute subie / personnelle', () => { assert.equal(ev(parse('faute subie Chloé')).action, 'FAUTE SUBIE'); assert.equal(ev(parse('faute personnelle Chloé')).action, 'FAUTE PERSONNELLE'); });
-t('faute technique → confirmation', () => { const c = ev(parse('faute technique Chloé')); assert.equal(c.action, 'FAUTE TECHNIQUE'); assert.equal(c.needsConfirm, true); });
-t('antisportive / disqualifiante → confirmation', () => { assert.equal(ev(parse('faute antisportive Chloé')).needsConfirm, true); assert.equal(ev(parse('faute disqualifiante Chloé')).needsConfirm, true); });
+t('faute technique : enregistrée directement', () => { const c = ev(parse('faute technique Chloé')); assert.equal(c.action, 'FAUTE TECHNIQUE'); assert.equal(c.needsConfirm, false); });
+t('antisportive / disqualifiante : directes aussi', () => { assert.equal(ev(parse('faute antisportive Chloé')).needsConfirm, false); assert.equal(ev(parse('faute disqualifiante Chloé')).needsConfirm, false); });
 t('faute personnelle : pas de confirmation', () => assert.equal(ev(parse('faute de Chloé')).needsConfirm, false));
 t('« combien de fautes X » = question', () => assert.equal(parse('combien de fautes Chloé').type, 'Q_FOULS'));
 t('« faute de X » n\'est plus une question', () => assert.notEqual(parse('faute de Chloé').type, 'Q_FOULS'));
@@ -241,34 +243,31 @@ t('« valide » / « d\'accord » / « c\'est bon » valent oui', () => {
 t('changement refusé : ne change rien et le dit', () => {
   const s = new Sim(); assert.match(s.said('Remplacement Mayra par Hinde'), /Mayra n'est pas sur le terrain/); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
 });
-t('faute technique : confirmation obligatoire', () => {
-  const s = new Sim(); assert.match(s.said('faute technique Chloé'), /Valide \?/); assert.equal(s.actions.length, 0);
-  s.say('oui'); assert.equal(s.actions.length, 1); assert.equal((s.actions[0] as any).action, 'FAUTE TECHNIQUE');
+t('faute technique : enregistrée sans confirmation', () => {
+  const s = new Sim(); assert.equal(s.said('faute technique Chloé'), 'Faute technique, Chloé'); assert.equal(s.actions.length, 1); assert.equal((s.actions[0] as any).action, 'FAUTE TECHNIQUE');
 });
 t('faute : annonce à partir de la 4e, puis 5e « elle sort »', () => {
   const s = new Sim(); const out: string[] = [];
   for (let i = 0; i < 5; i++) out.push(s.said('faute de Chloé'));
   assert.equal(out[2], 'Faute personnelle, Chloé'); assert.match(out[3], /quatrième faute/); assert.match(out[4], /Chloé, cinquième faute, elle sort/);
 });
-t('faute disqualifiante : confirmée puis « elle sort »', () => {
-  const s = new Sim(); s.say('faute disqualifiante Chloé'); assert.match(s.said('oui'), /disqualifiée, elle sort/);
+t('faute disqualifiante : directe puis « elle sort »', () => {
+  const s = new Sim(); assert.match(s.said('faute disqualifiante Chloé'), /disqualifiée, elle sort/);
 });
 t('Annuler la dernière commande après un changement : annule l\'action précédente', () => {
   const s = new Sim(); s.say('Chloé deux points'); s.say('Remplacement Candice par Hinde'); s.say('oui');
-  assert.match(s.said('annuler la dernière commande'), /Annuler : deux points, Chloé \?/);
-  s.say('oui'); assert.equal(s.actions[s.actions.length - 1].t, 'delete'); assert.equal(s.home, 0);
+  assert.match(s.said('annuler la dernière commande'), /Annulé : deux points, Chloé/);
+  assert.equal(s.actions[s.actions.length - 1].t, 'delete'); assert.equal(s.home, 0);
   assert.ok(s.events.some((e) => e.actionType.startsWith('REMPLACEMENT')), 'le changement est conservé');
 });
-t('Annuler dernière action Chloé : répétition puis oui → delete ; non → rien', () => {
+t('Annuler dernière action Chloé : immédiat, sans validation', () => {
   const s = new Sim(); s.say('Chloé trois points'); s.say('Candice deux points');
-  assert.match(s.said('annuler dernière action Chloé'), /Annuler : trois points, Chloé \?/); s.say('non');
-  assert.equal(s.actions.filter((a) => a.t === 'delete').length, 0);
-  s.say('annuler dernière action Chloé'); s.say('oui');
+  assert.match(s.said('annuler dernière action Chloé'), /Annulé : trois points, Chloé/);
   const del = s.actions.filter((a) => a.t === 'delete') as any[]; assert.equal(del.length, 1);
   assert.equal(s.events.length, 1); assert.equal(s.events[0].playerId, 'candice'); assert.equal(s.home, 2);
 });
 t('annulation : rien à annuler', () => { const s = new Sim(); assert.equal(s.said('annuler la dernière commande'), 'Rien à annuler.'); });
-t('annuler dernière action la 5 (numéro)', () => { const s = new Sim(); s.say('faute de la 5'); assert.match(s.said('annuler dernière action la 5'), /Annuler : faute personnelle, Candice \?/); });
+t('annuler dernière action la 5 (numéro)', () => { const s = new Sim(); s.say('faute de la 5'); assert.match(s.said('annuler dernière action la 5'), /Annulé : faute personnelle, Candice/); });
 
 // Lancers francs en séquence
 t('LF séquence : 1er réussi, 2e raté, terminé → (1/2)', () => {
@@ -289,12 +288,26 @@ t('LF : tentative hors ordre → « Première ? »', () => {
   const s = new Sim(); s.say('lancer franc Chloé'); assert.equal(s.said('deuxième réussi'), 'Premier ?'); assert.equal(s.actions.length, 0);
 });
 t('LF : « réussi » / « raté » seuls = tentative suivante', () => {
-  const s = new Sim(); s.say('lancer franc Chloé'); s.say('réussi'); s.say('raté'); s.say('réussi');
-  assert.equal(s.said('terminé'), 'Chloé, lancers francs, 2 sur 3');
+  const s = new Sim(); s.say('lancer franc Chloé'); s.say('réussi'); s.say('raté');
+  assert.equal(s.said('réussi'), 'Chloé, lancers francs, 2 sur 3'); // 3e tentative : enregistré sans « terminé »
 });
-t('LF : trois tentatives maximum', () => {
-  const s = new Sim(); s.say('lancer franc Chloé'); s.say('réussi'); s.say('réussi'); s.say('raté'); assert.match(s.said('réussi'), /Trois tentatives au maximum/);
+t('LF : la série se ferme toute seule à la 3e tentative', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); s.say('réussi'); s.say('réussi'); assert.equal(s.dialog.mode, 'ft');
+  s.say('raté'); assert.equal(s.dialog.mode, 'idle'); assert.deepEqual(s.actions, [{ t: 'ft', playerId: 'chloe', made: 2, attempts: 3 }]);
 });
+t('LF : l\'écran suit la série (sélection + LF 1, LF 2…)', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); s.say('premier réussi'); s.say('deuxième raté');
+  assert.deepEqual(s.ftViews, [
+    { t: 'ftView', playerId: 'chloe', attempts: [null, null, null] },
+    { t: 'ftView', playerId: null, attempts: [true, null, null] },
+    { t: 'ftView', playerId: null, attempts: [true, false, null] }]);
+});
+t('« lancer franc » seul avec une joueuse sélectionnée', () => {
+  const s = new Sim(); const v = s.view(); v.selectedPlayerId = 'laura';
+  const r = s.dialog.handle(['lancer franc'], v); assert.equal(r.say[0], 'Lancers francs, Laura');
+  assert.deepEqual(r.actions[0], { t: 'ftView', playerId: 'laura', attempts: [null, null, null] });
+});
+t('« démarrer le match » lance le chrono', () => { for (const x of ['démarrer le match', 'démarre le match', 'lancer le match', 'commencer le match']) assert.equal((parse(x) as any).running, true, x); });
 t('LF : « annule » abandonne la session sans rien enregistrer', () => {
   const s = new Sim(); s.say('lancer franc Chloé'); s.say('premier réussi'); assert.equal(s.said('annule'), 'Lancers francs abandonnés.'); assert.equal(s.actions.length, 0); assert.equal(s.dialog.mode, 'idle');
 });

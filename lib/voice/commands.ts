@@ -51,7 +51,7 @@ export type Cmd =
   | { type: 'NOOP'; say: string }
   | { type: 'SELECT'; playerId: string | null; say: string }
   | { type: 'SUBPANEL'; op: 'open' | 'close' | 'validate'; say: string }
-  | { type: 'UNDO'; playerId: string | null; eventId: string | null; needsConfirm: true; say: string }
+  | { type: 'UNDO'; playerId: string | null; eventId: string | null; say: string }
   | { type: 'CLOCK'; running: boolean; say: string }
   | { type: 'Q_SCORE'; say: string }
   | { type: 'Q_COURT'; say: string }
@@ -229,6 +229,7 @@ const RULES: Array<[RegExp, string]> = [
   // chrono
   [/\btemps morts?\b/g, ' CSTOP '],
   [/\b(?:debuts?|coup d envoi|depart)(?: (?:du|de|des|d))? ?matchs?\b/g, ' CSTART '],
+  [/\b(?:demarre|demarrer|demarrez|lance|lancer|lancez|commence|commencer|start)(?: (?:le|du|un|ce))? ?matchs?\b/g, ' CSTART '],
   [/\breprise(?: du jeu)?\b|\breprend\b/g, ' CSTART '],
   [/\bchronos?\b|\bchronometre\b/g, ' CHRONO '],
   [/\b(?:arrete|arreter|arretez|arrets?|stop|stoppe|stopper|pause|coupe|couper)\b/g, ' VSTOP '],
@@ -441,7 +442,9 @@ const EVENT: Record<string, { made: string; miss: string | null; say: string; sa
   FANTI: { made: 'FAUTE ANTISPORTIVE', miss: null, say: 'faute antisportive' },
   FDISQ: { made: 'FAUTE DISQUALIFIANTE', miss: null, say: 'faute disqualifiante' },
 };
-const CONFIRM_ACTIONS = new Set(['FTECH', 'FANTI', 'FDISQ']);
+// Aucune action de joueuse ne demande de confirmation (saisie rapide) : « annule la dernière commande » corrige.
+// Pour réactiver la confirmation d'une faute : y remettre 'FTECH', 'FANTI', 'FDISQ'.
+const CONFIRM_ACTIONS = new Set<string>();
 
 export const FT_ORDINALS = ['premier', 'deuxième', 'troisième'];
 
@@ -528,8 +531,8 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
     if (!ev) return { type: 'REFUSE', say: pid ? `Rien à annuler pour ${sayName(players, pid)}.` : 'Rien à annuler.' };
     const who = ev.playerId ? sayName(players, ev.playerId) : '';
     return {
-      type: 'UNDO', playerId: pid, eventId: ev.id, needsConfirm: true,
-      say: `Annuler : ${describeAction(ev.actionType)}${who ? ', ' + who : ''} ?`,
+      type: 'UNDO', playerId: pid, eventId: ev.id,
+      say: `Annulé : ${describeAction(ev.actionType)}${who ? ', ' + who : ''}`,
     };
   }
 

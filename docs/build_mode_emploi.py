@@ -280,7 +280,7 @@ def P(text, style=body): return Paragraph(text, style)
 def H2(text): return Paragraph(text, h2)
 
 # ================================================================== PAGE 1 : accueil + programme
-def page_accueil():
+def page_accueil(pg_vocal=14, pg_annexe_a=14, pg_annexe_b=15):
     s = [P('Bienvenue', h1),
          P("TeamStats suit un match de basket en direct, joueuse par joueuse, partage les statistiques en PDF et donne le calendrier, "
            f"les résultats et le classement de vos équipes. Ce guide explique tout, pas à pas, {b('sans notion technique')}."), H2('Au programme')]
@@ -289,7 +289,8 @@ def page_accueil():
            ('Étape 7 · Changements, périodes et prolongations', 7), ('Étape 8 · Enregistrer et retrouver un match', 8),
            ('Étape 9 · Statistiques et rapports PDF', 9), ("Étape 10 · Utiliser l'appli sans réseau", 10),
            ('Étape 11 · Historique, aide-mémoire et dépannage', 11), ('Étape 12 · Le menu Calendrier', 12),
-           ('Étape 13 · Mon compte et nouveautés', 13), ('Annexe A · Module administrateur', 14)]
+           ('Étape 13 · Mon compte et nouveautés', 13), ('Étape 14 · La commande vocale', pg_vocal),
+           ('Annexe A · Module administrateur', pg_annexe_a), ('Annexe B · Récapitulatif des commandes vocales', pg_annexe_b)]
     s += [TocLine(t, p) for t, p in toc]
     s += [H2('Les boutons à connaître'), P('En haut à droite, une petite barre donne accès à tout, sur chaque écran :', ParagraphStyle('x', parent=body, spaceAfter=4))]
     s += [IconRow('config', 'Configuration', "Créer l'équipe, préparer le match, choisir les joueuses."),
@@ -363,6 +364,98 @@ def page_nouveautes():
            "La consultation, l'historique et le PDF des statistiques restent possibles."),
          NumItem(1, f"Dans la liste {chip('JOUÉ', 'green')} de la loupe, un match ancien porte un {b('cadenas')} et n'a plus de corbeille ; à son ouverture, un bandeau indique « lecture seule » et la disquette explique que l'enregistrement est refusé."),
          NumItem(2, "Dans Calendrier et Administration, les saisons passées sont marquées « historique ». Une correction exceptionnelle ne peut se faire que par le superadmin, directement dans la base (annexe A).")]
+    return s
+
+
+# ================================================================== ÉTAPE 14 : commande vocale
+def page_vocal():
+    faq = _table([[Paragraph(a, cellb), Paragraph(b_, cell)] for a, b_ in (
+        ('« Commande non reconnue »', "Répétez plus lentement et plus près du micro. Si le prénom n'est jamais compris, ajoutez sa prononciation avec le bouton Prénoms (ex. « Candy, kandis »). Le mode diagnostic montre ce que le navigateur a entendu."),
+        ("L'appli pose une question (« Quelle joueuse ? », « offensif ou défensif ? »)", "Répondez simplement (« Léa », « offensif »), ou dites directement une autre commande complète : la question est abandonnée."),
+        ("« Untel n'est pas sur le terrain »", "L'action est refusée comme avec les boutons. Faites d'abord le changement, puis répétez l'action."),
+        ('Rien ne se passe', "Vérifiez que l'interrupteur est vert (ACTIVE), que le réseau est présent et que le micro est autorisé pour le site dans le navigateur."),
+        ('Un mauvais prénom ou une mauvaise action est enregistré', "Dites « annule la dernière commande », ou « annule dernière action » suivi du prénom."))],
+        [150, CW - 150], ('Situation', 'Que faire ?'))
+    return [Banner(14, 'La commande vocale', 'Saisir les actions à la voix, sans quitter le match des yeux'),
+         P(f"Dans l'écran {b('Direct')}, un petit bandeau {b('Commande vocale')} permet de saisir presque tout à la voix : tirs, fautes, rebonds, lancers francs, changements, chrono. "
+           f"{b('Les boutons restent toujours là')} et font tout, comme avant : la voix est un plus, jamais une obligation."),
+         H2('Mettre en route'),
+         NumItem(1, f"Touchez {chip('COMMANDE VOCALE : COUPÉE', 'gray')} : il devient {chip('ACTIVE', 'green')}. Le mode est coupé à chaque ouverture de l'appli. Autorisez le micro la première fois."),
+         NumItem(2, f"Il faut {b('Chrome')} et du {b('réseau')} (le navigateur envoie l'audio à son fournisseur pour le comprendre). Un {b('casque')} est conseillé : l'appli ne s'entend pas elle-même. L'écran reste allumé tant que le mode est actif."),
+         NumItem(3, f"Parlez naturellement, {b('une commande par phrase')}. L'appli répète en quelques mots (« Candice, deux points »). Un bandeau coloré donne le résultat : {b('vert')} enregistré, {b('orange')} en attente d'une réponse, {b('rouge')} commande non reconnue ou refusée. La joueuse et la touche concernées s'allument à l'écran."),
+         H2('Comment parler'),
+         NumItem(1, f"{b('Désigner une joueuse')} : par son {b('prénom')} ou son {b('numéro')} (« la 5 », « le 12 », « numéro 5 »). L'ordre est libre : « Léa deux points » ou « deux points pour Léa »."),
+         NumItem(2, f"{b('Sélectionner')} : « sélectionne Manon » allume sa carte. La joueuse sélectionnée (ou touchée à l'écran) devient la joueuse par défaut : « deux points », « interception », « lancer franc » suffisent."),
+         NumItem(3, f"{b('Sans validation')} : les actions sont enregistrées tout de suite. Pour corriger : {b('« annule la dernière commande »')} ou {b('« annule dernière action »')} suivi du prénom."),
+         NumItem(4, f"{b('Changements')} : l'appli lit « Sortent … Entrent … Valide ? » et attend {b('« oui »')} ou {b('« non »')}. Un changement ne s'annule pas : on en refait un."),
+         NumItem(5, f"{b('Lancers francs')} : « lancer franc » ouvre la série, visible à l'écran (LF 1, LF 2, LF 3). Dites « premier réussi », « deuxième raté », ou simplement « réussi » / « raté ». La série est enregistrée après la 3e tentative ou par « terminé »."),
+         NumItem(6, f"{b('Chrono')} : « démarrer chrono », « démarrer le match », « arrêt chrono », « temps mort »."),
+         Callout('warn', 'Décalage', "Comptez 1 à 3 secondes entre la voix et son effet, chrono compris : le temps de jeu en tient compte, pas besoin de corriger."),
+         Callout('tip', 'Aide intégrée', f"Le bouton {chip('Aide', 'blue')} du bandeau liste toutes les commandes, avec des exemples ; le bouton {chip('Prénoms', 'blue')} apprend à l'appli la prononciation des prénoms difficiles. La liste complète est en annexe B."),
+         CondPageBreak(200), H2('Si ça ne marche pas'), faq]
+
+# ================================================================== ANNEXE B : récapitulatif des commandes vocales
+def page_annexe_voix():
+    def sec(title, rows, head=('Action', 'Phrases reconnues')):
+        data = [[Paragraph(a, cellb), Paragraph('<br/>'.join('– ' + x for x in ph), cell)] for a, ph in rows]
+        return [CondPageBreak(120), H2(title), _table(data, [135, CW - 135], head)]
+    s = [Banner('B', 'Récapitulatif des commandes vocales', 'Toutes les phrases reconnues, par thème'),
+         P(f"Les prénoms et numéros ci-dessous sont des {b('exemples')} : remplacez-les par ceux de vos joueuses. Une joueuse se désigne par son {b('prénom')} ou son {b('numéro')} "
+           "(« la 5 », « le 12 », « numéro 5 », « cinq », de 0 à 99). L'ordre des mots est libre et les petits mots (de, du, pour, la, le, et…) sont ignorés. "
+           "Sans nom, l'action vise la joueuse sélectionnée à l'écran.")]
+    s += sec('1) Chronomètre', [
+        ('Lancer', ['Démarrer chrono · Lancer chrono · Relancer chrono · Start chrono', 'Début chrono · Départ chrono', 'Reprise du jeu · Reprise', 'Démarrer le match · Début du match · Coup d’envoi du match']),
+        ('Arrêter', ['Arrêter chrono · Arrêt chrono · Arrêt du chrono · Stop chrono · Chrono stop', 'Pause chrono · Couper chrono', 'Temps mort'])])
+    s += [P("« Chrono » seul : l'appli demande « Démarrer ou arrêter ? ». Chrono déjà lancé (ou arrêté) : elle le dit et ne change rien.", small)]
+    s += sec('2) Sélectionner une joueuse', [
+        ('Sélectionner', ['Sélectionne Léa · Sélectionner la 7 · Choisis Zoé · Sélection numéro 12']),
+        ('Retirer la sélection', ['Désélectionner · Aucune joueuse'])])
+    s += sec('3) Tirs et statistiques (enregistrés tout de suite)', [
+        ('Tir à 2 points réussi (+2)', ['Inès deux points · 2 points pour Jade · Tir à 2 points réussi pour Eva · Deux points la 9']),
+        ('Tir à 2 points manqué', ['Raté à 2 points pour Lola · Tir à 2 points manqué Nora · Clara deux points loupé']),
+        ('Tir à 3 points réussi (+3)', ['Camille trois points · 3 points pour Sarah · Tir à 3 points réussi Louise']),
+        ('Tir à 3 points manqué', ['Raté à 3 points pour Julie · Tir à 3 points manqué Emma · Lina trois points raté']),
+        ('Interception', ['Interception Manon · Zoé intercepte · Vol de balle Léa']),
+        ('Rebond offensif', ['Rebond offensif Jade · Rebond off Inès · Rebond en attaque la 14']),
+        ('Rebond défensif', ['Rebond défensif Eva · Rebond déf Lola · Rebond en défense la 3']),
+        ('Passe décisive', ['Passe décisive Nora · Passe Clara']),
+        ('Perte de balle', ['Perte de balle de Sarah · Balle perdue Camille · Louise perte']),
+        ('Contre', ['Contre de Julie · Contre de la 11']),
+        ('Contre subi', ['Emma contrée · Contre subi Lina'])])
+    s += [P("Le tir est « réussi » par défaut ; pour un tir manqué : raté, manqué ou loupé. « Rebond » seul : l'appli demande offensif ou défensif.", small)]
+    s += sec('4) Fautes', [
+        ('Faute personnelle', ['Faute de Léa · Faute personnelle Manon · Faute de la 5']),
+        ('Faute subie', ['Faute sur Zoé · Faute subie Jade · Faute sur le 12']),
+        ('Faute technique', ['Faute technique Inès']),
+        ('Faute antisportive', ['Faute antisportive Eva']),
+        ('Faute disqualifiante', ['Faute disqualifiante Lola'])])
+    s += [P("Aucune confirmation. À la 4e faute personnelle, l'appli annonce « quatrième faute » ; à la 5e (ou après une disqualifiante), « elle sort ».", small)]
+    s += sec('5) Lancers francs', [
+        ('Ouvrir la série', ['Lancer franc · Lancer franc pour Nora · Lancers francs Clara · LF Sarah']),
+        ('Saisir les tentatives', ['Premier réussi · Deuxième raté · Troisième réussi', 'Réussi · Raté (tentative suivante)']),
+        ('Enregistrer', ['Automatique après la 3e tentative', 'Terminé · Fini · Validé · OK · C’est bon · Voilà']),
+        ('Abandonner', ['Annule · Annuler (rien n’est enregistré)']),
+        ('En une phrase', ['Camille 1/3 · Louise 0/2 · Julie un sur trois · Lancers francs Emma deux sur trois'])])
+    s += sec('6) Changements de joueuses (à confirmer par « oui »)', [
+        ('Remplacement', ['Remplacement Léa, Manon par Zoé, Jade', 'Remplacement la 4, la 7 par la 9, la 10', 'Changement Inès par Eva']),
+        ('Sortie / entrée', ['Sortie de Lola, Nora Entrée de Clara, Sarah (ordre inversable)']),
+        ('Cinq sur le terrain', ['Sur le terrain on a Camille, Louise, Julie, Emma et Lina', 'Sur le terrain on a 4, 5, 7, 9, 12']),
+        ('Verbe « remplace »', ['Zoé remplace Léa']),
+        ('Répondre', ['Oui · Valide · OK · Confirme · D’accord · C’est bon · Vas-y', 'Non · Annule · Stop · Laisse tomber'])])
+    s += [P("Il faut autant de sorties que d'entrées ; la sortante est sur le terrain, l'entrante au banc et sans 5 fautes ; personne n'est citée deux fois. Sinon l'appli le dit et ne change rien.", small)]
+    s += sec('7) Fenêtre de changement (écran)', [
+        ('Afficher', ['Afficher changement · Affiche le changement · Ouvrir remplacement']),
+        ('Valider', ['Valider · Valider changement (après avoir coché à l’écran)']),
+        ('Fermer', ['Fermer · Ferme · Masquer'])])
+    s += sec('8) Annulation (immédiate, sans validation)', [
+        ('Dernière action', ['Annuler la dernière commande · Annule · Supprime · Efface']),
+        ('Dernière action d’une joueuse', ['Annuler dernière action Manon · Annuler dernière action la 5'])])
+    s += [P("Un changement ne s'annule pas : on en refait un.", small)]
+    s += sec('9) Score adverse et questions', [
+        ('Score adverse', ['Adversaire un point · Adversaire deux points · Adversaire trois points', 'Adversaire moins deux · Adversaire moins un']),
+        ('Questions (réponse vocale)', ['Score · Qui est sur le terrain · Combien de fautes Léa · Combien de fautes la 5 · Fautes équipe'])])
+    s += [Callout('note', "Quand l'appli attend une réponse", "Elle pose parfois une question (« Quelle joueuse ? », « offensif ou défensif ? », « Annabelle ou Annaelle ? »). Répondez, ou dites directement une autre commande complète : "
+                  "l'attente est abandonnée et la nouvelle commande s'exécute.")]
     return s
 
 # ================================================================== ANNEXE A : module administrateur
@@ -528,8 +621,11 @@ def patch_page9(c):  # étape 8 : protection des matchs déjà joués
 def main():
     base = PdfReader(BASE)
     w = PdfWriter()
+    n_voc = len(build(page_vocal(), 0).pages)
+    n_a = len(build(page_annexe(), 0).pages)
+    pg_voc, pg_a, pg_b = 14, 14 + n_voc, 14 + n_voc + n_a
     w.add_page(base.pages[0])                                       # couverture (inchangée)
-    for p in build(page_accueil(), 1).pages: w.add_page(p)          # accueil / programme (reconstruit)
+    for p in build(page_accueil(pg_voc, pg_a, pg_b), 1).pages: w.add_page(p)   # accueil / programme (reconstruit)
     patches = {2: patch_page3, 3: patch_page4, 4: patch_page5, 7: patch_page8, 8: patch_page9}      # index dans le PDF d'origine
     for i in range(2, 12):                                          # étapes 1 à 11 (pages d'origine)
         pg = base.pages[i]
@@ -537,7 +633,12 @@ def main():
         w.add_page(pg)
     for p in build(page_calendrier(), 12).pages: w.add_page(p)      # étape 12
     for p in build(page_nouveautes(), 13).pages: w.add_page(p)      # étape 13
-    for p in build(page_annexe(), 14).pages: w.add_page(p)          # annexe A
+    n_voc = len(build(page_vocal(), 0).pages)                       # nombre de pages de chaque partie (pour la numérotation)
+    n_a = len(build(page_annexe(), 0).pages)
+    pg_voc, pg_a, pg_b = 14, 14 + n_voc, 14 + n_voc + n_a
+    for p in build(page_vocal(), pg_voc).pages: w.add_page(p)       # étape 14 : commande vocale
+    for p in build(page_annexe(), pg_a).pages: w.add_page(p)        # annexe A
+    for p in build(page_annexe_voix(), pg_b).pages: w.add_page(p)   # annexe B : récapitulatif des commandes vocales
     w.add_metadata({'/Title': "TeamStats - Mode d'emploi", '/Author': 'Olympic Sathonay', '/Subject': 'Suivi de match et statistiques'})
     with open(OUT, 'wb') as f: w.write(f)
     print('pages :', len(w.pages))

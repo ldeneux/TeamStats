@@ -22,6 +22,8 @@
 | 17 (f) | `MiseAJourFFBB_Club.exe` aussi dans le dossier `public/` de TeamStats | À faire (attend l'exe construit par GitHub : à me fournir ou à copier dans `public/`) |
 | 18 (g) | Mise à jour du mode d'emploi (**en tout dernier**, après les points ci-dessus) | **Fait** (18 pages ; étape 13, renforts à l'étape 3, annexe A refondue). Reste à jour si f) ou de nouveaux changements |
 
+| 19 | Commande vocale (Direct) : actions sans validation, démarrer le match, lancers francs visibles à l'écran, sélection de joueuse, aide à jour, étape 14 + annexe B du guide ; ajout d'une joueuse enregistré aussitôt dans l'effectif | **Fait** (`npm run test:voice` ; micro, synthèse vocale et relance de l'écoute à tester sur la tablette) |
+
 ## Notes pour 6 et 7
 - 6 : réalisé comme une **vraie connexion** au compte coach (jeton à usage unique généré par le serveur) : on voit exactement ce que voit ce coach, droits réels (RLS) compris ; un bandeau permet de revenir à son compte.
 - 7 : on évite un jeton secret codé en dur dans l'appli (n'importe qui le retrouverait). Piste : récupération par la clé `service_role` côté serveur (variable Vercel) protégée par un secret d'urgence, ou simple procédure SQL documentée pour se redonner le profil superadmin.

@@ -507,6 +507,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     return () => window.removeEventListener('keydown', onKey);
   }, [showLogoFull]);
   const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
+  const [playerAddNote, setPlayerAddNote] = useState('');
   const [teamSaveStatus, setTeamSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [clubNames, setClubNames] = useState<string[]>([]);
   const [isLookingUpFfbb, setIsLookingUpFfbb] = useState(false);
@@ -1564,6 +1565,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setTimeout(() => { if (voiceFlashStamp.current === stamp) setVoiceFlash(null); }, 1500);
   };
   const voiceSelect = (playerId: string | null) => { if (!isSubbing) setSelectedPlayerId(playerId); };
+  // Lancers francs dits à la voix : la série s'affiche dans le panneau (LF 1, LF 2, LF 3) comme si on touchait les boutons.
+  const voiceFt = (playerId: string | null, attempts: [boolean | null, boolean | null, boolean | null]) => {
+    if (playerId && !isSubbing) setSelectedPlayerId(playerId);
+    setFtAttempts(attempts);
+  };
 
   // Fenêtre de changement pilotée à la voix : afficher / valider (sélection faite à l'écran) / fermer.
   const voiceSubPanel = (op: 'open' | 'close' | 'validate') => {
@@ -1599,6 +1605,33 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
   const getPlayerStats = (playerId: string, periodFilter: number | 'ALL') => computePlayerStats(game.events, playingTime, playerId, periodFilter);
 
+  const persistNewPlayer = async (p: Player) => {
+    try {
+      const { data: existing } = await supabase.from('stats_players').select('id, name, role').eq('team_id', selectedTeamId);
+      const same = (existing || []).find((ep: any) => ep.role !== 'encadrement' && String(ep.name || '').trim().toUpperCase() === p.name);
+      let dbId: string | null = null;
+      if (same) {
+        const { error } = await supabase.from('stats_players').update({ number: p.number }).eq('id', same.id);
+        if (error) throw error;
+        dbId = same.id;
+      } else {
+        const { data, error } = await supabase.from('stats_players').insert({ team_id: selectedTeamId, name: p.name, number: p.number }).select('id').single();
+        if (error) throw error;
+        dbId = data?.id ?? null;
+      }
+      if (dbId) {
+        // l'identifiant local est remplacé par celui de la base (la sélection du match suit)
+        setEditingRoster(prev => prev.map(x => (x.id === p.id ? { ...x, id: dbId as string } : x)));
+        setSelectedMatchPlayerIds(ids => ids.map(id => (id === p.id ? (dbId as string) : id)));
+        setMatchNumbers(prev => (p.id in prev ? { ...Object.fromEntries(Object.entries(prev).filter(([k]) => k !== p.id)), [dbId as string]: prev[p.id] } : prev));
+      }
+      setPlayerAddNote(`${p.name} ajoutée à l'effectif.`);
+    } catch {
+      setPlayerAddNote(`${p.name} est sur la feuille de match mais n'a pas pu être ajoutée à l'effectif (réseau ou droits) : utilisez « Mettre à jour ».`);
+    }
+    setTimeout(() => setPlayerAddNote(''), 6000);
+  };
+
   const handleAddOrUpdatePlayer = () => {
     if (newPlayerNumber === '' || !newPlayerName.trim()) return;
     if (editingPlayerId) {
@@ -1608,6 +1641,9 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     } else {
       const p: Player = { id: Date.now().toString(), number: Number(newPlayerNumber), name: newPlayerName.trim().toUpperCase() };
       setEditingRoster(sortPlayersAlpha([...editingRoster, p]));
+      // Une joueuse ajoutée à une équipe existante entre aussitôt dans l'effectif (table stats_players) :
+      // sinon elle n'existait que sur la feuille de match tant qu'on n'avait pas cliqué « Mettre à jour ».
+      if (selectedTeamId) void persistNewPlayer(p);
     }
     setEditingPlayerId(null);
     setNewPlayerNumber('');
@@ -2309,6 +2345,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                       {teamSaveStatus === 'saving' ? 'Enregistrement...' : 'Mettre à jour'}
                     </button>
                   </div>
+                  {playerAddNote && <p className="text-[10px] text-sky-300">{playerAddNote}</p>}
                   {teamSaveStatus === 'saved' && <p className="text-[10px] text-emerald-400">Équipe enregistrée.</p>}
                   {teamSaveStatus === 'error' && <p className="text-[10px] text-rose-400">Échec de l'enregistrement.</p>}
                 </div>
@@ -2661,7 +2698,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               clockRunning={game.isClockRunning}
               selectedPlayerId={selectedPlayerId}
               subPanel={{ open: isSubbing, outCount: selectedOutIds.length, inCount: selectedInIds.length }}
-              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning, subPanel: voiceSubPanel, highlight: voiceHighlight, selectPlayer: voiceSelect }}
+              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning, subPanel: voiceSubPanel, highlight: voiceHighlight, selectPlayer: voiceSelect, ftView: voiceFt }}
             />
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               {matchConfig.matchDate && (

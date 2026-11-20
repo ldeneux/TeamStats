@@ -32,7 +32,9 @@ export type VoiceAction =
   | { t: 'delete'; eventId: string }
   | { t: 'clock'; running: boolean }
   | { t: 'subPanel'; op: 'open' | 'close' | 'validate' }
-  | { t: 'select'; playerId: string | null };
+  | { t: 'select'; playerId: string | null }
+  /** Affiche la série de lancers francs en cours sur l'écran (playerId null : ne pas changer la sélection). */
+  | { t: 'ftView'; playerId: string | null; attempts: [boolean | null, boolean | null, boolean | null] };
 
 export interface DialogResult {
   /** Phrases à dire à voix haute, dans l'ordre. */
@@ -158,12 +160,14 @@ export class VoiceDialog {
         return { say: [cmd.say], actions: [{ t: 'ft', playerId: cmd.playerId, made: cmd.made, attempts: cmd.attempts }] };
       case 'FT_START':
         this.st = { mode: 'ft', playerId: cmd.playerId, label: nameOf(players, cmd.playerId), attempts: [null, null, null] };
-        return { say: [cmd.say], actions: [] };
+        return { say: [cmd.say], actions: [{ t: 'ftView', playerId: cmd.playerId, attempts: [null, null, null] }] };
       case 'OPP':
         return { say: [cmd.say], actions: [{ t: 'opp', delta: cmd.delta }] };
+      case 'UNDO':
+        if (!cmd.eventId || !view.events.some((e) => e.id === cmd.eventId)) return { say: ['Rien à annuler.'], actions: [] };
+        return { say: [cmd.say], actions: [{ t: 'delete', eventId: cmd.eventId }] };
       case 'SUB':
       case 'SET_COURT':
-      case 'UNDO':
         this.st = { mode: 'confirm', cmd, retries: 0 };
         return { say: [cmd.say], actions: [] };
       case 'CLOCK': {
@@ -242,10 +246,6 @@ export class VoiceDialog {
         if (view.onCourt.length > 0) return { say: ['Le terrain a changé. Redis la liste.'], actions: [] };
         return { say: ['Cinq de départ enregistré.'], actions: [{ t: 'sub', outs: [], ins: cmd.ins }] };
       }
-      case 'UNDO': {
-        if (!cmd.eventId || !view.events.some((e) => e.id === cmd.eventId)) return { say: ['Plus rien à annuler.'], actions: [] };
-        return { say: ['Annulé.'], actions: [{ t: 'delete', eventId: cmd.eventId }] };
-      }
       default: return { say: [], actions: [] };
     }
   }
@@ -289,7 +289,7 @@ export class VoiceDialog {
     const done = st.attempts.filter((a) => a !== null).length;
     const made = st.attempts.filter((a) => a === true).length;
     this.st = { mode: 'idle' };
-    if (!done) return { say: ['Rien à enregistrer.'], actions: [] };
+    if (!done) return { say: ['Rien à enregistrer.'], actions: [{ t: 'ftView', playerId: null, attempts: [null, null, null] }] };
     return {
       say: [`${st.label}, lancers francs, ${made} sur ${done}`],
       actions: [{ t: 'ft', playerId: st.playerId, made, attempts: done }],
@@ -299,7 +299,7 @@ export class VoiceDialog {
   private onFt(alts: string[], st: Extract<State, { mode: 'ft' }>, view: VoiceView): DialogResult {
     if (this.opts.ftCancelOnUndo && alts.some((a) => /\b(annule|annuler|annulation|abandonne|laisse tomber)\b/i.test(a.normalize('NFD').replace(/[\u0300-\u036f]/g, '')))) {
       this.st = { mode: 'idle' };
-      return { say: ['Lancers francs abandonnés.'], actions: [] };
+      return { say: ['Lancers francs abandonnés.'], actions: [{ t: 'ftView', playerId: null, attempts: [null, null, null] }] };
     }
     const { cmd, text } = this.best(alts, view, undefined, true);
 
@@ -319,8 +319,14 @@ export class VoiceDialog {
         }
         const next = [...a] as FtAttempts;
         next[idx] = cmd.made;
+        const said = `${ORD_FEM[idx].charAt(0).toUpperCase()}${ORD_FEM[idx].slice(1)} ${cmd.made ? 'réussi' : 'raté'}`;
+        if (next.every((v) => v !== null)) {
+          // trois tentatives : la série est complète, on enregistre sans attendre « terminé »
+          const closed = this.closeFt({ ...st, attempts: next });
+          return { say: closed.say, actions: closed.actions };
+        }
         this.st = { ...st, attempts: next };
-        return { say: [`${ORD_FEM[idx].charAt(0).toUpperCase()}${ORD_FEM[idx].slice(1)} ${cmd.made ? 'réussi' : 'raté'}`], actions: [] };
+        return { say: [said], actions: [{ t: 'ftView', playerId: null, attempts: next }] };
       }
       case 'FT_DONE': return this.closeFt(st);
       case 'FT_RATIO': {

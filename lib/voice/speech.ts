@@ -144,7 +144,7 @@ export class VoiceEngine {
     this.beginSpeaking();
     const u = new SpeechSynthesisUtterance(list.join('. '));
     u.lang = 'fr-FR';
-    u.rate = 1.1;
+    u.rate = 1.2;
     const voice = synth.getVoices().find((v: { lang?: string }) => v.lang && v.lang.toLowerCase().startsWith('fr'));
     if (voice) u.voice = voice;
     const done = () => { if (id === this.speakId) this.endSpeaking(); };
@@ -170,7 +170,7 @@ export class VoiceEngine {
     if (!this.active) return;
     this.setState('starting');
     // petit délai : laisse l'écho de la fin de phrase s'éteindre avant de rouvrir le micro
-    this.restartTimer = setTimeout(() => { this.restartTimer = null; this.openRecognition(); }, 350);
+    this.restartTimer = setTimeout(() => { this.restartTimer = null; this.openRecognition(); }, 200);
   }
 }
 
