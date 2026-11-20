@@ -372,7 +372,51 @@ t('dialogue : fenêtre de changement', () => {
   assert.deepEqual(s.dialog.handle(['valider'], v).actions, [{ t: 'subPanel', op: 'validate' }]);
   assert.deepEqual(s.dialog.handle(['fermer'], v).actions, [{ t: 'subPanel', op: 'close' }]);
   v.subPanel = { open: false, outCount: 0, inCount: 0 };
-  assert.equal(s.dialog.handle(['valider'], v).say[0], "Je n'ai pas compris.");
+  assert.equal(s.dialog.handle(['valider'], v).say[0], "Commande non reconnue.");
+});
+
+// ═════════ 10. Question en attente : une nouvelle commande l'annule ═════════
+t('« Hinde » seul (question en attente) puis « 2 points Chloé » : la nouvelle commande passe', () => {
+  const s = new Sim(); s.say('remplace-moi Hinde'.replace('remplace-moi ', '')); // « Hinde, quoi ? »
+  assert.equal(s.dialog.mode, 'ask');
+  s.say('2 points Chloé'); assert.equal(s.dialog.mode, 'idle');
+  assert.deepEqual(s.actions, [{ t: 'event', action: 'TIR 2PTS RÉUSSI', playerId: 'chloe', points: 2 }]);
+});
+t('« Quelle joueuse ? » en attente puis commande complète d\'une autre joueuse', () => {
+  const s = new Sim(); assert.equal(s.said('interception'), 'Quelle joueuse ?');
+  s.say('Candice deux points'); assert.equal(s.actions.length, 1); assert.equal((s.actions[0] as any).playerId, 'candice');
+});
+t('la réponse courte à une question marche toujours', () => {
+  const s = new Sim(); s.say('interception'); s.say('Laura'); assert.deepEqual(s.actions, [{ t: 'event', action: 'INTERCEPTION', playerId: 'laura', points: 0 }]);
+});
+t('confirmation en attente : une nouvelle commande annule le changement proposé', () => {
+  const s = new Sim(); s.say('Remplacement Chloé par Hinde'); assert.equal(s.dialog.mode, 'confirm');
+  s.say('Candice trois points'); assert.equal(s.dialog.mode, 'idle');
+  assert.deepEqual(s.actions.map((a) => a.t), ['event']); assert.deepEqual(s.onCourt, START_COURT);
+});
+t('mots inconnus : message court, pas d\'énumération', () => {
+  assert.equal(s0('Remplacement Chloé par Hinde truc machin'), 'Commande non reconnue.');
+  assert.equal(s0('bonjour tout le monde'), 'Commande non reconnue.');
+});
+function s0(x: string): string { return (parse(x) as any).say; }
+
+// ═════════ 11. Sélection de joueuse ═════════
+t('sélectionne / sélectionner / choisis + joueuse', () => {
+  for (const x of ['sélectionne Chloé', 'sélectionner la 4', 'choisis Chloé', 'sélection Chloé']) { const c: any = parse(x); assert.equal(c.type, 'SELECT', x); assert.equal(c.playerId, 'chloe', x); }
+  assert.equal((parse('désélectionner') as any).playerId, null);
+  assert.equal(parse('sélectionne').type, 'ASK'); assert.equal(parse('sélectionne Hinde').type, 'REFUSE');
+});
+t('joueuse sélectionnée = joueuse par défaut', () => {
+  const c: any = parseCommand('deux points', PLAYERS, { onCourt: START_COURT, events: [], selectedId: 'candice' });
+  assert.equal(c.type, 'EVENT'); assert.equal(c.playerId, 'candice');
+  const d: any = parseCommand('Laura deux points', PLAYERS, { onCourt: START_COURT, events: [], selectedId: 'candice' });
+  assert.equal(d.playerId, 'laura');
+});
+t('dialogue : sélection puis action sans nom', () => {
+  const s = new Sim(); assert.equal(s.said('sélectionne Chloé'), 'Chloé sélectionnée');
+  assert.deepEqual(s.actions, [{ t: 'select', playerId: 'chloe' }]);
+  const v = s.view(); v.selectedPlayerId = 'chloe';
+  const r = s.dialog.handle(['interception'], v); assert.deepEqual(r.actions, [{ t: 'event', action: 'INTERCEPTION', playerId: 'chloe', points: 0 }]);
 });
 
 // Phonétique

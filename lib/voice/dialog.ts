@@ -17,6 +17,8 @@ export interface VoiceView {
   scoreAway: number;
   period: number;
   clockRunning: boolean;
+  /** Joueuse sélectionnée à l'écran (joueuse par défaut si la phrase n'en nomme aucune). */
+  selectedPlayerId?: string | null;
   /** Fenêtre de changement de l'écran : ouverte ? nombre de sorties / d'entrées déjà cochées. */
   subPanel?: { open: boolean; outCount: number; inCount: number };
 }
@@ -29,7 +31,8 @@ export type VoiceAction =
   | { t: 'ft'; playerId: string; made: number; attempts: number }
   | { t: 'delete'; eventId: string }
   | { t: 'clock'; running: boolean }
-  | { t: 'subPanel'; op: 'open' | 'close' | 'validate' };
+  | { t: 'subPanel'; op: 'open' | 'close' | 'validate' }
+  | { t: 'select'; playerId: string | null };
 
 export interface DialogResult {
   /** Phrases à dire à voix haute, dans l'ordre. */
@@ -102,7 +105,7 @@ export class VoiceDialog {
 
   // ───────── contexte d'analyse
   private ctx(view: VoiceView, prefer?: Record<string, string>): ParseCtx {
-    return { onCourt: view.onCourt, events: view.events, prefer, requireOnCourt: true, subPanelOpen: !!view.subPanel?.open };
+    return { onCourt: view.onCourt, events: view.events, prefer, requireOnCourt: true, subPanelOpen: !!view.subPanel?.open, selectedId: view.selectedPlayerId ?? null };
   }
 
   /** Première alternative qui donne une commande exécutable ; à défaut la meilleure explication. */
@@ -115,6 +118,12 @@ export class VoiceDialog {
       if (rank(cmd) === 3) break;
     }
     return best as { cmd: Cmd; text: string };
+  }
+
+  /** Une phrase qui est à elle seule une commande complète (et non la réponse à une question en attente). */
+  private fresh(alts: string[], view: VoiceView): { cmd: Cmd; text: string } | null {
+    const r = this.best(alts, view);
+    return r.cmd.type === 'UNKNOWN' || r.cmd.type === 'REFUSE' || r.cmd.type === 'ASK' ? null : r;
   }
 
   // ───────── état « repos »
@@ -161,6 +170,8 @@ export class VoiceDialog {
         if (cmd.running === view.clockRunning) return { say: [cmd.running ? 'Chrono déjà lancé' : 'Chrono déjà arrêté'], actions: [] };
         return { say: [cmd.say], actions: [{ t: 'clock', running: cmd.running }] };
       }
+      case 'SELECT':
+        return { say: [cmd.say], actions: [{ t: 'select', playerId: cmd.playerId }] };
       case 'SUBPANEL': {
         const sp = view.subPanel;
         if (cmd.op === 'open') return { say: [cmd.say], actions: [{ t: 'subPanel', op: 'open' }] };
@@ -211,6 +222,8 @@ export class VoiceDialog {
     for (const a of alts) { ans = parseConfirm(a); if (ans) break; }
     if (ans === 'no') { this.st = { mode: 'idle' }; return { say: ['Annulé.'], actions: [] }; }
     if (!ans) {
+      const nf = this.fresh(alts, view);
+      if (nf) { this.st = { mode: 'idle' }; return this.run(nf.cmd, nf.text, view); } // nouvelle commande : l'attente est abandonnée
       if (st.retries >= 1) { this.st = { mode: 'idle' }; return { say: ['Annulé.'], actions: [] }; }
       this.st = { ...st, retries: st.retries + 1 };
       return { say: ['Oui ou non ?'], actions: [] };
@@ -243,18 +256,27 @@ export class VoiceDialog {
     const giveUp = (): DialogResult => {
       if (st.retries >= 1) { this.st = { mode: 'idle' }; return { say: ['Annulé.'], actions: [] }; }
       this.st = { ...st, retries: st.retries + 1 };
-      return { say: ["Je n'ai pas compris."], actions: [] };
+      return { say: ['Commande non reconnue.'], actions: [] };
+    };
+    // Une commande complète dite à la place de la réponse annule la question en attente et passe à la nouvelle.
+    const startNew = (): DialogResult | null => {
+      const nf = this.fresh(alts, view);
+      if (!nf) return null;
+      this.st = { mode: 'idle' };
+      return this.run(nf.cmd, nf.text, view);
     };
     if (st.kind === 'name') {
       let chosen: string | null = null;
       for (const a of alts) { chosen = parseNameAnswer(a, view.players, st.candidates); if (chosen) break; }
-      if (!chosen) return giveUp();
+      if (!chosen) return startNew() ?? giveUp();
       this.st = { mode: 'idle' };
       const prefer = { ...st.prefer, [st.key]: chosen };
       const { cmd, text } = this.best([st.text], view, prefer);
       return this.run(cmd, text, view);
     }
-    // « append » : on recolle la réponse à la phrase d'origine (« rebond » + « offensif »)
+    // « append » : une commande complète passe d'abord ; sinon on recolle la réponse à la phrase d'origine (« rebond » + « offensif »)
+    const nw = startNew();
+    if (nw) return nw;
     const joined = alts.map((a) => `${st.text} ${a}`);
     const { cmd, text } = this.best(joined, view);
     if (cmd.type === 'UNKNOWN' || cmd.type === 'ASK') return giveUp();

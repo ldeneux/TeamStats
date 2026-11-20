@@ -28,6 +28,8 @@ export interface ParseCtx {
   prefer?: Record<string, string>;
   /** La fenêtre de changement est ouverte à l'écran (permet « valider »). */
   subPanelOpen?: boolean;
+  /** Joueuse actuellement sélectionnée à l'écran (sert de joueuse par défaut). */
+  selectedId?: string | null;
   /** Exige qu'une joueuse soit sur le terrain pour enregistrer une action (comme l'interface). */
   requireOnCourt?: boolean;
 }
@@ -47,6 +49,7 @@ export type Cmd =
   | { type: 'SUB'; outs: string[]; ins: string[]; needsConfirm: true; say: string }
   | { type: 'SET_COURT'; ins: string[]; needsConfirm: true; say: string }
   | { type: 'NOOP'; say: string }
+  | { type: 'SELECT'; playerId: string | null; say: string }
   | { type: 'SUBPANEL'; op: 'open' | 'close' | 'validate'; say: string }
   | { type: 'UNDO'; playerId: string | null; eventId: string | null; needsConfirm: true; say: string }
   | { type: 'CLOCK'; running: boolean; say: string }
@@ -230,6 +233,9 @@ const RULES: Array<[RegExp, string]> = [
   [/\bchronos?\b|\bchronometre\b/g, ' CHRONO '],
   [/\b(?:arrete|arreter|arretez|arrets?|stop|stoppe|stopper|pause|coupe|couper)\b/g, ' VSTOP '],
   [/\b(?:demarre|demarrer|demarrez|debuts?|depart|commence|commencer|lance|lancer|lancez|relance|relancer|start|go)\b/g, ' VSTART '],
+  // sélection d'une joueuse à l'écran
+  [/\b(?:deselectionne|deselectionner|deselectionnez|deselection|aucune joueuse)\b/g, ' DESELECT '],
+  [/\b(?:selectionne|selectionner|selectionnez|selection|choisis|choisir|choisissez)\b/g, ' SELECT '],
   // fenêtre de changement : afficher / valider / fermer
   [/\b(?:afficher|affiche|affichez|ouvre|ouvrir|ouvrez|montre|montrer)(?: (?:le|la|les|l|une|un))?(?: fenetre)?(?: (?:de|des|du|d))? ?(?:changements?|remplacements?|joueuses?)\b/g, ' PANELOPEN '],
   [/\b(?:valider|valide|validez)(?: (?:le|la|les))? (?:changements?|remplacements?)\b/g, ' PANELVALID '],
@@ -455,7 +461,7 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
   const env: Env = { players, ctx, onCourt: new Set(ctx.onCourt) };
   const courtSize = ctx.courtSize ?? 5;
   const toks = tokenize(text, roster);
-  if (!toks.length) return { type: 'UNKNOWN', say: "Je n'ai pas compris." };
+  if (!toks.length) return { type: 'UNKNOWN', say: "Commande non reconnue." };
 
   const codes = toks.filter((t): t is CodeTok => t.k === 'code').map((t) => t.c);
   const has = (c: string) => codes.includes(c);
@@ -483,6 +489,16 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
     const r = resolveTok(desig[0], 'any', env);
     if (!r.ok) return r.kind === 'ask' ? askName(r, env) : { type: 'REFUSE', say: r.say };
     return { type: 'Q_FOULS', playerId: r.id, say: `Fautes de ${designation(env, r.id, r.byNumber)}` };
+  }
+
+  // ───── Sélection d'une joueuse (sans action)
+  if (has('DESELECT')) return { type: 'SELECT', playerId: null, say: 'Sélection retirée' };
+  if (has('SELECT')) {
+    if (desig.length !== 1) return desig.length > 1 ? { type: 'REFUSE', say: 'Une seule joueuse à la fois.' } : { type: 'ASK', kind: 'append', say: 'Quelle joueuse ?' };
+    const r = resolveTok(desig[0], 'court', env);
+    if (!r.ok) return r.kind === 'ask' ? askName(r, env) : { type: 'REFUSE', say: r.say };
+    if (env.onCourt.size > 0 && !env.onCourt.has(r.id)) return { type: 'REFUSE', say: `${designation(env, r.id, r.byNumber)} n'est pas sur le terrain.` };
+    return { type: 'SELECT', playerId: r.id, say: `${designation(env, r.id, r.byNumber)} sélectionnée` };
   }
 
   // ───── Fenêtre de changement (écran)
@@ -564,10 +580,11 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
 
   if (!actionCodes.length && !hasLF) {
     if (who && !unknown.length) return { type: 'ASK', kind: 'append', say: `${designation(env, who, byNumber)}, quoi ?` };
-    return { type: 'UNKNOWN', say: "Je n'ai pas compris.", heard: unknown.join(' ') };
+    return { type: 'UNKNOWN', say: "Commande non reconnue.", heard: unknown.join(' ') };
   }
   if (actionCodes.length > 1 || (actionCodes.length === 1 && hasLF)) return { type: 'REFUSE', say: 'Une seule action à la fois.' };
-  if (!who) return needsPlayer ? { type: 'ASK', kind: 'append', say: 'Quelle joueuse ?' } : { type: 'UNKNOWN', say: "Je n'ai pas compris." };
+  if (!who && ctx.selectedId && players.some((p) => p.id === ctx.selectedId)) { who = ctx.selectedId; byNumber = false; }
+  if (!who) return needsPlayer ? { type: 'ASK', kind: 'append', say: 'Quelle joueuse ?' } : { type: 'UNKNOWN', say: "Commande non reconnue." };
 
   if (ctx.requireOnCourt !== false && env.onCourt.size > 0 && !env.onCourt.has(who)) {
     return { type: 'REFUSE', say: `${designation(env, who, byNumber)} n'est pas sur le terrain.` };
@@ -707,7 +724,7 @@ function parseSubstitution(
     return { type: 'ASK', kind: 'append', say: 'Quelles joueuses ?' };
   }
 
-  for (const u of unknown) issues.push(`mot non compris : ${u}`);
+  if (unknown.length) return { type: 'UNKNOWN', say: 'Commande non reconnue.' };
   if (issues.length) return { type: 'REFUSE', say: issues.join('. ') + '.' };
 
   const outIds: string[] = [], inIds: string[] = [];

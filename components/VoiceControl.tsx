@@ -20,6 +20,9 @@ export interface VoiceActions {
   deleteEvent: (eventId: string) => void;
   setClockRunning: (running: boolean) => void;
   subPanel: (op: 'open' | 'close' | 'validate') => void;
+  /** Retour visuel : sélectionne la joueuse et allume la touche (action = libellé d'événement, ou « CHRONO »). */
+  highlight: (playerId: string | null, action: string) => void;
+  selectPlayer: (playerId: string | null) => void;
 }
 
 interface Props {
@@ -30,6 +33,7 @@ interface Props {
   scoreAway: number;
   period: number;
   clockRunning: boolean;
+  selectedPlayerId: string | null;
   subPanel: { open: boolean; outCount: number; inCount: number };
   actions: VoiceActions;
 }
@@ -63,6 +67,7 @@ export default function VoiceControl(props: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [heard, setHeard] = useState<string[]>([]);
   const [said, setSaid] = useState('');
+  const [saidKind, setSaidKind] = useState<'ok' | 'wait' | 'info' | 'error'>('info');
   const [diag, setDiag] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showNames, setShowNames] = useState(false);
@@ -86,6 +91,7 @@ export default function VoiceControl(props: Props) {
     scoreAway: props.scoreAway,
     period: props.period,
     clockRunning: props.clockRunning,
+    selectedPlayerId: props.selectedPlayerId,
     subPanel: props.subPanel,
   };
   const actionsRef = useRef<VoiceActions>(props.actions);
@@ -101,16 +107,22 @@ export default function VoiceControl(props: Props) {
   useEffect(() => { setAliases(readAliases()); setOnline(typeof navigator === 'undefined' ? true : navigator.onLine !== false); }, []);
 
   // ───── Exécution des actions décidées par le dialogue (via les adaptateurs de page.tsx)
-  const apply = (a: VoiceAction) => {
-    const act = actionsRef.current;
+  // Durée pendant laquelle la joueuse et la touche restent allumées avant que l'événement soit enregistré.
+  const SHOW_BEFORE_MS = 500;
+  const apply = async (a: VoiceAction) => {
     switch (a.t) {
-      case 'event': act.recordEvent(a.action, a.playerId, a.points); break;
-      case 'opp': act.bumpScore('away', a.delta); break;
-      case 'sub': act.applySubstitution(a.outs, a.ins); break;
-      case 'ft': act.submitFreeThrows(a.playerId, a.made, a.attempts); break;
-      case 'delete': act.deleteEvent(a.eventId); break;
-      case 'clock': act.setClockRunning(a.running); break;
-      case 'subPanel': act.subPanel(a.op); break;
+      case 'event':
+        actionsRef.current.highlight(a.playerId, a.action);
+        await sleep(SHOW_BEFORE_MS);
+        actionsRef.current.recordEvent(a.action, a.playerId, a.points);
+        break;
+      case 'opp': actionsRef.current.bumpScore('away', a.delta); break;
+      case 'sub': actionsRef.current.applySubstitution(a.outs, a.ins); break;
+      case 'ft': actionsRef.current.highlight(a.playerId, 'LF'); actionsRef.current.submitFreeThrows(a.playerId, a.made, a.attempts); break;
+      case 'delete': actionsRef.current.deleteEvent(a.eventId); break;
+      case 'clock': actionsRef.current.highlight(null, 'CHRONO'); actionsRef.current.setClockRunning(a.running); break;
+      case 'subPanel': actionsRef.current.subPanel(a.op); break;
+      case 'select': actionsRef.current.selectPlayer(a.playerId); break;
     }
   };
 
@@ -121,14 +133,16 @@ export default function VoiceControl(props: Props) {
       const dialog = dialogRef.current as VoiceDialog;
       const res = dialog.handle(alts, viewRef.current);
       setHeard(alts);
-      for (let i = 0; i < res.actions.length; i++) {
-        if (i > 0) await sleep(5); // identifiants d'événements = Date.now() : jamais deux dans la même milliseconde
-        apply(res.actions[i]);
-      }
-      if (res.actions.length) await sleep(30);
+      // On répond tout de suite à voix haute ; l'écran s'allume pendant ce temps.
       setSaid(res.say.join('. '));
+      setSaidKind(res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait' : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(res.say.join(' ')) ? 'error' : 'info');
       setDialogStatus(dialog.status());
       engineRef.current?.speak(res.say);
+      for (let i = 0; i < res.actions.length; i++) {
+        if (i > 0) await sleep(5); // identifiants d'événements = Date.now() : jamais deux dans la même milliseconde
+        await apply(res.actions[i]);
+      }
+      if (res.actions.length) await sleep(30);
     }).catch(() => undefined);
   };
 
@@ -245,7 +259,11 @@ export default function VoiceControl(props: Props) {
       {!online && !enabled && <p className="text-[10px] text-amber-300 font-semibold">Hors connexion : commande vocale indisponible, les boutons fonctionnent.</p>}
       {message && <p className="text-[11px] text-rose-300 font-semibold">{message}</p>}
 
-      {enabled && said && <p className="text-[11px] text-slate-300"><span className="text-slate-500">Dit : </span>{said}</p>}
+      {enabled && said && (
+        <p className={`text-xs font-black rounded-xl px-3 py-2 border ${saidKind === 'ok' ? 'bg-emerald-600/25 border-emerald-400 text-emerald-100' : saidKind === 'wait' ? 'bg-amber-500/20 border-amber-400 text-amber-100' : saidKind === 'error' ? 'bg-rose-600/25 border-rose-400 text-rose-100' : 'bg-slate-800 border-slate-600 text-slate-100'}`}>
+          {saidKind === 'ok' ? '✅ ' : saidKind === 'wait' ? '⏳ ' : saidKind === 'error' ? '⚠️ ' : '💬 '}{said}
+        </p>
+      )}
       {enabled && diag && (
         <div className="text-[10px] text-slate-400 font-mono bg-slate-950/60 rounded-lg p-2 space-y-0.5">
           <p>Entendu :</p>
@@ -288,6 +306,7 @@ export default function VoiceControl(props: Props) {
           <p>Fautes : « faute de Chloé » (personnelle), « faute sur Chloé » (subie), « faute technique / antisportive / disqualifiante » (à confirmer).</p>
           <p>Lancers francs : « lancer franc Chloé », puis « premier réussi », « deuxième raté », « terminé » — ou en une phrase « Chloé 1/3 ».</p>
           <p>Changements (à confirmer par « oui ») : « remplacement Chloé, Laura par Hinde, Hanaé », « sortie de… entrée de… », « sur le terrain on a [5 prénoms] ».</p>
+          <p>Sélection : « sélectionne Chloé », « sélectionner la 5 », « désélectionner ». La joueuse sélectionnée sert ensuite de joueuse par défaut : « deux points » suffit.</p>
           <p>Fenêtre de changement : « afficher changement », puis cocher à l’écran et « valider », ou « fermer ».</p>
           <p>Annuler : « annuler la dernière commande » ou « annuler dernière action Chloé », puis « oui ». Un changement ne s’annule pas : faire un nouveau changement.</p>
           <p>Chrono : « démarrer chrono », « arrêt chrono », « début match », « reprise du jeu », « temps mort ». Prévoir 1 à 3 secondes de décalage entre la voix et l’effet.</p>

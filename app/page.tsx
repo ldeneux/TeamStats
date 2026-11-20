@@ -10,6 +10,7 @@ import { splitFrom, withFrom } from '../lib/renforts';
 import { adminApi } from '../lib/adminApi';
 import { StatsPdfContext } from '../lib/statsPdfContext';
 import { isLockedDate, useLockedBefore } from '../lib/seasonLock';
+import VoiceControl from '../components/VoiceControl';
 
 export interface Player { id: string; number: number; name: string; from?: string; /* renfort : équipe d'origine (ex. U13F) */ }
 export interface SavedTeam { id: string; name: string; roster: Player[]; }
@@ -484,6 +485,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
   const [playingTime, setPlayingTime] = useState<{ [playerId: string]: { [period: number]: number } }>({});
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  // Retour visuel de la commande vocale : la touche et la joueuse concernées s'allument ~1,5 s.
+  const [voiceFlash, setVoiceFlash] = useState<{ playerId: string | null; action: string } | null>(null);
+  const voiceFlashStamp = useRef(0);
+  const vf = (action: string) => (voiceFlash?.action === action ? ' outline outline-4 outline-white outline-offset-2 z-10 relative' : '');
   const [ftAttempts, setFtAttempts] = useState<[boolean | null, boolean | null, boolean | null]>([null, null, null]);
 
   const [isSubbing, setIsSubbing] = useState(false);
@@ -1485,7 +1490,13 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     });
 
     if (details.length === 0) return;
-    recordEvent(`LANCERS FRANCS (${points}/${details.length})`, selectedPlayerId, points);
+    submitFreeThrows(selectedPlayerId, points, details.length);
+  };
+
+  // Enregistre un événement LANCERS FRANCS (x/n) de x points. Utilisé par le bouton et par la commande vocale.
+  const submitFreeThrows = (playerId: string, made: number, attempts: number) => {
+    if (!playerId || attempts < 1 || made < 0 || made > attempts) return;
+    recordEvent(`LANCERS FRANCS (${made}/${attempts})`, playerId, made);
   };
 
   const toggleSelectOut = (id: string) => {
@@ -1502,31 +1513,33 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     }
   };
 
-  const validateSubstitutions = () => {
-    if (selectedOutIds.length !== selectedInIds.length || selectedOutIds.length === 0) return;
-
-    const matchNotStarted = game.period === 1 && game.clockSeconds === game.config.periodMinutes * 60 && game.events.length === 0;
+  // Applique un changement (sortantes / entrantes). Utilisé par le bouton « Valider » et par la commande vocale.
+  // Règle conservée : match non commencé -> pas d'événement. Cinq de départ vide (outIds vide) -> fixé sans événement.
+  const applySubstitution = (outIds: string[], inIds: string[]) => {
+    const settingStart = outIds.length === 0 && inIds.length > 0 && game.onCourtPlayerIds.length === 0;
+    if (!settingStart && (outIds.length !== inIds.length || outIds.length === 0)) return;
 
     setGame(prev => {
+      const matchNotStarted = prev.period === 1 && prev.clockSeconds === prev.config.periodMinutes * 60 && prev.events.length === 0;
       const updatedOnCourt = [
-        ...prev.onCourtPlayerIds.filter(id => !selectedOutIds.includes(id)),
-        ...selectedInIds
+        ...prev.onCourtPlayerIds.filter(id => !outIds.includes(id)),
+        ...inIds
       ];
 
-      if (matchNotStarted) {
+      if (matchNotStarted || outIds.length === 0) {
         return { ...prev, onCourtPlayerIds: updatedOnCourt };
       }
 
-      const pOutNames = selectedOutIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
-      const pInNames = selectedInIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
+      const pOutNames = outIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
+      const pInNames = inIds.map(id => "#" + prev.matchRoster.find(p => p.id === id)?.number).join(', ');
 
       const subEvent: GameEvent = {
         id: Date.now().toString(),
         timestamp: new Date().toLocaleTimeString(),
         period: prev.period,
         clockTime: formatTime(prev.clockSeconds),
-        actionType: `REMPLACEMENT (${selectedOutIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
-        playerId: selectedInIds[0]
+        actionType: `REMPLACEMENT (${outIds.length}j) - Out: ${pOutNames} / In: ${pInNames}`,
+        playerId: inIds[0]
       };
 
       return { ...prev, onCourtPlayerIds: updatedOnCourt, events: [subEvent, ...prev.events] };
@@ -1535,6 +1548,28 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setIsSubbing(false);
     setSelectedOutIds([]);
     setSelectedInIds([]);
+  };
+
+  const validateSubstitutions = () => applySubstitution(selectedOutIds, selectedInIds);
+
+  // Démarre / arrête le chrono par mise à jour fonctionnelle (jamais d'état périmé) : commande vocale.
+  // Le bouton START/PAUSE garde son fonctionnement d'origine.
+  const setClockRunning = (running: boolean) => setGame(prev => ({ ...prev, isClockRunning: running }));
+
+  const voiceHighlight = (playerId: string | null, action: string) => {
+    if (playerId && !isSubbing) setSelectedPlayerId(playerId);
+    const stamp = Date.now();
+    voiceFlashStamp.current = stamp;
+    setVoiceFlash({ playerId, action });
+    setTimeout(() => { if (voiceFlashStamp.current === stamp) setVoiceFlash(null); }, 1500);
+  };
+  const voiceSelect = (playerId: string | null) => { if (!isSubbing) setSelectedPlayerId(playerId); };
+
+  // Fenêtre de changement pilotée à la voix : afficher / valider (sélection faite à l'écran) / fermer.
+  const voiceSubPanel = (op: 'open' | 'close' | 'validate') => {
+    if (op === 'open') { setSelectedPlayerId(null); setIsSubbing(true); }
+    else if (op === 'close') { setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]); }
+    else validateSubstitutions();
   };
 
   const deleteEvent = (eventId: string) => {
@@ -2514,7 +2549,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                           <div className="text-[10px] text-slate-500 mt-1 truncate">
                             {d ? d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Date inconnue'}
                             {hasTime && d ? ` à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}
-                            {u.numero_journee ? ` · ${/coupe|tour\b/i.test(String(u.division_label || '')) ? 'T' : 'J'}${u.numero_journee}` : ''}
+                            {u.numero_journee ? ` · J${u.numero_journee}` : ''}
                             {` · ID : ${u.ffbb_rencontre_id}`}
                             {playedCal && <span className="text-emerald-400"> · joué, stats non saisies</span>}
                           </div>
@@ -2616,6 +2651,18 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
+            <VoiceControl
+              roster={game.matchRoster}
+              onCourtPlayerIds={game.onCourtPlayerIds}
+              events={game.events}
+              scoreHome={game.scoreHome}
+              scoreAway={game.scoreAway}
+              period={game.period}
+              clockRunning={game.isClockRunning}
+              selectedPlayerId={selectedPlayerId}
+              subPanel={{ open: isSubbing, outCount: selectedOutIds.length, inCount: selectedInIds.length }}
+              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning, subPanel: voiceSubPanel, highlight: voiceHighlight, selectPlayer: voiceSelect }}
+            />
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               {matchConfig.matchDate && (
                 <p className="text-center text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
@@ -2666,7 +2713,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                     <p onDoubleClick={startEditingClock} title="Double-clic pour corriger le chrono" className="text-3xl font-mono font-bold my-1 text-white cursor-pointer select-none">{formatTime(game.clockSeconds)}</p>
                   )}
                   <div className="flex justify-center space-x-1">
-                    <button onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})} className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600' : 'bg-emerald-600'}`}>{game.isClockRunning ? 'PAUSE' : 'START'}</button>
+                    <button onClick={() => setGame({...game, isClockRunning: !game.isClockRunning})} className={`text-[10px] font-extrabold px-3 py-1 rounded-lg transition ${game.isClockRunning ? 'bg-rose-600' : 'bg-emerald-600'}${vf('CHRONO')}`}>{game.isClockRunning ? 'PAUSE' : 'START'}</button>
                     <button onClick={() => setConfirmResetPeriod(true)} className="text-[10px] font-extrabold px-2 py-1 bg-slate-800 text-slate-400 rounded-lg">RESET</button>
                   </div>
                 </div>
@@ -2724,7 +2771,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                       <button
                         key={p.id}
                         onClick={() => setSelectedPlayerId(isSelected ? null : p.id)}
-                        className={`flex flex-col items-center p-2 rounded-2xl border transition hover:bg-slate-700/80 ${p.from ? 'bg-emerald-900/50' : 'bg-slate-800/90'} ${isSelected ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg scale-105' : p.from ? 'border-emerald-500/70' : 'border-slate-700/80'}`}
+                        className={`flex flex-col items-center p-2 rounded-2xl border transition hover:bg-slate-700/80 ${voiceFlash?.playerId === p.id ? 'outline outline-4 outline-emerald-400 outline-offset-2 ' : ''}${p.from ? 'bg-emerald-900/50' : 'bg-slate-800/90'} ${isSelected ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg scale-105' : p.from ? 'border-emerald-500/70' : 'border-slate-700/80'}`}
                       >
                         <span className={`text-lg font-black ${isSelected ? 'text-amber-400' : 'text-white'}`}>#{p.number}</span>
                         <span className={`text-[10px] font-bold truncate max-w-full ${isSelected ? 'text-amber-400' : 'text-white'}`}>{getShortDisplayName(p, game.matchRoster)}</span>
@@ -2808,16 +2855,16 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   <div className="bg-slate-800/60 p-2.5 rounded-2xl border border-slate-700/60 space-y-2">
                     <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir à 2 Points</span>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button onClick={() => recordEvent('TIR 2PTS RÉUSSI', panelPlayer.id, 2)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+2)</button>
-                      <button onClick={() => recordEvent('TIR 2PTS Manqué', panelPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
+                      <button onClick={() => recordEvent('TIR 2PTS RÉUSSI', panelPlayer.id, 2)} className={`bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow${vf('TIR 2PTS RÉUSSI')}`}>🟢 Réussi (+2)</button>
+                      <button onClick={() => recordEvent('TIR 2PTS Manqué', panelPlayer.id, 0)} className={`bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs${vf('TIR 2PTS Manqué')}`}>🔴 Manqué</button>
                     </div>
                   </div>
 
                   <div className="bg-slate-800/60 p-2.5 rounded-2xl border border-slate-700/60 space-y-2">
                     <span className="text-[11px] font-extrabold text-slate-400 block uppercase">Tir à 3 Points</span>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button onClick={() => recordEvent('TIR 3PTS RÉUSSI', panelPlayer.id, 3)} className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow">🟢 Réussi (+3)</button>
-                      <button onClick={() => recordEvent('TIR 3PTS Manqué', panelPlayer.id, 0)} className="bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs">🔴 Manqué</button>
+                      <button onClick={() => recordEvent('TIR 3PTS RÉUSSI', panelPlayer.id, 3)} className={`bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2 rounded-xl text-xs shadow${vf('TIR 3PTS RÉUSSI')}`}>🟢 Réussi (+3)</button>
+                      <button onClick={() => recordEvent('TIR 3PTS Manqué', panelPlayer.id, 0)} className={`bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2 rounded-xl text-xs${vf('TIR 3PTS Manqué')}`}>🔴 Manqué</button>
                     </div>
                   </div>
                 </div>
@@ -2863,24 +2910,24 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 pt-1">
-                  <button onClick={() => recordEvent('REBOND OFFENSIF', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🗑️ Rebond Off.</button>
-                  <button onClick={() => recordEvent('REBOND DÉFENSIF', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🛡️ Rebond Déf.</button>
-                  <button onClick={() => recordEvent('PASSE DÉCISIVE', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🎯 Assist</button>
+                  <button onClick={() => recordEvent('REBOND OFFENSIF', panelPlayer.id)} className={`bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl${vf('REBOND OFFENSIF')}`}>🗑️ Rebond Off.</button>
+                  <button onClick={() => recordEvent('REBOND DÉFENSIF', panelPlayer.id)} className={`bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl${vf('REBOND DÉFENSIF')}`}>🛡️ Rebond Déf.</button>
+                  <button onClick={() => recordEvent('PASSE DÉCISIVE', panelPlayer.id)} className={`bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl${vf('PASSE DÉCISIVE')}`}>🎯 Assist</button>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <button onClick={() => recordEvent('INTERCEPTION', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">✋ Interception</button>
-                  <button onClick={() => recordEvent('PERTE DE BALLE', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">💨 Perte de balles</button>
-                  <button onClick={() => recordEvent('CONTRE', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🚫 Contre</button>
-                  <button onClick={() => recordEvent('CONTRE SUBI', panelPlayer.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl">🧱 Contre subi</button>
+                  <button onClick={() => recordEvent('INTERCEPTION', panelPlayer.id)} className={`bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl${vf('INTERCEPTION')}`}>✋ Interception</button>
+                  <button onClick={() => recordEvent('PERTE DE BALLE', panelPlayer.id)} className={`bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl${vf('PERTE DE BALLE')}`}>💨 Perte de balles</button>
+                  <button onClick={() => recordEvent('CONTRE', panelPlayer.id)} className={`bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl${vf('CONTRE')}`}>🚫 Contre</button>
+                  <button onClick={() => recordEvent('CONTRE SUBI', panelPlayer.id)} className={`bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold py-2.5 rounded-xl${vf('CONTRE SUBI')}`}>🧱 Contre subi</button>
                 </div>
 
                 <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 border-t border-slate-800 pt-2">
-                  <button onClick={() => recordEvent('FAUTE SUBIE', panelPlayer.id)} className="bg-blue-950/60 hover:bg-blue-900 border border-blue-800/80 text-blue-200 text-xs font-bold py-2 rounded-xl">🛡️ Faute Subie</button>
-                  <button onClick={() => recordEvent('FAUTE PERSONNELLE', panelPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Perso</button>
-                  <button onClick={() => recordEvent('FAUTE TECHNIQUE', panelPlayer.id)} className="bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl">⚠️ Faute Tech.</button>
-                  <button onClick={() => recordEvent('FAUTE ANTISPORTIVE', panelPlayer.id)} className="bg-rose-950/80 hover:bg-rose-900 border border-rose-700 text-rose-100 text-xs font-bold py-2 rounded-xl">⚠️ Faute Antisp.</button>
-                  <button onClick={() => recordEvent('FAUTE DISQUALIFIANTE', panelPlayer.id)} className="bg-rose-900 hover:bg-rose-800 text-white text-xs font-bold py-2 rounded-xl">🟥 Disqual.</button>
+                  <button onClick={() => recordEvent('FAUTE SUBIE', panelPlayer.id)} className={`bg-blue-950/60 hover:bg-blue-900 border border-blue-800/80 text-blue-200 text-xs font-bold py-2 rounded-xl${vf('FAUTE SUBIE')}`}>🛡️ Faute Subie</button>
+                  <button onClick={() => recordEvent('FAUTE PERSONNELLE', panelPlayer.id)} className={`bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl${vf('FAUTE PERSONNELLE')}`}>⚠️ Faute Perso</button>
+                  <button onClick={() => recordEvent('FAUTE TECHNIQUE', panelPlayer.id)} className={`bg-rose-950/60 hover:bg-rose-900 border border-rose-800/80 text-rose-200 text-xs font-bold py-2 rounded-xl${vf('FAUTE TECHNIQUE')}`}>⚠️ Faute Tech.</button>
+                  <button onClick={() => recordEvent('FAUTE ANTISPORTIVE', panelPlayer.id)} className={`bg-rose-950/80 hover:bg-rose-900 border border-rose-700 text-rose-100 text-xs font-bold py-2 rounded-xl${vf('FAUTE ANTISPORTIVE')}`}>⚠️ Faute Antisp.</button>
+                  <button onClick={() => recordEvent('FAUTE DISQUALIFIANTE', panelPlayer.id)} className={`bg-rose-900 hover:bg-rose-800 text-white text-xs font-bold py-2 rounded-xl${vf('FAUTE DISQUALIFIANTE')}`}>🟥 Disqual.</button>
                 </div>
               </div>
             )}
