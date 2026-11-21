@@ -4,8 +4,33 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+export type EngineMode = 'auto' | 'cloud' | 'local';
+export type LocalAvailability = 'available' | 'downloadable' | 'downloading' | 'unavailable' | 'unknown';
+export interface LocalSupport { api: boolean; availability: LocalAvailability; phrases: boolean }
+export interface PhraseHint { phrase: string; boost: number }
+
+/** Chrome 139+ : reconnaissance sur l'appareil (processLocally). Vérifie ce que CE navigateur sait faire en français. */
+export async function checkLocalSupport(): Promise<LocalSupport> {
+  const Ctor = getCtor();
+  if (!Ctor) return { api: false, availability: 'unavailable', phrases: false };
+  const phrases = typeof window !== 'undefined' && 'SpeechRecognitionPhrase' in (window as any) && 'phrases' in (Ctor.prototype || {});
+  if (typeof Ctor.available !== 'function') return { api: false, availability: 'unknown', phrases };
+  try {
+    const a = await Ctor.available({ langs: ['fr-FR'], processLocally: true });
+    const v = String(a) as LocalAvailability;
+    return { api: true, availability: (['available', 'downloadable', 'downloading', 'unavailable'] as string[]).includes(v) ? v : 'unknown', phrases };
+  } catch { return { api: true, availability: 'unknown', phrases }; }
+}
+
+/** Télécharge le modèle français pour le mode hors ligne (réseau nécessaire, à lancer depuis un bouton). */
+export async function installLocal(): Promise<boolean> {
+  const Ctor = getCtor();
+  if (!Ctor || typeof Ctor.install !== 'function') return false;
+  try { return !!(await Ctor.install({ langs: ['fr-FR'], processLocally: true })); } catch { return false; }
+}
+
 export type EngineState = 'off' | 'starting' | 'listening' | 'speaking' | 'error';
-export type EngineErrorKind = 'unsupported' | 'not-allowed' | 'network' | 'no-mic' | 'other';
+export type EngineErrorKind = 'unsupported' | 'not-allowed' | 'network' | 'no-mic' | 'no-local' | 'other';
 
 export interface VoiceEngineHandlers {
   /** Une phrase finale : les alternatives, la plus probable d'abord. */
@@ -13,6 +38,12 @@ export interface VoiceEngineHandlers {
   onState: (s: EngineState) => void;
   /** Erreur fatale : le mode vocal doit être coupé (message à afficher). */
   onFatal: (kind: EngineErrorKind, message: string) => void;
+  /** Moteur réellement utilisé : en ligne (cloud) ou sur l'appareil. */
+  onEngine?: (e: 'cloud' | 'local') => void;
+  /** Réglage choisi par l'utilisateur (relu à chaque ouverture de l'écoute). */
+  getMode?: () => EngineMode;
+  /** Mots à favoriser (prénoms, vocabulaire) quand le navigateur sait le faire. */
+  getPhrases?: () => PhraseHint[];
 }
 
 const getCtor = (): any => {
@@ -29,6 +60,7 @@ const ERR_MSG: Record<EngineErrorKind, string> = {
   'not-allowed': "Micro refusé. Autorisez le micro pour ce site dans le navigateur.",
   network: "Pas de réseau pour la reconnaissance vocale. Les boutons restent utilisables.",
   'no-mic': "Aucun micro détecté.",
+  'no-local': "Hors ligne : le français n'est pas installé sur l'appareil. Connectez-vous et touchez « Préparer le mode hors ligne ».",
   other: "Erreur de reconnaissance vocale.",
 };
 
@@ -40,6 +72,7 @@ export class VoiceEngine {
   private recentStarts: number[] = [];
   private speakId = 0;
   private state: EngineState = 'off';
+  private forceLocal = false;   // le réseau a lâché : on bascule sur la reconnaissance de l'appareil
 
   constructor(private h: VoiceEngineHandlers) {}
 
@@ -53,6 +86,14 @@ export class VoiceEngine {
     this.setState('starting');
     this.openRecognition();
     return true;
+  }
+
+  /** Relit le mode / le réseau et rouvre l'écoute (ex. : le réseau vient de partir ou de revenir). */
+  refresh(): void {
+    if (!this.active) return;
+    this.forceLocal = false;
+    this.closeRecognition();
+    if (!this.speaking) this.openRecognition();
   }
 
   stop(): void {
@@ -89,8 +130,19 @@ export class VoiceEngine {
     this.recentStarts.push(now);
     const delay = this.recentStarts.length > 6 ? 2000 : 250;
 
+    const mode: EngineMode = this.h.getMode?.() ?? 'auto';
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    const local = mode === 'local' || (mode === 'auto' && (offline || this.forceLocal));
     const rec = new Ctor();
     rec.lang = 'fr-FR';
+    if (local) { try { rec.processLocally = true; } catch { /* non géré */ } }
+    this.h.onEngine?.(local ? 'local' : 'cloud');
+    // Liste de mots favorisés (prénoms, commandes) : seulement si le navigateur la gère.
+    try {
+      const hints = this.h.getPhrases?.() ?? [];
+      const PhraseCtor = (window as any).SpeechRecognitionPhrase;
+      if (hints.length && PhraseCtor && 'phrases' in rec) rec.phrases = hints.map((x) => new PhraseCtor(x.phrase, x.boost));
+    } catch { /* ignoré : la reconnaissance marche sans */ }
     rec.continuous = true;
     rec.interimResults = false;
     rec.maxAlternatives = 5;
@@ -110,7 +162,12 @@ export class VoiceEngine {
       const code = String(e?.error || '');
       if (code === 'no-speech' || code === 'aborted') return; // silence ou arrêt volontaire : on relance sans bruit
       if (code === 'not-allowed' || code === 'service-not-allowed') { this.fatal('not-allowed'); return; }
-      if (code === 'network') { this.fatal('network'); return; }
+      if (code === 'language-not-supported') { this.fatal(local ? 'no-local' : 'other'); return; }
+      if (code === 'network') {
+        // Réseau perdu : on tente la reconnaissance sur l'appareil avant d'abandonner.
+        if (!local && mode !== 'cloud' && !this.forceLocal) { this.forceLocal = true; return; }
+        this.fatal(local ? 'no-local' : 'network'); return;
+      }
       if (code === 'audio-capture') { this.fatal('no-mic'); return; }
       // autre erreur : on laisse onend relancer
     };

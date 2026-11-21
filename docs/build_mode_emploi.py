@@ -373,7 +373,7 @@ def page_vocal():
         ('« Commande non reconnue »', "Répétez plus lentement et plus près du micro. Si le prénom n'est jamais compris, ajoutez sa prononciation avec le bouton Prénoms (ex. « Candy, kandis »). Le mode diagnostic montre ce que le navigateur a entendu."),
         ("L'appli pose une question (« Quelle joueuse ? », « offensif ou défensif ? »)", "Répondez simplement (« Léa », « offensif »), ou dites directement une autre commande complète : la question est abandonnée."),
         ("« Untel n'est pas sur le terrain »", "L'action est refusée comme avec les boutons. Faites d'abord le changement, puis répétez l'action."),
-        ('Rien ne se passe', "Vérifiez que l'interrupteur est vert (ACTIVE), que le réseau est présent et que le micro est autorisé pour le site dans le navigateur."),
+        ('Rien ne se passe', "Vérifiez que l'interrupteur est vert (ACTIVE), que le réseau est présent (ou le mode hors ligne prêt) et que le micro est autorisé pour le site dans le navigateur."),
         ('Un mauvais prénom ou une mauvaise action est enregistré', "Dites « annule la dernière commande », ou « annule dernière action » suivi du prénom."))],
         [150, CW - 150], ('Situation', 'Que faire ?'))
     return [Banner(14, 'La commande vocale', 'Saisir les actions à la voix, sans quitter le match des yeux'),
@@ -381,7 +381,7 @@ def page_vocal():
            f"{b('Les boutons restent toujours là')} et font tout, comme avant : la voix est un plus, jamais une obligation."),
          H2('Mettre en route'),
          NumItem(1, f"Touchez {chip('COMMANDE VOCALE : COUPÉE', 'gray')} : il devient {chip('ACTIVE', 'green')}. Le mode est coupé à chaque ouverture de l'appli. Autorisez le micro la première fois."),
-         NumItem(2, f"Il faut {b('Chrome')} et du {b('réseau')} (le navigateur envoie l'audio à son fournisseur pour le comprendre). Un {b('casque')} est conseillé : l'appli ne s'entend pas elle-même. L'écran reste allumé tant que le mode est actif."),
+         NumItem(2, f"Il faut {b('Chrome')}. En ligne, le navigateur envoie l'audio à son fournisseur pour le comprendre ; {b('hors ligne')}, la reconnaissance se fait sur l'appareil si vous l'avez préparée une fois avec du réseau (bouton {chip('Moteur', 'blue')} puis « Préparer le mode hors ligne » ; Chrome 139 ou plus, selon l'appareil). Un {b('casque')} est conseillé : l'appli ne s'entend pas elle-même. L'écran reste allumé tant que le mode est actif."),
          NumItem(3, f"Parlez naturellement, {b('une commande par phrase')}. L'appli répète en quelques mots (« Candice, deux points »). Un bandeau coloré donne le résultat : {b('vert')} enregistré, {b('orange')} en attente d'une réponse, {b('rouge')} commande non reconnue ou refusée. La joueuse et la touche concernées s'allument à l'écran."),
          H2('Comment parler'),
          NumItem(1, f"{b('Désigner une joueuse')} : par son {b('prénom')} ou son {b('numéro')} (« la 5 », « le 12 », « numéro 5 »). L'ordre est libre : « Léa deux points » ou « deux points pour Léa »."),

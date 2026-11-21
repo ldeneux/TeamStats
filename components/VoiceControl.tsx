@@ -6,7 +6,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { VoiceDialog, VoiceAction, VoiceView } from '../lib/voice/dialog';
 import { VoicePlayer, strip } from '../lib/voice/commands';
-import { VoiceEngine, EngineState, holdWakeLock, isRecognitionSupported, isSynthesisSupported, WakeLockHandle } from '../lib/voice/speech';
+import { VoiceEngine, EngineState, EngineMode, LocalSupport, PhraseHint, checkLocalSupport, installLocal, holdWakeLock, isRecognitionSupported, isSynthesisSupported, WakeLockHandle } from '../lib/voice/speech';
 
 export interface VoiceRosterPlayer { id: string; number: number; name: string }
 export interface VoiceEventLike { id: string; actionType: string; playerId: string; period: number }
@@ -41,6 +41,8 @@ interface Props {
 }
 
 const ALIAS_KEY = 'teamstats.voice.aliases.v1';
+const MODE_KEY = 'teamstats.voice.mode.v1';
+const VOCAB = ['lancer franc', 'lancers francs', 'interception', 'rebond offensif', 'rebond défensif', 'passe décisive', 'perte de balle', 'balle perdue', 'faute technique', 'faute antisportive', 'faute disqualifiante', 'faute subie', 'remplacement', 'sur le terrain on a', 'démarrer chrono', 'arrêt chrono', 'démarrer le match', 'temps mort', 'annule la dernière commande', 'deux points', 'trois points', 'adversaire', 'contrée', 'sélectionne'];
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Prénom prononcé : premier mot du nom ; vide si ce n'est pas un vrai prénom (« 5 », « J5 »…). */
@@ -75,6 +77,11 @@ export default function VoiceControl(props: Props) {
   const [showHelp, setShowHelp] = useState(false);
   const [showNames, setShowNames] = useState(false);
   const [online, setOnline] = useState(true);
+  const [showEngine, setShowEngine] = useState(false);
+  const [engineMode, setEngineMode] = useState<EngineMode>('auto');
+  const [activeEngine, setActiveEngine] = useState<'cloud' | 'local' | null>(null);
+  const [localSupport, setLocalSupport] = useState<LocalSupport | null>(null);
+  const [installing, setInstalling] = useState(false);
   const [aliases, setAliases] = useState<Record<string, string[]>>({});
 
   // ───── Toujours lire l'état le plus récent depuis les rappels asynchrones de la reconnaissance
@@ -106,8 +113,32 @@ export default function VoiceControl(props: Props) {
   const wakeRef = useRef<WakeLockHandle | null>(null);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const enabledRef = useRef(false);
+  const modeRef = useRef<EngineMode>('auto');
+  modeRef.current = engineMode;
+  const localReadyRef = useRef(false);
+  localReadyRef.current = localSupport?.availability === 'available';
 
-  useEffect(() => { setAliases(readAliases()); setOnline(typeof navigator === 'undefined' ? true : navigator.onLine !== false); }, []);
+  useEffect(() => {
+    setAliases(readAliases());
+    setOnline(typeof navigator === 'undefined' ? true : navigator.onLine !== false);
+    try { const m = window.localStorage.getItem(MODE_KEY); if (m === 'auto' || m === 'cloud' || m === 'local') setEngineMode(m); } catch { /* ignoré */ }
+    void checkLocalSupport().then(setLocalSupport);
+  }, []);
+
+  const changeMode = (m: EngineMode) => {
+    setEngineMode(m);
+    modeRef.current = m;
+    try { window.localStorage.setItem(MODE_KEY, m); } catch { /* ignoré */ }
+    engineRef.current?.refresh();
+  };
+  const prepareOffline = async () => {
+    setInstalling(true);
+    setMessage(null);
+    const ok = await installLocal();
+    setLocalSupport(await checkLocalSupport());
+    setInstalling(false);
+    if (!ok) setMessage("Le téléchargement du français pour le mode hors ligne n'a pas abouti (réseau, ou fonction absente de cette version de Chrome).");
+  };
 
   // ───── Exécution des actions décidées par le dialogue (via les adaptateurs de page.tsx)
   // Durée pendant laquelle la joueuse et la touche restent allumées avant que l'événement soit enregistré.
@@ -169,8 +200,8 @@ export default function VoiceControl(props: Props) {
 
   const startVoice = () => {
     setMessage(null);
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      setMessage('Pas de réseau : la commande vocale est indisponible. Les boutons fonctionnent comme d’habitude.');
+    if (typeof navigator !== 'undefined' && navigator.onLine === false && !(localReadyRef.current && modeRef.current !== 'cloud')) {
+      setMessage("Hors ligne : la reconnaissance sur l'appareil n'est pas prête. Connectez-vous une fois et touchez « Préparer le mode hors ligne » (bouton Moteur). Les boutons fonctionnent comme d’habitude.");
       return;
     }
     if (!isRecognitionSupported()) {
@@ -182,6 +213,12 @@ export default function VoiceControl(props: Props) {
       onResult: handleSpeech,
       onState: setEngineState,
       onFatal: (_kind, msg) => stopVoice(msg),
+      onEngine: setActiveEngine,
+      getMode: () => modeRef.current,
+      getPhrases: (): PhraseHint[] => [
+        ...viewRef.current.players.flatMap((p) => (p.name ? [p.name, ...(p.aliases ?? [])] : [])).map((phrase) => ({ phrase, boost: 5 })),
+        ...VOCAB.map((phrase) => ({ phrase, boost: 2 })),
+      ],
     });
     engineRef.current = engine;
     dialogRef.current?.cancel();
@@ -200,9 +237,13 @@ export default function VoiceControl(props: Props) {
   useEffect(() => {
     const goOffline = () => {
       setOnline(false);
-      if (enabledRef.current) stopVoice('Réseau perdu : commande vocale coupée. Les boutons fonctionnent.', 'Plus de réseau. Commande vocale coupée.');
+      if (!enabledRef.current) return;
+      if (localReadyRef.current && modeRef.current !== 'cloud') {
+        engineRef.current?.refresh(); // bascule sur la reconnaissance de l'appareil
+        engineRef.current?.speak('Hors ligne.');
+      } else stopVoice('Réseau perdu : commande vocale coupée (le mode hors ligne n’est pas installé). Les boutons fonctionnent.', 'Plus de réseau. Commande vocale coupée.');
     };
-    const goOnline = () => setOnline(true);
+    const goOnline = () => { setOnline(true); if (enabledRef.current) engineRef.current?.refresh(); };
     window.addEventListener('offline', goOffline);
     window.addEventListener('online', goOnline);
     return () => { window.removeEventListener('offline', goOffline); window.removeEventListener('online', goOnline); };
@@ -261,7 +302,7 @@ export default function VoiceControl(props: Props) {
           role="switch"
           aria-checked={enabled}
           onClick={toggle}
-          disabled={!enabled && !online}
+          disabled={!enabled && !online && !(localSupport?.availability === 'available' && engineMode !== 'cloud')}
           title={!online && !enabled ? 'Indisponible sans réseau' : 'Activer / couper la commande vocale'}
           className={`flex items-center gap-2 px-3 py-2 rounded-2xl text-xs font-black tracking-wide border transition disabled:opacity-40 ${enabled ? 'bg-emerald-600 border-emerald-300 text-white shadow' : 'bg-slate-800 border-slate-600 text-slate-300'}`}
         >
@@ -269,6 +310,7 @@ export default function VoiceControl(props: Props) {
           <span>COMMANDE VOCALE : {enabled ? 'ACTIVE' : 'COUPÉE'}</span>
         </button>
         <div className="flex items-center gap-1">
+          <button type="button" onClick={() => setShowEngine((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Moteur</button>
           <button type="button" onClick={() => setShowNames((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Prénoms</button>
           <button type="button" onClick={() => setShowHelp((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Aide</button>
         </div>
@@ -286,7 +328,7 @@ export default function VoiceControl(props: Props) {
         </div>
       )}
 
-      {!online && !enabled && <p className="text-[10px] text-amber-300 font-semibold">Hors connexion : commande vocale indisponible, les boutons fonctionnent.</p>}
+      {!online && !enabled && localSupport?.availability !== 'available' && <p className="text-[10px] text-amber-300 font-semibold">Hors connexion : mode hors ligne non prêt (bouton Moteur), les boutons fonctionnent.</p>}
       {message && <p className="text-[11px] text-rose-300 font-semibold">{message}</p>}
 
       {enabled && said && (
@@ -316,6 +358,32 @@ export default function VoiceControl(props: Props) {
         <label className="flex items-center gap-2 text-[10px] text-slate-500 select-none">
           <input type="checkbox" checked={diag} onChange={(e: { target: { checked: boolean } }) => setDiag(e.target.checked)} /> Mode diagnostic (afficher le texte entendu)
         </label>
+      )}
+
+      {showEngine && (
+        <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-2 space-y-1.5 text-[11px] text-slate-300">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-slate-200">Reconnaissance</span>
+            <select value={engineMode} onChange={(e: { target: { value: string } }) => changeMode(e.target.value as EngineMode)} className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white">
+              <option value="auto">Automatique (en ligne, sinon sur l’appareil)</option>
+              <option value="cloud">Toujours en ligne</option>
+              <option value="local">Toujours sur l’appareil</option>
+            </select>
+          </div>
+          <p>Moteur en cours : <b>{activeEngine === 'local' ? 'sur l’appareil (sans réseau)' : activeEngine === 'cloud' ? 'en ligne' : '—'}</b></p>
+          <p>
+            Mode hors ligne :{' '}
+            {!localSupport ? 'vérification…'
+              : localSupport.availability === 'available' ? <b className="text-emerald-300">prêt ✓</b>
+              : localSupport.availability === 'downloading' ? 'téléchargement en cours…'
+              : localSupport.api && localSupport.availability !== 'unavailable' ? <span className="text-amber-300">français non installé</span>
+              : <span className="text-rose-300">non disponible sur cet appareil (Chrome 139 ou plus récent requis, et selon la tablette)</span>}
+          </p>
+          {localSupport && localSupport.api && localSupport.availability !== 'available' && localSupport.availability !== 'unavailable' && (
+            <button type="button" disabled={installing || !online} onClick={prepareOffline} className="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{installing ? 'Téléchargement…' : 'Préparer le mode hors ligne'}</button>
+          )}
+          <p className="text-slate-500">À faire une fois, avec du réseau. Liste de mots favorisés (prénoms, commandes) : {localSupport?.phrases ? 'active' : 'non gérée par ce Chrome'}.</p>
+        </div>
       )}
 
       {showNames && (
@@ -355,7 +423,7 @@ export default function VoiceControl(props: Props) {
           <p><b>Score adverse</b> : « adversaire deux points », « adversaire moins un ». <b>Questions</b> : « score », « qui est sur le terrain », « combien de fautes {ex.p[3]} », « fautes équipe ».</p>
           <p><b>Réponses</b> : « oui » / « non » pour un changement ; si l’appli attend une réponse et que vous dites une autre commande complète, elle abandonne l’attente et exécute la nouvelle.</p>
           <p><b>Conseils</b> : parlez normalement, sans exagérer ; une courte pause est acceptée (la phrase est recollée, et « sur le terrain on a… » attend les prénoms manquants). Les <b>numéros</b> (« deux points la 5 ») sont mieux compris que les prénoms. Si un prénom est mal entendu, touchez la joueuse sous « Mot non reconnu » : l’appli l’apprend.</p>
-          <p className="text-amber-300">Confidentialité : le navigateur envoie l’audio à son fournisseur (Google pour Chrome). Nécessite du réseau ; sans réseau, utilisez les boutons. Un casque évite que l’appli s’entende.</p>
+          <p className="text-amber-300">Confidentialité : le navigateur envoie l’audio à son fournisseur (Google pour Chrome). Hors ligne : possible si le mode hors ligne est prêt (bouton Moteur) ; sinon utilisez les boutons. Un casque évite que l’appli s’entende.</p>
         </div>
       )}
     </div>
