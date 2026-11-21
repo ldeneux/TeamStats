@@ -69,6 +69,7 @@ export default function VoiceControl(props: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [heard, setHeard] = useState<string[]>([]);
   const [said, setSaid] = useState('');
+  const [unknownHeard, setUnknownHeard] = useState('');
   const [saidKind, setSaidKind] = useState<'ok' | 'wait' | 'info' | 'error'>('info');
   const [diag, setDiag] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -136,6 +137,7 @@ export default function VoiceControl(props: Props) {
       const dialog = dialogRef.current as VoiceDialog;
       const res = dialog.handle(alts, viewRef.current);
       setHeard(alts);
+      setUnknownHeard(res.unknown ?? '');
       // On répond tout de suite à voix haute ; l'écran s'allume pendant ce temps.
       setSaid(res.say.join('. '));
       setSaidKind(res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait' : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(res.say.join(' ')) ? 'error' : 'info');
@@ -214,6 +216,17 @@ export default function VoiceControl(props: Props) {
     wakeRef.current?.release();
   }, []);
 
+  // Apprentissage rapide : un mot non reconnu peut être rattaché à une joueuse d'un seul toucher.
+  const addAlias = (first: string, word: string) => {
+    const key = strip(first);
+    const next = { ...aliases, [key]: Array.from(new Set([...(aliases[key] ?? []), word])) };
+    setAliases(next);
+    writeAliases(next);
+    setUnknownHeard('');
+    setSaid(`« ${word} » compris comme ${first}`);
+    setSaidKind('info');
+  };
+
   const saveAlias = (first: string, text: string) => {
     const list = text.split(',').map((s) => s.trim()).filter(Boolean);
     const next = { ...aliases };
@@ -281,6 +294,18 @@ export default function VoiceControl(props: Props) {
           {saidKind === 'ok' ? '✅ ' : saidKind === 'wait' ? '⏳ ' : saidKind === 'error' ? '⚠️ ' : '💬 '}{said}
         </p>
       )}
+      {enabled && unknownHeard && (
+        <div className="bg-slate-950/60 border border-slate-700 rounded-xl p-2 space-y-1">
+          <p className="text-[10px] text-slate-400">Mot non reconnu : <b className="text-slate-200">« {unknownHeard} »</b> — c’est un prénom ? Touchez la joueuse :</p>
+          <div className="flex flex-wrap gap-1">
+            {namedPlayers.map((p) => {
+              const first = firstNameOf(p.name);
+              return <button key={p.id} type="button" onClick={() => addAlias(first, unknownHeard)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-600 text-slate-200">{first}</button>;
+            })}
+            <button type="button" onClick={() => setUnknownHeard('')} className="text-[10px] px-2 py-1 rounded-lg text-slate-500">Ignorer</button>
+          </div>
+        </div>
+      )}
       {enabled && diag && (
         <div className="text-[10px] text-slate-400 font-mono bg-slate-950/60 rounded-lg p-2 space-y-0.5">
           <p>Entendu :</p>
@@ -329,6 +354,7 @@ export default function VoiceControl(props: Props) {
           <p><b>Annuler</b> : « annule la dernière commande » ou « annule dernière action {ex.p[2]} » : immédiat, sans validation. Un changement ne s’annule pas : faire un nouveau changement.</p>
           <p><b>Score adverse</b> : « adversaire deux points », « adversaire moins un ». <b>Questions</b> : « score », « qui est sur le terrain », « combien de fautes {ex.p[3]} », « fautes équipe ».</p>
           <p><b>Réponses</b> : « oui » / « non » pour un changement ; si l’appli attend une réponse et que vous dites une autre commande complète, elle abandonne l’attente et exécute la nouvelle.</p>
+          <p><b>Conseils</b> : parlez normalement, sans exagérer ; une courte pause est acceptée (la phrase est recollée, et « sur le terrain on a… » attend les prénoms manquants). Les <b>numéros</b> (« deux points la 5 ») sont mieux compris que les prénoms. Si un prénom est mal entendu, touchez la joueuse sous « Mot non reconnu » : l’appli l’apprend.</p>
           <p className="text-amber-300">Confidentialité : le navigateur envoie l’audio à son fournisseur (Google pour Chrome). Nécessite du réseau ; sans réseau, utilisez les boutons. Un casque évite que l’appli s’entende.</p>
         </div>
       )}

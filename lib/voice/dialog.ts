@@ -40,6 +40,8 @@ export interface DialogResult {
   /** Phrases à dire à voix haute, dans l'ordre. */
   say: string[];
   actions: VoiceAction[];
+  /** Mots entendus mais non reconnus (pour proposer de les apprendre comme variante d'un prénom). */
+  unknown?: string;
 }
 
 type FtAttempts = [boolean | null, boolean | null, boolean | null];
@@ -68,6 +70,8 @@ const FOUL_RANK: Record<number, string> = { 4: 'quatrième', 5: 'cinquième' };
 
 export class VoiceDialog {
   private st: State = { mode: 'idle' };
+  /** Dernier fragment non compris : une hésitation coupe parfois une phrase en deux, on recolle les morceaux (5 s). */
+  private carry: { text: string; at: number } | null = null;
   private readonly opts: Required<DialogOptions>;
 
   constructor(opts: DialogOptions = {}) {
@@ -94,7 +98,7 @@ export class VoiceDialog {
   cancel(): void { this.st = { mode: 'idle' }; }
 
   /** Les alternatives de la reconnaissance, la plus probable d'abord. */
-  handle(alternatives: string[], view: VoiceView): DialogResult {
+  handle(alternatives: string[], view: VoiceView, now: number = Date.now()): DialogResult {
     const alts = alternatives.map((a) => a.trim()).filter(Boolean);
     if (!alts.length) return { say: [], actions: [] };
     const st = this.st;
@@ -102,7 +106,7 @@ export class VoiceDialog {
     if (st.mode === 'confirm') return this.onConfirm(alts, st, view);
     if (st.mode === 'ask') return this.onAsk(alts, st, view);
     if (st.mode === 'ft') return this.onFt(alts, st, view);
-    return this.onIdle(alts, view);
+    return this.onIdle(alts, view, now);
   }
 
   // ───────── contexte d'analyse
@@ -129,9 +133,19 @@ export class VoiceDialog {
   }
 
   // ───────── état « repos »
-  private onIdle(alts: string[], view: VoiceView): DialogResult {
-    const { cmd, text } = this.best(alts, view);
-    return this.run(cmd, text, view);
+  private onIdle(alts: string[], view: VoiceView, now: number): DialogResult {
+    const first = this.best(alts, view);
+    const complete = (c: Cmd) => c.type !== 'UNKNOWN' && c.type !== 'REFUSE' && c.type !== 'ASK';
+    if (complete(first.cmd)) { this.carry = null; return this.run(first.cmd, first.text, view); }
+    // Fragment : on le recolle au précédent s'il est récent (« Chloé » … pause … « deux points »).
+    if (this.carry && now - this.carry.at < 5000) {
+      const j = this.fresh(alts.map((a) => `${this.carry!.text} ${a}`), view);
+      if (j) { this.carry = null; return this.run(j.cmd, j.text, view); }
+    }
+    this.carry = first.cmd.type === 'UNKNOWN' ? { text: first.text, at: now } : null;
+    const res = this.run(first.cmd, first.text, view);
+    if (first.cmd.type === 'UNKNOWN' && first.cmd.heard) res.unknown = first.cmd.heard;
+    return res;
   }
 
   /** Exécute (ou prépare) une commande analysée. */
@@ -279,6 +293,11 @@ export class VoiceDialog {
     if (nw) return nw;
     const joined = alts.map((a) => `${st.text} ${a}`);
     const { cmd, text } = this.best(joined, view);
+    // liste « sur le terrain » encore incomplète : on garde l'attente et on la prolonge
+    if (cmd.type === 'ASK' && cmd.kind === 'append' && cmd.progress) {
+      this.st = { mode: 'ask', kind: 'append', text, retries: 0 };
+      return { say: [cmd.say], actions: [] };
+    }
     if (cmd.type === 'UNKNOWN' || cmd.type === 'ASK') return giveUp();
     this.st = { mode: 'idle' };
     return this.run(cmd, text, view);

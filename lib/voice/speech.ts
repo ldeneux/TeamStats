@@ -93,7 +93,7 @@ export class VoiceEngine {
     rec.lang = 'fr-FR';
     rec.continuous = true;
     rec.interimResults = false;
-    rec.maxAlternatives = 3;
+    rec.maxAlternatives = 5;
 
     rec.onstart = () => { if (this.rec === rec) this.setState(this.speaking ? 'speaking' : 'listening'); };
     rec.onresult = (e: any) => {

@@ -38,7 +38,7 @@ export type Cmd =
   | { type: 'UNKNOWN'; say: string; heard?: string }
   | { type: 'REFUSE'; say: string }
   | { type: 'ASK'; kind: 'name'; key: string; candidates: string[]; say: string }
-  | { type: 'ASK'; kind: 'append'; say: string }
+  | { type: 'ASK'; kind: 'append'; say: string; progress?: boolean }
   | { type: 'EVENT'; playerId: string; action: string; points: number; designation: string; needsConfirm: boolean; say: string }
   | { type: 'FREE_THROWS'; playerId: string; made: number; attempts: number; say: string }
   | { type: 'FT_START'; playerId: string; say: string }
@@ -210,9 +210,9 @@ const RULES: Array<[RegExp, string]> = [
   [/\binterceptions?\b|\bintercepte\b|\bvol de balle\b/g, ' STL '],
   [/\bpertes?(?: de)? balles?\b|\bballes? perdu(?:e|es|s)?\b|\bpertes?\b/g, ' TOV '],
   // points
-  [/\b1 (?:points?|pointes?|pts?)\b/g, ' P1 '],
-  [/\b2 (?:points?|pointes?|pts?)\b/g, ' P2 '],
-  [/\b3 (?:points?|pointes?|pts?)\b/g, ' P3 '],
+  [/\b1 (?:points?|pointes?|poings?|poins?|poids|pts?)\b/g, ' P1 '],
+  [/\b2 (?:points?|pointes?|poings?|poins?|poids|pts?)\b/g, ' P2 '],
+  [/\b3 (?:points?|pointes?|poings?|poins?|poids|pts?)\b/g, ' P3 '],
   [/\btir a 2\b/g, ' P2 '], [/\btir a 3\b/g, ' P3 '],
   // résultat d'un tir / d'un lancer
   [/\b(?:rates?|ratees?|rater|manques?|manquees?|manquer|loupes?|loupees?)\b/g, ' MISS '],
@@ -299,7 +299,8 @@ function matchName(words: string[], i: number, roster: RosterEntry[]): NameTok |
       let dmin = 99;
       for (const k of p.keys) {
         const d = lev(pk, k);
-        if (d <= (k.length >= 4 ? 1 : 0) && d < dmin) dmin = d;
+        const ok = d === 0 || (d === 1 && (k.length >= 4 || (k.length === 3 && k[0] === pk[0])));
+        if (ok && d < dmin) dmin = d;
       }
       if (dmin < 99) cands.push({ id: p.id, d: dmin });
     }
@@ -337,6 +338,24 @@ function tokenize(text: string, roster: RosterEntry[]): Tok[] {
     toks.push({ k: 'unk', w }); art = false; i++;
   }
   return toks;
+}
+
+/** Joueuse la plus proche (phonétique) d'un mot inconnu : l'unique mot restant d'une commande est très probablement un prénom mal entendu. */
+function nearestPlayer(word: string, roster: RosterEntry[], onCourt: Set<string>): string | null {
+  const pk = phonetic(word);
+  if (pk.length < 2) return null;
+  const scored: Array<{ id: string; d: number }> = [];
+  for (const p of roster) {
+    let dmin = 99;
+    for (const k of p.keys) if (k[0] === pk[0]) dmin = Math.min(dmin, lev(pk, k));
+    const limit = pk.length >= 5 ? 2 : 1;
+    if (dmin <= limit) scored.push({ id: p.id, d: dmin });
+  }
+  if (!scored.length) return null;
+  const best = Math.min(...scored.map((x) => x.d));
+  let top = scored.filter((x) => x.d === best);
+  if (top.length > 1) { const onc = top.filter((x) => onCourt.has(x.id)); if (onc.length) top = onc; }
+  return top.length === 1 ? top[0].id : null;
 }
 
 // ───────────────────────── Aides sur les fautes ─────────────────────────
@@ -586,6 +605,10 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
     return { type: 'UNKNOWN', say: "Commande non reconnue.", heard: unknown.join(' ') };
   }
   if (actionCodes.length > 1 || (actionCodes.length === 1 && hasLF)) return { type: 'REFUSE', say: 'Une seule action à la fois.' };
+  if (!who && unknown.length === 1 && (actionCodes.length > 0 || hasLF)) {
+    const near = nearestPlayer(unknown[0], roster, env.onCourt);
+    if (near) { who = near; byNumber = false; }
+  }
   if (!who && ctx.selectedId && players.some((p) => p.id === ctx.selectedId)) { who = ctx.selectedId; byNumber = false; }
   if (!who) return needsPlayer ? { type: 'ASK', kind: 'append', say: 'Quelle joueuse ?' } : { type: 'UNKNOWN', say: "Commande non reconnue." };
 
@@ -673,8 +696,9 @@ function parseSubstitution(
     const dup = ids.find((id, i) => ids.indexOf(id) !== i);
     if (dup) return { type: 'REFUSE', say: `${sayName(env.players, dup)} est citée deux fois.` };
     if (ids.length !== courtSize) {
-      const diff = courtSize - ids.length;
-      return { type: 'REFUSE', say: diff > 0 ? `Il en faut ${courtSize}, j'en ai entendu ${ids.length}. Il en manque ${diff}.` : `Il en faut ${courtSize}, j'en ai entendu ${ids.length}.` };
+      // Moins de 5 : une hésitation coupe souvent la phrase en deux. On attend la suite au lieu de refuser.
+      if (ids.length < courtSize) return { type: 'ASK', kind: 'append', progress: true, say: `${ids.length} sur ${courtSize}. La suite ?` };
+      return { type: 'REFUSE', say: `Il en faut ${courtSize}, j'en ai entendu ${ids.length}.` };
     }
     for (const id of ids) {
       if (!env.onCourt.has(id) && fouledOut(env, id)) return { type: 'REFUSE', say: `${sayName(env.players, id)} a cinq fautes.` };

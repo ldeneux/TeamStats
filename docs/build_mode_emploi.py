@@ -439,7 +439,7 @@ def page_annexe_voix():
     s += sec('6) Changements de joueuses (à confirmer par « oui »)', [
         ('Remplacement', ['Remplacement Léa, Manon par Zoé, Jade', 'Remplacement la 4, la 7 par la 9, la 10', 'Changement Inès par Eva']),
         ('Sortie / entrée', ['Sortie de Lola, Nora Entrée de Clara, Sarah (ordre inversable)']),
-        ('Cinq sur le terrain', ['Sur le terrain on a Camille, Louise, Julie, Emma et Lina', 'Sur le terrain on a 4, 5, 7, 9, 12']),
+        ('Cinq sur le terrain', ['Sur le terrain on a Camille, Louise, Julie, Emma et Lina', 'Sur le terrain on a 4, 5, 7, 9, 12', '(une courte pause est permise : l’appli attend les prénoms manquants)']),
         ('Verbe « remplace »', ['Zoé remplace Léa']),
         ('Répondre', ['Oui · Valide · OK · Confirme · D’accord · C’est bon · Vas-y', 'Non · Annule · Stop · Laisse tomber'])])
     s += [P("Il faut autant de sorties que d'entrées ; la sortante est sur le terrain, l'entrante au banc et sans 5 fautes ; personne n'est citée deux fois. Sinon l'appli le dit et ne change rien.", small)]

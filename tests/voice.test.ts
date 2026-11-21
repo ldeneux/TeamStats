@@ -124,7 +124,8 @@ t('Sur le terrain on a … avec deux joueuses déjà dessus : écart des ensembl
   assert.deepEqual(ids(c.outs), ids(['laura', 'aliya']));
   assert.deepEqual(ids(c.ins), ids(['hinde', 'hanae']));
 });
-t('Sur le terrain on a 2 prénoms → refus', () => { const c = parse('Sur le terrain on a Hind, Anaelle'); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /Il en faut 5/); });
+t('Sur le terrain on a 2 prénoms → on attend la suite', () => { const c = parse('Sur le terrain on a Hind, Anaelle') as any; assert.equal(c.type, 'ASK'); assert.equal(c.say, '2 sur 5. La suite ?'); });
+t('Sur le terrain on a 6 prénoms → refus', () => assert.equal(parse('Sur le terrain on a Hind, Anaelle, Hanaé, Victoire, Mayra, Chloé').type, 'REFUSE'));
 t('« Sur le terrain » seul = question', () => assert.equal(parse('qui est sur le terrain').type, 'Q_COURT'));
 t('sortante pas sur le terrain → refus', () => { const c = parse('remplacement Mayra par Hinde'); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /Mayra n'est pas sur le terrain/); });
 t('entrante déjà sur le terrain → refus', () => { const c = parse('remplacement Chloé par Laura'); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /déjà sur le terrain/); });
@@ -430,6 +431,43 @@ t('dialogue : sélection puis action sans nom', () => {
   assert.deepEqual(s.actions, [{ t: 'select', playerId: 'chloe' }]);
   const v = s.view(); v.selectedPlayerId = 'chloe';
   const r = s.dialog.handle(['interception'], v); assert.deepEqual(r.actions, [{ t: 'event', action: 'INTERCEPTION', playerId: 'chloe', points: 0 }]);
+});
+
+// ═════════ 12. Fluidité : hésitations et mots mal entendus ═════════
+t('« sur le terrain on a » coupé en deux par une hésitation : la suite est recollée', () => {
+  const s = new Sim();
+  assert.equal(s.said('sur le terrain on a Hind Anaelle Hanaé'), '3 sur 5. La suite ?');
+  const r = s.said('Victoire et Mayra');
+  assert.match(r, /Sortent .* Entrent .* Valide \?/); s.say('oui');
+  assert.deepEqual(ids(s.onCourt), ids(['hinde', 'annaelle', 'hanae', 'victoire', 'mayra']));
+});
+t('liste en trois morceaux', () => {
+  const s = new Sim(); s.say('on a sur le terrain Hind'); assert.equal(s.said('Anaelle'), '2 sur 5. La suite ?'); s.say('Hanaé Victoire'); assert.match(s.said('Mayra'), /Valide \?/);
+});
+t('liste incomplète puis nouvelle commande : l\'attente est abandonnée', () => {
+  const s = new Sim(); s.say('sur le terrain on a Hind Anaelle'); s.say('Candice deux points'); assert.equal((s.actions[0] as any).playerId, 'candice'); assert.equal(s.dialog.mode, 'idle');
+});
+t('fragments recollés : « Chloé » puis « deux points » (phrase coupée)', () => {
+  const s = new Sim(); const v = s.view(); const t0 = 1000;
+  const a = s.dialog.handle(['euh Chloé'], v, t0); assert.equal(a.actions.length, 0);
+  const b = s.dialog.handle(['deux points'], v, t0 + 2000);
+  assert.deepEqual(b.actions, [{ t: 'event', action: 'TIR 2PTS RÉUSSI', playerId: 'chloe', points: 2 }]);
+});
+t('fragments trop éloignés dans le temps : pas recollés', () => {
+  const s = new Sim(); const v = s.view();
+  s.dialog.handle(['blabla Chloé'], v, 1000); const b = s.dialog.handle(['deux points'], v, 9000);
+  assert.equal(b.actions.length, 0);
+});
+t('« points » mal entendu : poing / poins / poids', () => {
+  for (const w of ['poing', 'poins', 'poids', 'pointe']) assert.equal(ev(parse(`2 ${w} Chloé`)).action, 'TIR 2PTS RÉUSSI', w);
+});
+t('prénom mal entendu : le mot restant est rapproché de la joueuse la plus proche', () => {
+  for (const w of ['Clauer', 'Kloé', 'Cloée', 'Claudé']) { const c: any = parse(`2 points ${w}`); assert.equal(c.type, 'EVENT', w); assert.equal(c.playerId, 'chloe', w); }
+  assert.equal((parse('Laurat deux points') as any).playerId, 'laura');
+});
+t('mot inconnu trop éloigné : pas de devinette', () => assert.notEqual(parse('2 points Zorglub').type, 'EVENT'));
+t('le mot inconnu est remonté pour être appris comme variante', () => {
+  const s = new Sim(); const r = s.dialog.handle(['bonjour zorglub'], s.view()); assert.equal(r.unknown, 'bonjour zorglub'); assert.equal(r.say[0], 'Commande non reconnue.');
 });
 
 // Phonétique
