@@ -1109,7 +1109,12 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       ? "Des actions de ce match ne sont pas encore enregistrées. Un nouveau match les effacera de cet écran. Continuer ?"
       : "Démarrer un nouveau match ? Le match affiché sera fermé (ce qui est enregistré est conservé).";
     if (!window.confirm(message)) return;
+    // On coupe d'abord toute réécriture du brouillon : le minuteur d'autosauvegarde et les événements
+    // « pagehide » / « visibilitychange » le recréaient au moment du rechargement, et le match revenait.
+    draftReadyRef.current = false;
+    if (draftTimerRef.current) { clearTimeout(draftTimerRef.current); draftTimerRef.current = null; }
     lsRemove(draftKey);
+    setRestoredAt(null);
     window.location.reload();
   };
 
