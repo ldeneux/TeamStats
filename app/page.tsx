@@ -508,6 +508,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   }, [showLogoFull]);
   const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
   const [playerAddNote, setPlayerAddNote] = useState('');
+  const [teamSaveError, setTeamSaveError] = useState('');
   const [teamSaveStatus, setTeamSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [clubNames, setClubNames] = useState<string[]>([]);
   const [isLookingUpFfbb, setIsLookingUpFfbb] = useState(false);
@@ -572,8 +573,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   // via "Charger une équipe Supabase" plus bas, qui renseigne matchConfig.teamHome).
 
   // CHARGEMENT DEPUIS SUPABASE (stats_teams + stats_players)
-  const fetchTeamsFromSupabase = async () => {
-    setIsLoadingTeams(true);
+  const fetchTeamsFromSupabase = async (silent = false) => {
+    if (!silent) setIsLoadingTeams(true);
     try {
       const { data: teamsData, error } = await supabase
         .from('stats_teams')
@@ -1177,24 +1178,27 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
   // SAUVEGARDE / MODIFICATION DANS SUPABASE
   const handleSaveTeamToSupabase = async () => {
-    if (!newTeamName.trim()) return;
+    if (!newTeamName.trim()) { setTeamSaveError('Donnez un nom à l\'équipe.'); setTeamSaveStatus('error'); return; }
     setTeamSaveStatus('saving');
+    setTeamSaveError('');
+
+    // Toute erreur de la base est remontée (avant, elles étaient ignorées : « Mettre à jour » ne disait rien).
+    const must = (res: { error: any }) => { if (res.error) throw res.error; };
 
     try {
       let targetTeamId = selectedTeamId;
 
       if (!targetTeamId && !isAdmin) {
         // Seul l'admin crée des équipes (le coach modifie celles qui lui sont ouvertes).
-        setTeamSaveStatus('error');
-        return;
+        throw new Error('Seul un administrateur peut créer une équipe.');
       }
 
       if (targetTeamId) {
-        // UPDATE ÉQUIPE
-        await supabase
-          .from('stats_teams')
-          .update({ name: newTeamName.trim() })
-          .eq('id', targetTeamId);
+        // UPDATE ÉQUIPE : seulement si le nom a changé (un coach qui ne touche qu'aux joueuses n'a pas à modifier l'équipe).
+        const current = savedTeams.find(t => t.id === targetTeamId);
+        if (!current || current.name !== newTeamName.trim()) {
+          must(await supabase.from('stats_teams').update({ name: newTeamName.trim() }).eq('id', targetTeamId));
+        }
       } else {
         // INSERT NOUVELLE ÉQUIPE
         const { data: createdTeam, error: teamErr } = await supabase
@@ -1203,17 +1207,18 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           .select()
           .single();
 
-        if (teamErr || !createdTeam) throw teamErr;
+        if (teamErr || !createdTeam) throw teamErr || new Error('Création de l\'équipe impossible.');
         targetTeamId = createdTeam.id;
       }
 
       // On récupère les joueuses déjà en base pour cette équipe, pour fusionner par NOM
       // (clé Équipe/Nom) plutôt que par numéro ou par id local, ce qui évite les doublons
       // si "Enregistrer" est cliqué plusieurs fois de suite.
-      const { data: allExisting } = await supabase
+      const { data: allExisting, error: exErr } = await supabase
         .from('stats_players')
         .select('*')
         .eq('team_id', targetTeamId);
+      if (exErr) throw exErr;
       // L'encadrement (fiche unique) n'est jamais une joueuse : il n'est ni rapproché ni supprimé ici.
       const existingPlayers = (allExisting || []).filter((ep: any) => ep.role !== 'encadrement');
 
@@ -1222,9 +1227,9 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           (ep: any) => ep.name.trim().toUpperCase() === player.name.trim().toUpperCase()
         );
         if (match) {
-          await supabase.from('stats_players').update({ number: player.number }).eq('id', match.id);
+          if (match.number !== player.number) must(await supabase.from('stats_players').update({ number: player.number }).eq('id', match.id));
         } else {
-          await supabase.from('stats_players').insert({ team_id: targetTeamId, name: player.name, number: player.number });
+          must(await supabase.from('stats_players').insert({ team_id: targetTeamId, name: player.name, number: player.number }));
         }
       }
 
@@ -1234,20 +1239,37 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         (ep: any) => !currentNames.includes(ep.name.trim().toUpperCase())
       );
       for (const removed of removedPlayers) {
-        await supabase.from('stats_players').delete().eq('id', removed.id);
+        must(await supabase.from('stats_players').delete().eq('id', removed.id));
       }
 
+      // L'équipe reste sélectionnée : on relit seulement les identifiants de la base (les nouvelles joueuses
+      // reçoivent leur vrai id) et on les reporte sur la feuille de match, sans rien désélectionner.
+      const { data: fresh } = await supabase.from('stats_players').select('id, name, number, role').eq('team_id', targetTeamId);
+      const idByName = new Map<string, string>();
+      (fresh || []).filter((r: any) => r.role !== 'encadrement').forEach((r: any) => idByName.set(String(r.name).trim().toUpperCase(), r.id));
+      const remap = (id: string, name?: string) => idByName.get((name ?? '').trim().toUpperCase()) ?? id;
+      const idMap: { [oldId: string]: string } = {};
+      const nextRoster = editingRoster.map(pl => { const nid = remap(pl.id, pl.name); idMap[pl.id] = nid; return { ...pl, id: nid }; });
+      setEditingRoster(sortPlayersAlpha(nextRoster));
+      setSelectedMatchPlayerIds(ids => ids.map(id => idMap[id] ?? id));
+      setMatchNumbers(prev => Object.fromEntries(Object.entries(prev).map(([k, v]) => [idMap[k] ?? k, v])));
+      setSelectedTeamId(targetTeamId);
+
       setTeamSaveStatus('saved');
-      setTimeout(() => setTeamSaveStatus('idle'), 2000);
-      setNewTeamName('');
-      setSelectedTeamId('');
+      setTimeout(() => setTeamSaveStatus('idle'), 2500);
       setIsEditingTeamForm(false);
       setEditingPlayerId(null);
-      await fetchTeamsFromSupabase();
+      await fetchTeamsFromSupabase(true);
     } catch (err: any) {
       console.error(err);
+      const raw = String(err?.message || err || '');
+      setTeamSaveError(
+        err?.code === '42501' || /row-level security|permission/i.test(raw)
+          ? 'Droits insuffisants : cette équipe n\'est pas affectée à votre compte (demandez à un administrateur).'
+          : isNetworkError(err) ? 'Pas de réseau : rien n\'a été enregistré.' : raw || 'Erreur inconnue.'
+      );
       setTeamSaveStatus('error');
-      setTimeout(() => setTeamSaveStatus('idle'), 3000);
+      // pas de remise à zéro : l'équipe et les joueuses saisies restent à l'écran pour réessayer
     }
   };
 
@@ -2347,7 +2369,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                   </div>
                   {playerAddNote && <p className="text-[10px] text-sky-300">{playerAddNote}</p>}
                   {teamSaveStatus === 'saved' && <p className="text-[10px] text-emerald-400">Équipe enregistrée.</p>}
-                  {teamSaveStatus === 'error' && <p className="text-[10px] text-rose-400">Échec de l'enregistrement.</p>}
+                  {teamSaveStatus === 'error' && <p className="text-[10px] text-rose-400">Échec de l'enregistrement{teamSaveError ? ` : ${teamSaveError}` : '.'}</p>}
                 </div>
               )}
               </div>
