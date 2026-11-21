@@ -2254,7 +2254,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         )}
       <main>
         {activeTab === 'CAL' && (
-          <CalendarMenu userId={userId} isAdmin={isAdmin} onOpenAdmin={() => setActiveTab('ADMIN')} />
+          <CalendarMenu userId={userId} isAdmin={isAdmin} canEdit={!isConsultant} onOpenAdmin={() => setActiveTab('ADMIN')} />
         )}
         {activeTab === 'ADMIN' && isAdmin && (
           <AdminPanel role={role === 'superadmin' ? 'superadmin' : 'admin'} />

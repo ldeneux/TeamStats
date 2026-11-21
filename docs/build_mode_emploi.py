@@ -463,7 +463,7 @@ def page_annexe():
     def prof(role, desc): return [Paragraph(role, cellb), Paragraph(desc, cell)]
     t = _table([prof('superadmin', "Accès illimité. Fait tout ce que fait l'admin, et seul à pouvoir créer, modifier ou supprimer un compte superadmin. Ne peut pas être supprimé s'il est le dernier."),
                 prof('admin', "Voit toutes les équipes. Crée et modifie les équipes, les joueuses, les matchs. Utilise le menu Administration ; gère les comptes admin, coach et consultant (il ne voit pas les superadmin)."),
-                prof('coach', "Ne voit que les équipes qui lui sont affectées, saison par saison ; peut y faire tout le travail de match (joueuses, saisie, stats, exports, calendrier) sauf créer ou supprimer une équipe."),
+                prof('coach', "Ne voit que les équipes qui lui sont affectées, saison par saison ; peut y faire tout le travail de match (joueuses, saisie, stats, exports, calendrier) et importer le PDF FFBB de l'effectif de ses équipes (menu Calendrier, onglet Effectif), sauf créer ou supprimer une équipe."),
                 prof('consultant', "Lit les équipes qui lui sont affectées et ne modifie rien : menu Calendrier seulement (calendrier, classement, effectif, PDF des matchs enregistrés). La base refuse toute écriture."),
                 prof('Sans profil', "Peut se connecter mais voit seulement « Accès non autorisé ».")], [96, CW - 96], ('Profil', "Ce qu'il permet"))
     rows = [("Un coach ne voit aucune équipe", "Vérifiez qu'il a le profil coach (ou consultant) et qu'au moins une équipe lui est affectée pour la saison (Administration > Accès). Il doit rouvrir l'appli avec du réseau."),

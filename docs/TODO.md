@@ -23,6 +23,7 @@
 | 18 (g) | Mise à jour du mode d'emploi (**en tout dernier**, après les points ci-dessus) | **Fait** (18 pages ; étape 13, renforts à l'étape 3, annexe A refondue). Reste à jour si f) ou de nouveaux changements |
 
 | 19 | Commande vocale (Direct) : actions sans validation, démarrer le match, lancers francs visibles à l'écran, sélection de joueuse, aide à jour, étape 14 + annexe B du guide ; ajout d'une joueuse enregistré aussitôt dans l'effectif | **Fait** (`npm run test:voice` ; micro, synthèse vocale et relance de l'écoute à tester sur la tablette) |
+| 20 | Équipes : le nombre de phases d'une vignette compte les tours d'une même coupe pour UNE phase ; Calendrier > Effectif : le coach peut importer le PDF FFBB de ses équipes (consultant : lecture seule) | **Fait** |
 
 ## Notes pour 6 et 7
 - 6 : réalisé comme une **vraie connexion** au compte coach (jeton à usage unique généré par le serveur) : on voit exactement ce que voit ce coach, droits réels (RLS) compris ; un bandeau permet de revenir à son compte.

@@ -20,7 +20,7 @@ const writeSel = (userId: string, v: { team?: string; season?: string }) => {
 
 // Menu « Calendrier » : équipe (par image) -> saison (en cours par défaut) -> phase (en cours par défaut)
 // -> « Calendrier & résultats » et « Classement ». Chaque compte ne voit que ses équipes (RLS).
-export default function CalendarMenu({ userId, isAdmin, onOpenAdmin }: { userId: string; isAdmin: boolean; onOpenAdmin: () => void }) {
+export default function CalendarMenu({ userId, isAdmin, onOpenAdmin, canEdit = false }: { userId: string; isAdmin: boolean; onOpenAdmin: () => void; canEdit?: boolean }) {
   const lockedBefore = useLockedBefore();
   const [teams, setTeams] = useState<ClubTeam[] | null>(null);
   const [error, setError] = useState('');
@@ -115,7 +115,8 @@ export default function CalendarMenu({ userId, isAdmin, onOpenAdmin }: { userId:
       )}
       {team && view === 'EFFECTIF' && (
         <section className="rounded-2xl border border-slate-700/60 bg-slate-900/80 p-3">
-          <RosterPanel team={team} allTeams={teams ?? []} onChanged={() => undefined} readOnly />
+          {/* Admin ET coach : import du PDF extranet FFBB pour leurs équipes (droits en base : team_access). Consultant : lecture seule. */}
+          <RosterPanel team={team} allTeams={teams ?? []} onChanged={() => undefined} readOnly={!canEdit} />
         </section>
       )}
 

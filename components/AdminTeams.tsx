@@ -6,7 +6,7 @@ import TeamTile from './TeamTile';
 import RosterPanel from './RosterPanel';
 import { adminApi } from '../lib/adminApi';
 import { supabase } from '../lib/supabase';
-import { ClubPhase, ClubTeam, fmtDateTimeLocal, fmtDay, loadClubTeams, loadPhases, phaseLabels, sortTeams } from '../lib/clubDb';
+import { ClubPhase, ClubTeam, fmtDateTimeLocal, fmtDay, loadClubTeams, loadPhases, mergeCupPhases, phaseLabels, sortTeams } from '../lib/clubDb';
 import { currentSeason, displayCompetitionName, ffbbAssetUrl, tourLabel } from '../lib/clubTeams';
 import { isLockedSeason, useLockedBefore } from '../lib/seasonLock';
 
@@ -39,9 +39,12 @@ export default function AdminTeams() {
       const t = await loadClubTeams();
       setTeams(t);
       setError('');
-      const { data } = await supabase.from('stats_club_phases').select('club_team_id');
+      // Nombre de phases AFFICHÉES : les tours d'une même coupe comptent pour une seule phase (comme dans la liste des phases).
+      const { data } = await supabase.from('stats_club_phases').select('*');
+      const byTeam = new Map<string, ClubPhase[]>();
+      for (const r of (data ?? []) as ClubPhase[]) byTeam.set(r.club_team_id, [...(byTeam.get(r.club_team_id) ?? []), r]);
       const c: Record<string, number> = {};
-      for (const r of (data ?? []) as { club_team_id: string }[]) c[r.club_team_id] = (c[r.club_team_id] || 0) + 1;
+      byTeam.forEach((list, id) => { c[id] = mergeCupPhases(list).length; });
       setPhaseCounts(c);
     } catch (e: any) {
       setError(e?.message || String(e));
