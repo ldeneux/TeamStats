@@ -4,7 +4,6 @@
 // à ce qui était attendu, apprend les écarts (variantes de prénoms, corrections de mots) et les enregistre sur le COMPTE.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { VoicePlayer } from '../lib/voice/commands';
 import { CalPrompt, CalStatus, VoiceProfile, buildPrompts, calibrationSetup, evaluateHeard } from '../lib/voice/calibrate';
 import { EngineMode, PhraseHint, VoiceEngine } from '../lib/voice/speech';
@@ -102,9 +101,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
   const n = (s: Res) => results.filter((r) => r === s).length;
   const learned = countLearned(profile, work);
 
-  // Affiché dans <body> (portail) : sinon le flou d'arrière-plan du bandeau vocal le réduit à la taille du bandeau.
-  if (typeof document === 'undefined') return null;
-  return createPortal(
+  return (
     <div className="fixed inset-0 z-[60] bg-slate-950/97 overflow-auto p-4" role="dialog" aria-modal="true" aria-label="Calibrage de la commande vocale">
       <div className="max-w-xl mx-auto space-y-4 text-slate-200">
         <div className="flex items-center justify-between">
@@ -162,7 +159,6 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
           </div>
         )}
       </div>
-    </div>,
-    document.body,
+    </div>
   );
 }

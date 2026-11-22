@@ -348,6 +348,7 @@ export default function VoiceControl(props: Props) {
   const waiting = enabled && dialogStatus !== 'À l’écoute';
 
   return (
+    <>
     <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 p-3 rounded-3xl shadow-xl space-y-2">
       <div className="flex items-center justify-between gap-2">
         <button
@@ -420,16 +421,6 @@ export default function VoiceControl(props: Props) {
         </label>
       )}
 
-      {showCal && (
-        <VoiceCalibration
-          players={players}
-          profile={effective}
-          getMode={() => modeRef.current}
-          onSave={async (p) => { void shareEntries(profileDelta(effectiveRef.current, p)); profileRef.current = p; setProfile(p); const ok = await saveProfile(props.userId, p); setProfileSync(ok ? 'saved' : 'offline'); return ok; }}
-          onClose={() => setShowCal(false)}
-        />
-      )}
-
       {showEngine && (
         <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-2 space-y-1.5 text-[11px] text-slate-300">
           <div className="flex items-center gap-2">
@@ -499,5 +490,15 @@ export default function VoiceControl(props: Props) {
         </div>
       )}
     </div>
+    {showCal && (
+        <VoiceCalibration
+          players={players}
+          profile={effective}
+          getMode={() => modeRef.current}
+          onSave={async (p) => { void shareEntries(profileDelta(effectiveRef.current, p)); profileRef.current = p; setProfile(p); const ok = await saveProfile(props.userId, p); setProfileSync(ok ? 'saved' : 'offline'); return ok; }}
+          onClose={() => setShowCal(false)}
+        />
+      )}
+    </>
   );
 }
