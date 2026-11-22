@@ -199,7 +199,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\bfautes? techniques?\b|\btechniques?\b/g, ' FTECH '],
   [/\bfautes? antisportives?\b|\bantisportives?\b/g, ' FANTI '],
   [/\bfautes? disqualifiantes?\b|\bdisqualifiantes?\b/g, ' FDISQ '],
-  [/\bfautes? subi(?:e|es|s|t|te)?\b|\bfautes? sur\b|\bsubi(?:e|es|s|t|te)?\b/g, ' FSUBIE '],
+  [/\bfautes? su ?bi(?:e|es|s|t|te)?\b|\bfautes? sur\b|\bsu ?bi(?:e|es|s|t|te)?\b/g, ' FSUBIE '],
   [/\bfautes? personnelles?\b|\bfautes? (?:de|du|d)\b|\bfautes?\b/g, ' FPERSO '],
   // rebonds
   [/\brebonds? (?:en )?(?:offensifs?|offensives?|off|attaque)\b/g, ' REBO '],
@@ -224,12 +224,12 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(?:deuxiemes?|seconds?|secondes?|2e|2eme|2nd)\b/g, ' ORD2 '],
   [/\b(?:troisiemes?|3e|3eme)\b/g, ' ORD3 '],
   // adversaire
-  [/\b(?:adversaires?|adverses?|eux|visiteurs?)\b/g, ' OPP '],
+  [/\b(?:l )?autres? equipes?\b|\bequipes? adverses?\b|\b(?:adversaires?|adverses?|eux|visiteurs?)\b/g, ' OPP '],
   [/\bmoins\b/g, ' MOINS '],
   // annulation
   [/\b(?:annule|annuler|annulation|supprime|supprimer|efface|effacer)\b/g, ' UNDO '],
   // chrono
-  [/\btemps morts?\b/g, ' CSTOP '],
+  [/\b(?:temps|tant|ten|tan|tem) ?(?:morts?|mors?|more?|mord)\b/g, ' CSTOP '],
   [/\b(?:debuts?|coup d envoi|depart)(?: (?:du|de|des|d))? ?matchs?\b/g, ' CSTART '],
   [/\b(?:demarre|demarrer|demarrez|lance|lancer|lancez|commence|commencer|start)(?: (?:le|du|un|ce))? ?matchs?\b/g, ' CSTART '],
   [/\breprise(?: du jeu)?\b|\breprend\b/g, ' CSTART '],
@@ -314,7 +314,30 @@ function matchName(words: string[], i: number, roster: RosterEntry[]): NameTok |
   return best;
 }
 
-export function normalizeText(text: string, fixes?: Record<string, string>): string {
+// Mots de commande « canoniques » : un mot inconnu à une lettre près est ramené à l'un d'eux (« interseption » -> « interception »).
+const CMD_WORDS = ['interception', 'intercepte', 'rebond', 'rebonds', 'offensif', 'defensif', 'offensive', 'defensive', 'passe', 'passes', 'decisive', 'perte', 'pertes', 'balle', 'balles', 'perdue', 'faute', 'fautes',
+  'technique', 'antisportive', 'disqualifiante', 'subie', 'subies', 'personnelle', 'adversaire', 'adversaires', 'remplacement', 'changement', 'sortie', 'sorties', 'entree', 'entrees', 'annule', 'annuler', 'chrono',
+  'demarrer', 'demarre', 'arreter', 'termine', 'premier', 'deuxieme', 'troisieme', 'reussi', 'reussie', 'manque', 'manques', 'loupe', 'points', 'pointe', 'contree', 'terrain', 'equipe', 'combien', 'score', 'afficher',
+  'fermer', 'valider', 'selectionne', 'selectionner', 'lancer', 'lancers', 'francs', 'reprise', 'match', 'temps', 'marque', 'supprime', 'efface', 'deselectionner', 'decisives'];
+const CMD_SET = new Set(CMD_WORDS);
+
+function correctWords(t: string, roster: RosterEntry[]): string {
+  const words = t.split(' ');
+  const nameLike = (x: string) => { const pk = phonetic(x); return !!pk && roster.some((p) => p.keys.some((k) => pk[0] === k[0] && lev(pk, k) <= (k.length >= 4 ? 1 : 0))); };
+  return words.map((w, i) => {
+    if (w.length < 5 || /\d/.test(w) || CMD_SET.has(w) || isLexiconWord(w)) return w;
+    // un mot qui ressemble à un prénom de l'effectif (seul, ou coupé en deux : « ana belle ») n'est jamais « corrigé »
+    if (nameLike(w) || (i > 0 && nameLike(words[i - 1] + w)) || (i < words.length - 1 && nameLike(w + words[i + 1]))) return w;
+    let best = '', bd = 99, tie = false;
+    for (const cw of CMD_WORDS) {
+      const d = lev(w, cw);
+      if (d < bd) { bd = d; best = cw; tie = false; } else if (d === bd && cw !== best) tie = true;
+    }
+    return bd <= (w.length >= 9 ? 2 : 1) && !tie ? best : w;
+  }).join(' ');
+}
+
+export function normalizeText(text: string, fixes?: Record<string, string>, roster?: RosterEntry[]): string {
   // « 1/3 » → « 1 sur 3 » (avant que la normalisation ne remplace « / » par une espace)
   let t = String(text ?? '').replace(/(\d)\s*\/\s*(\d)/g, '$1 sur $2');
   t = t.replace(/n\s*°\s*(\d)/gi, 'numero $1').replace(/n°/gi, ' numero ');
@@ -327,13 +350,14 @@ export function normalizeText(text: string, fixes?: Record<string, string>): str
       t = t.replace(new RegExp(`(^| )${k}(?= |$)`, 'g'), `$1${fixes[k]}`);
     }
   }
+  if (roster) t = correctWords(t, roster);
   t = numbersToDigits(t);
   for (const [re, rep] of RULES) t = t.replace(re, rep);
   return t.replace(/\s+/g, ' ').trim();
 }
 
 function tokenize(text: string, roster: RosterEntry[], fixes?: Record<string, string>): Tok[] {
-  const words = normalizeText(text, fixes).split(' ').filter(Boolean);
+  const words = normalizeText(text, fixes, roster).split(' ').filter(Boolean);
   const toks: Tok[] = [];
   let art = false;
   for (let i = 0; i < words.length;) {
@@ -602,6 +626,8 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
   let actionCodes = codesWithBare.filter((c) => EVENT[c] || c === 'REB' || c === 'P1');
   if (actionCodes.includes('REBO') || actionCodes.includes('REBD')) actionCodes = actionCodes.filter((c) => c !== 'REB');
   actionCodes = Array.from(new Set(actionCodes));
+  // « Chloé a subi une faute » : subie ET faute dans la même phrase -> c'est la faute SUBIE. Une faute précisée (technique…) l'emporte aussi sur « faute » seule.
+  if (actionCodes.includes('FPERSO') && actionCodes.some((x) => x === 'FSUBIE' || x === 'FTECH' || x === 'FANTI' || x === 'FDISQ')) actionCodes = actionCodes.filter((x) => x !== 'FPERSO');
 
   // ───── Joueuse visée
   const needsPlayer = actionCodes.length > 0 || hasLF;

@@ -52,6 +52,7 @@ interface Props {
 
 const ALIAS_KEY = 'teamstats.voice.aliases.v1';
 const MODE_KEY = 'teamstats.voice.mode.v1';
+const PHRASES_KEY = 'teamstats.voice.phrases.v1';
 const VOCAB = ['lancer franc', 'lancers francs', 'interception', 'rebond offensif', 'rebond défensif', 'passe décisive', 'perte de balle', 'balle perdue', 'faute technique', 'faute antisportive', 'faute disqualifiante', 'faute subie', 'remplacement', 'sur le terrain on a', 'démarrer chrono', 'arrêt chrono', 'démarrer le match', 'temps mort', 'annule la dernière commande', 'deux points', 'trois points', 'adversaire', 'contrée', 'sélectionne'];
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -84,6 +85,10 @@ export default function VoiceControl(props: Props) {
   const [unknownHeard, setUnknownHeard] = useState('');
   const [saidKind, setSaidKind] = useState<'ok' | 'wait' | 'info' | 'error'>('info');
   const [diag, setDiag] = useState(false);
+  const [usePhrases, setUsePhrases] = useState(false);   // liste de mots favorisés : désactivée par défaut (à essayer)
+  const phrasesRef = useRef(false);
+  phrasesRef.current = usePhrases;
+  const [journal, setJournal] = useState<Array<{ at: string; alts: string[]; said: string; kind: string }>>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [showNames, setShowNames] = useState(false);
   const [online, setOnline] = useState(true);
@@ -145,6 +150,7 @@ export default function VoiceControl(props: Props) {
   localReadyRef.current = localSupport?.availability === 'available';
 
   useEffect(() => {
+    try { setUsePhrases(window.localStorage.getItem(PHRASES_KEY) === '1'); } catch { /* ignoré */ }
     void loadShared().then(setShared);
     // Profil vocal du COMPTE (base) : suit l'utilisateur d'un PC à une tablette. Anciennes variantes locales : reprises une fois.
     void loadProfile(props.userId).then(({ profile: p, fromDb }) => {
@@ -191,7 +197,7 @@ export default function VoiceControl(props: Props) {
 
   // ───── Exécution des actions décidées par le dialogue (via les adaptateurs de page.tsx)
   // Durée pendant laquelle la joueuse et la touche restent allumées avant que l'événement soit enregistré.
-  const SHOW_BEFORE_MS = 250;
+  const SHOW_BEFORE_MS = 120;
   const apply = async (a: VoiceAction) => {
     switch (a.t) {
       case 'event':
@@ -221,6 +227,8 @@ export default function VoiceControl(props: Props) {
       setUnknownHeard(res.unknown ?? '');
       // On répond tout de suite à voix haute ; l'écran s'allume pendant ce temps.
       setSaid(res.say.join('. '));
+      const kindNow = res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait' : 'info';
+      setJournal((j) => [{ at: new Date().toLocaleTimeString('fr-FR'), alts, said: res.say.join('. '), kind: kindNow }, ...j].slice(0, 40));
       setSaidKind(res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait' : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(res.say.join(' ')) ? 'error' : 'info');
       setDialogStatus(dialog.status());
       engineRef.current?.speak(res.say);
@@ -230,6 +238,26 @@ export default function VoiceControl(props: Props) {
       }
       if (res.actions.length) await sleep(30);
     }).catch(() => undefined);
+  };
+
+  // Réponse anticipée : dès que le texte provisoire est une commande complète et ne bouge plus pendant EARLY_MS,
+  // on l'exécute sans attendre la fin du silence que Chrome met ~1 s à constater. Le résultat « final » de la même phrase est alors ignoré.
+  const EARLY_MS = 400;
+  const earlyKeyRef = useRef<string | null>(null);
+  const interimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onInterim = (alts: string[], meta: { key: string }) => {
+    if (!enabledRef.current || earlyKeyRef.current === meta.key) return;
+    if (interimTimer.current) clearTimeout(interimTimer.current);
+    interimTimer.current = setTimeout(() => {
+      interimTimer.current = null;
+      if (!enabledRef.current) return;
+      if (dialogRef.current?.peek(alts, viewRef.current)) { earlyKeyRef.current = meta.key; handleSpeech(alts); }
+    }, EARLY_MS);
+  };
+  const onFinal = (alts: string[], meta?: { key: string }) => {
+    if (interimTimer.current) { clearTimeout(interimTimer.current); interimTimer.current = null; }
+    if (meta && earlyKeyRef.current === meta.key) { earlyKeyRef.current = null; return; }   // déjà traitée en avance
+    handleSpeech(alts);
   };
 
   const stopVoice = (note?: string, speakNote?: string) => {
@@ -260,12 +288,13 @@ export default function VoiceControl(props: Props) {
     }
     if (viewRef.current.players.length === 0) { setMessage('Aucune joueuse dans le match : configurez d’abord le match.'); return; }
     const engine = new VoiceEngine({
-      onResult: handleSpeech,
+      onResult: onFinal,
+      onInterim,
       onState: setEngineState,
       onFatal: (_kind, msg) => stopVoice(msg),
       onEngine: setActiveEngine,
       getMode: () => modeRef.current,
-      getPhrases: (): PhraseHint[] => [
+      getPhrases: (): PhraseHint[] => !phrasesRef.current ? [] : [
         ...viewRef.current.players.flatMap((p) => (p.name ? [p.name, ...(p.aliases ?? [])] : [])).map((phrase) => ({ phrase, boost: 5 })),
         ...VOCAB.map((phrase) => ({ phrase, boost: 2 })),
       ],
@@ -413,6 +442,9 @@ export default function VoiceControl(props: Props) {
         <div className="text-[10px] text-slate-400 font-mono bg-slate-950/60 rounded-lg p-2 space-y-0.5">
           <p>Entendu :</p>
           {heard.length === 0 ? <p>—</p> : heard.map((h, i) => <p key={i}>{i + 1}. {h}</p>)}
+          <p className="pt-1 text-slate-300">Journal ({journal.length}) :</p>
+          {journal.slice(0, 8).map((j, i) => <p key={i}>{j.at} · {j.kind} · « {j.alts[0]} » → {j.said || '—'}</p>)}
+          <button type="button" onClick={() => { try { void navigator.clipboard.writeText(journal.map((j) => `${j.at}\t${j.kind}\t${j.alts.join(' | ')}\t=> ${j.said}`).join('\n')); } catch { /* ignoré */ } }} className="mt-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 font-sans">Copier le journal (pour l'envoyer)</button>
         </div>
       )}
       {enabled && (
@@ -443,6 +475,14 @@ export default function VoiceControl(props: Props) {
           {localSupport && localSupport.api && localSupport.availability !== 'available' && localSupport.availability !== 'unavailable' && (
             <button type="button" disabled={installing || !online} onClick={prepareOffline} className="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{installing ? 'Téléchargement…' : 'Préparer le mode hors ligne'}</button>
           )}
+          <label className="flex items-center gap-2 select-none">
+            <input type="checkbox" checked={usePhrases} onChange={(e: { target: { checked: boolean } }) => { setUsePhrases(e.target.checked); try { window.localStorage.setItem(PHRASES_KEY, e.target.checked ? '1' : '0'); } catch { /* ignoré */ } engineRef.current?.refresh(); }} />
+            Favoriser les prénoms et commandes auprès de Chrome (essai : à décocher si les prénoms sont moins bien compris)
+          </label>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span>Mon calibrage : {Object.values(profile.aliases).reduce((n, l) => n + l.length, 0)} variantes, {Object.keys(profile.wordFixes).length} corrections · Club : {Object.values(shared.aliases).reduce((n, l) => n + l.length, 0)} variantes, {Object.keys(shared.wordFixes).length} corrections</span>
+            <button type="button" onClick={() => { if (window.confirm('Effacer votre calibrage personnel (variantes de prénoms et corrections apprises) ? Les apprentissages communs du club restent.')) persistProfile(emptyProfile()); }} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-600 text-slate-200">Effacer mon calibrage</button>
+          </div>
           <p className="text-slate-500">À faire une fois, avec du réseau. Liste de mots favorisés (prénoms, commandes) : {localSupport?.phrases ? 'active' : 'non gérée par ce Chrome'}.</p>
         </div>
       )}

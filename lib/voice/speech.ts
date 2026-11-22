@@ -34,7 +34,9 @@ export type EngineErrorKind = 'unsupported' | 'not-allowed' | 'network' | 'no-mi
 
 export interface VoiceEngineHandlers {
   /** Une phrase finale : les alternatives, la plus probable d'abord. */
-  onResult: (alternatives: string[]) => void;
+  onResult: (alternatives: string[], meta?: { key: string }) => void;
+  /** Texte provisoire (la phrase n'est pas finie) : permet de répondre sans attendre la fin du silence. */
+  onInterim?: (alternatives: string[], meta: { key: string }) => void;
   onState: (s: EngineState) => void;
   /** Erreur fatale : le mode vocal doit être coupé (message à afficher). */
   onFatal: (kind: EngineErrorKind, message: string) => void;
@@ -72,6 +74,7 @@ export class VoiceEngine {
   private recentStarts: number[] = [];
   private speakId = 0;
   private state: EngineState = 'off';
+  private sessionSeq = 0;
   private forceLocal = false;   // le réseau a lâché : on bascule sur la reconnaissance de l'appareil
 
   constructor(private h: VoiceEngineHandlers) {}
@@ -144,7 +147,8 @@ export class VoiceEngine {
       if (hints.length && PhraseCtor && 'phrases' in rec) rec.phrases = hints.map((x) => new PhraseCtor(x.phrase, x.boost));
     } catch { /* ignoré : la reconnaissance marche sans */ }
     rec.continuous = true;
-    rec.interimResults = false;
+    rec.interimResults = true;
+    const session = ++this.sessionSeq;
     rec.maxAlternatives = 5;
 
     rec.onstart = () => { if (this.rec === rec) this.setState(this.speaking ? 'speaking' : 'listening'); };
@@ -152,10 +156,12 @@ export class VoiceEngine {
       if (this.speaking) return; // écho : on ignore ce qui est entendu pendant la synthèse
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
-        if (!r.isFinal) continue;
         const alts: string[] = [];
         for (let k = 0; k < r.length; k++) { const tr = String(r[k].transcript || '').trim(); if (tr) alts.push(tr); }
-        if (alts.length) { this.recentStarts = []; this.h.onResult(alts); }
+        if (!alts.length) continue;
+        const meta = { key: `${session}:${i}` };
+        if (r.isFinal) { this.recentStarts = []; this.h.onResult(alts, meta); }
+        else this.h.onInterim?.(alts, meta);
       }
     };
     rec.onerror = (e: any) => {

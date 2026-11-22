@@ -492,9 +492,9 @@ t('calibrage : toutes les phrases lues correctement sont comprises (« ok »)', 
 });
 t('calibrage : un mot de commande mal entendu est appris puis appliqué', () => {
   const setup = calibrationSetup(PLAYERS);
-  const r = evaluateHeard({ group: 'Actions', text: 'interception Chloé' }, ['intersection Chloé'], setup, emptyProfile());
-  assert.equal(r.status, 'learned'); assert.equal(r.profile.wordFixes['intersection'], 'interception');
-  const c: any = parseCommand('intersection Chloé', PLAYERS, { onCourt: START_COURT, events: [], wordFixes: r.profile.wordFixes });
+  const r = evaluateHeard({ group: 'Actions', text: 'interception Chloé' }, ['interdiction Chloé'], setup, emptyProfile());
+  assert.equal(r.status, 'learned'); assert.equal(r.profile.wordFixes['interdiction'], 'interception');
+  const c: any = parseCommand('interdiction Chloé', PLAYERS, { onCourt: START_COURT, events: [], wordFixes: r.profile.wordFixes });
   assert.equal(c.action, 'INTERCEPTION'); assert.equal(c.playerId, 'chloe');
 });
 t('calibrage : un prénom très mal entendu devient une variante de la joueuse', () => {
@@ -510,8 +510,8 @@ t('calibrage : on n\'apprend jamais à remplacer un mot qui a déjà un sens', (
 });
 t('calibrage : l\'alternative qui suffit est retenue, les autres n\'ajoutent rien', () => {
   const setup = calibrationSetup(PLAYERS);
-  const r = evaluateHeard({ group: 'Actions', text: 'interception Chloé' }, ['intersection Chloé', 'blabla Chloé'], setup, emptyProfile());
-  assert.equal(r.status, 'learned'); assert.deepEqual(Object.keys(r.profile.wordFixes), ['intersection']);
+  const r = evaluateHeard({ group: 'Actions', text: 'interception Chloé' }, ['interdiction Chloé', 'blabla Chloé'], setup, emptyProfile());
+  assert.equal(r.status, 'learned'); assert.deepEqual(Object.keys(r.profile.wordFixes), ['interdiction']);
 });
 
 // ═════════ 14. Didacticiel : le parcours complet fonctionne, avec n'importe quelles joueuses ═════════
@@ -536,6 +536,29 @@ t('didacticiel : 80 matchs démo au hasard, chaque phrase est comprise et a son 
     });
   }
   assert.deepEqual(failures.slice(0, 5), []);
+});
+
+// ═════════ 15. Robustesse : mots déformés, priorités, réponse anticipée ═════════
+t('mots de commande déformés d\'une lettre : ramenés au bon mot', () => {
+  assert.equal(ev(parse('interseption Chloé')).action, 'INTERCEPTION');
+  assert.equal(ev(parse('rebon offencif Chloé')).action, 'REBOND OFFENSIF');
+  assert.equal(ev(parse('passe desisive Chloé')).action, 'PASSE DÉCISIVE');
+});
+t('un prénom coupé en deux n\'est jamais « corrigé » en mot de commande', () => {
+  const c: any = parseCommand('Ana belle interception', PLAYERS, { onCourt: START_COURT, events: [] });
+  assert.equal(c.type, 'EVENT'); assert.equal(c.action, 'INTERCEPTION');
+});
+t('temps mort : variantes entendues', () => { for (const x of ['temps morts', 'tant mort', 'temps mors', 'tem mort']) assert.equal((parse(x) as any).running, false, x); });
+t('« Chloé a subi une faute » = faute subie', () => { for (const x of ['Chloé a subi une faute', 'faute subit Chloé', 'Chloé su bi']) assert.equal(ev(parse(x)).action, 'FAUTE SUBIE', x); });
+t('adversaire : « équipe adverse », « l\'autre équipe »', () => { for (const x of ['équipe adverse deux points', "l'autre équipe 2 points", '2 points adversaire']) assert.equal((parse(x) as any).delta, 2, x); });
+t('peek : une phrase complète est repérée, une phrase incomplète non', () => {
+  const s = new Sim(); const v = s.view();
+  assert.equal(s.dialog.peek(['Chloé deux points'], v), true); assert.equal(s.dialog.peek(['Chloé'], v), false); assert.equal(s.dialog.peek(['deux points'], v), false);
+  assert.equal(s.dialog.peek(['démarrer chrono'], v), true); assert.equal(s.dialog.peek(['remplacement Chloé par'], v), false);
+  s.say('remplacement Chloé par Hinde'); assert.equal(s.dialog.peek(['oui'], v), true); assert.equal(s.dialog.peek(['hum'], v), false);
+});
+t('peek n\'a aucun effet de bord', () => {
+  const s = new Sim(); const v = s.view(); s.dialog.peek(['Chloé deux points'], v); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
 });
 
 // Phonétique

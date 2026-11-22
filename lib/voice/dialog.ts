@@ -111,6 +111,18 @@ export class VoiceDialog {
     return this.onIdle(alts, view, now);
   }
 
+  /** La phrase (provisoire) est-elle déjà une commande complète ? Sans aucun effet de bord : sert à répondre plus tôt. */
+  peek(alternatives: string[], view: VoiceView): boolean {
+    const alts = alternatives.map((a) => a.trim()).filter(Boolean);
+    if (!alts.length) return false;
+    const st = this.st;
+    const complete = (c: Cmd) => c.type !== 'UNKNOWN' && c.type !== 'REFUSE' && c.type !== 'ASK';
+    if (st.mode === 'confirm') return alts.some((a) => parseConfirm(a) !== null);
+    if (st.mode === 'ask') return false;
+    if (st.mode === 'ft') return complete(this.best(alts, view, undefined, true).cmd);
+    return complete(this.best(alts, view).cmd);
+  }
+
   // ───────── contexte d'analyse
   private ctx(view: VoiceView, prefer?: Record<string, string>): ParseCtx {
     return { onCourt: view.onCourt, events: view.events, prefer, requireOnCourt: true, subPanelOpen: !!view.subPanel?.open, selectedId: view.selectedPlayerId ?? null, wordFixes: view.wordFixes };
