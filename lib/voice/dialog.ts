@@ -19,6 +19,8 @@ export interface VoiceView {
   clockRunning: boolean;
   /** Joueuse sélectionnée à l'écran (joueuse par défaut si la phrase n'en nomme aucune). */
   selectedPlayerId?: string | null;
+  /** Corrections apprises au calibrage (compte de l'utilisateur). */
+  wordFixes?: Record<string, string>;
   /** Fenêtre de changement de l'écran : ouverte ? nombre de sorties / d'entrées déjà cochées. */
   subPanel?: { open: boolean; outCount: number; inCount: number };
 }
@@ -111,7 +113,7 @@ export class VoiceDialog {
 
   // ───────── contexte d'analyse
   private ctx(view: VoiceView, prefer?: Record<string, string>): ParseCtx {
-    return { onCourt: view.onCourt, events: view.events, prefer, requireOnCourt: true, subPanelOpen: !!view.subPanel?.open, selectedId: view.selectedPlayerId ?? null };
+    return { onCourt: view.onCourt, events: view.events, prefer, requireOnCourt: true, subPanelOpen: !!view.subPanel?.open, selectedId: view.selectedPlayerId ?? null, wordFixes: view.wordFixes };
   }
 
   /** Première alternative qui donne une commande exécutable ; à défaut la meilleure explication. */

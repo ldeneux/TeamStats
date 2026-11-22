@@ -24,6 +24,7 @@
 
 | 19 | Commande vocale (Direct) : actions sans validation, démarrer le match, lancers francs visibles à l'écran, sélection de joueuse, aide à jour, étape 14 + annexe B du guide ; ajout d'une joueuse enregistré aussitôt dans l'effectif | **Fait** (`npm run test:voice` ; micro, synthèse vocale et relance de l'écoute à tester sur la tablette) |
 | 20 | Équipes : le nombre de phases d'une vignette compte les tours d'une même coupe pour UNE phase ; Calendrier > Effectif : le coach peut importer le PDF FFBB de ses équipes (consultant : lecture seule) | **Fait** |
+| 21 | Coupes : les phases finales (1/8, 1/4, demi, finale) rejoignent leur coupe (même nom de base) ; commande vocale : calibrage complet enregistré par compte (`sql/voice_01_calibration.sql`, table `voice_profiles`), mode hors ligne Chrome | **Fait** (SQL à exécuter une fois ; micro et hors ligne à tester sur appareil) |
 
 ## Notes pour 6 et 7
 - 6 : réalisé comme une **vraie connexion** au compte coach (jeton à usage unique généré par le serveur) : on voit exactement ce que voit ce coach, droits réels (RLS) compris ; un bandeau permet de revenir à son compte.

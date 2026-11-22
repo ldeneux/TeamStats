@@ -70,8 +70,11 @@ export function mergeCupPhases(phases: ClubPhase[]): ClubPhase[] {
   }
   for (const list of Array.from(groups.values())) {
     const sorted = [...list].sort((a, b) => cupTourNumber(a.competition_name) - cupTourNumber(b.competition_name) || String(a.starts_on ?? '').localeCompare(String(b.starts_on ?? '')));
-    const tours = sorted.map((p, i) => ({
-      phaseId: p.id, tour: new Set(sorted.map((x) => cupTourNumber(x.competition_name))).size === sorted.length ? cupTourNumber(p.competition_name) : i + 1,
+    // Tours numérotés : leur numéro si tous distincts, sinon l'ordre d'arrivée. Phases finales (1/8, 1/4…) : leur rang propre (≥ 100), jamais renumérotées.
+    const numbered = sorted.filter((x) => cupTourNumber(x.competition_name) < 100);
+    const numDistinct = new Set(numbered.map((x) => cupTourNumber(x.competition_name))).size === numbered.length;
+    const tours = sorted.map((p) => ({
+      phaseId: p.id, tour: cupTourNumber(p.competition_name) >= 100 ? cupTourNumber(p.competition_name) : numDistinct ? cupTourNumber(p.competition_name) : numbered.indexOf(p) + 1,
       name: p.competition_name || '', competition_id: p.competition_id, poule_id: p.poule_id, matches_count: p.matches_count, starts_on: p.starts_on, ends_on: p.ends_on,
     }));
     const starts = sorted.map((p) => p.starts_on).filter(Boolean).sort() as string[];

@@ -2716,6 +2716,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         {activeTab === 'MATCH' && (
           <div className="space-y-4">
             <VoiceControl
+              userId={userId}
               roster={game.matchRoster}
               onCourtPlayerIds={game.onCourtPlayerIds}
               events={game.events}

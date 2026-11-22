@@ -1,0 +1,43 @@
+# À placer dans le dépôt : .github/workflows/build-exe.yml
+# Construit les deux programmes Windows à partir de scripts/, chacun avec SON icône (dossier public/) :
+#   - scripts/push_ffbb_club.py      -> MiseAJourFFBB_Club.exe     (icône public/icone-club.ico)
+#   - scripts/push_ffbb_clubs_ara.py -> MiseAJourFFBB_ClubsARA.exe (icône public/icone-clubs-ara.ico)
+# Lancement : onglet « Actions » -> « Construire les .exe FFBB » -> « Run workflow ».
+# Les .exe sont ensuite téléchargeables en bas de la page de l'exécution (section « Artifacts »).
+name: Construire les .exe FFBB
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/push_ffbb_club.py"
+      - "scripts/push_ffbb_clubs_ara.py"
+      - "public/icone-club.ico"
+      - "public/icone-clubs-ara.ico"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dépendances
+        run: pip install pyinstaller requests
+
+      - name: Construire MiseAJourFFBB_Club.exe
+        run: pyinstaller --onefile --clean --name MiseAJourFFBB_Club --icon public/icone-club.ico scripts/push_ffbb_club.py
+
+      - name: Construire MiseAJourFFBB_ClubsARA.exe
+        run: pyinstaller --onefile --clean --name MiseAJourFFBB_ClubsARA --icon public/icone-clubs-ara.ico scripts/push_ffbb_clubs_ara.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiseAJourFFBB-windows
+          path: |
+            dist/MiseAJourFFBB_Club.exe
+            dist/MiseAJourFFBB_ClubsARA.exe
+          if-no-files-found: error

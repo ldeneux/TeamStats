@@ -390,6 +390,7 @@ def page_vocal():
          NumItem(4, f"{b('Changements')} : l'appli lit « Sortent … Entrent … Valide ? » et attend {b('« oui »')} ou {b('« non »')}. Un changement ne s'annule pas : on en refait un."),
          NumItem(5, f"{b('Lancers francs')} : « lancer franc » ouvre la série, visible à l'écran (LF 1, LF 2, LF 3). Dites « premier réussi », « deuxième raté », ou simplement « réussi » / « raté ». La série est enregistrée après la 3e tentative ou par « terminé »."),
          NumItem(6, f"{b('Chrono')} : « démarrer chrono », « démarrer le match », « arrêt chrono », « temps mort »."),
+         NumItem(7, f"{b('Calibrage')} : le bouton {chip('Calibrer', 'blue')} fait lire toutes les phrases (environ 6 minutes, casque sur la tête). L'appli apprend les prénoms et mots mal compris et les {b('enregistre sur votre compte')} : ils suivent sur tous vos PC et tablettes. Ne touche rien d'autre dans l'appli."),
          Callout('warn', 'Décalage', "Comptez 1 à 3 secondes entre la voix et son effet, chrono compris : le temps de jeu en tient compte, pas besoin de corriger."),
          Callout('tip', 'Aide intégrée', f"Le bouton {chip('Aide', 'blue')} du bandeau liste toutes les commandes, avec des exemples ; le bouton {chip('Prénoms', 'blue')} apprend à l'appli la prononciation des prénoms difficiles. La liste complète est en annexe B."),
          CondPageBreak(200), H2('Si ça ne marche pas'), faq]
@@ -488,7 +489,8 @@ def page_annexe():
         ('admin_07_hide_superadmin', 'Un admin ne voit pas les comptes superadmin.'),
         ('admin_08_roster_coach', "Case « Coach » de l'encadrement."),
         ('admin_09_role_consultant', 'Profil consultant (lecture seule).'),
-        ('admin_10_merge_roster', 'Fiche joueuse unique (maillot + licence) et fonction des renforts.'))], [140, CW - 140], ('Script SQL (dans cet ordre)', 'À quoi il sert'))
+        ('admin_10_merge_roster', 'Fiche joueuse unique (maillot + licence) et fonction des renforts.'),
+        ('voice_01_calibration', 'Calibrage de la commande vocale, enregistré par compte (suit l’utilisateur d’un appareil à l’autre).'))], [140, CW - 140], ('Script SQL (dans cet ordre)', 'À quoi il sert'))
     s = [Banner('A', 'Module administrateur', 'Équipes du club, calendriers, effectifs et accès'),
          P(f"Réservé aux profils {b('admin')} et {b('superadmin')} : le bouton {b('Administration')} (la roue violette, en haut à droite) n'existe pas pour un coach. "
            "Un bandeau d'icônes en haut de l'écran choisit la section : Équipes & calendriers, ou Accès."),

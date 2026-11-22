@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { parseCommand, phonetic, normalizeText, Cmd, VoicePlayer, VoiceEventLite } from '../lib/voice/commands';
 import { VoiceDialog, VoiceAction, VoiceView, DialogResult } from '../lib/voice/dialog';
+import { buildPrompts, calibrationSetup, emptyProfile, evaluateHeard } from '../lib/voice/calibrate';
 
 // ───── Effectif de test (fiche projet § 5)
 const P = (id: string, name: string, number: number, aliases?: string[]): VoicePlayer => ({ id, name, number, aliases });
@@ -468,6 +469,42 @@ t('prénom mal entendu : le mot restant est rapproché de la joueuse la plus pro
 t('mot inconnu trop éloigné : pas de devinette', () => assert.notEqual(parse('2 points Zorglub').type, 'EVENT'));
 t('le mot inconnu est remonté pour être appris comme variante', () => {
   const s = new Sim(); const r = s.dialog.handle(['bonjour zorglub'], s.view()); assert.equal(r.unknown, 'bonjour zorglub'); assert.equal(r.say[0], 'Commande non reconnue.');
+});
+
+// ═════════ 13. Calibrage ═════════
+t('calibrage : la liste de phrases est complète et propre', () => {
+  const setup = calibrationSetup(PLAYERS); const ps = buildPrompts(setup);
+  assert.ok(ps.length >= 50, String(ps.length));
+  for (const p of ps) { assert.ok(!/undefined|NaN/.test(p.text), p.text); assert.ok(p.text.trim().length > 0); }
+  assert.ok(new Set(ps.map((p) => p.group)).size >= 6);
+});
+t('calibrage : toutes les phrases lues correctement sont comprises (« ok »)', () => {
+  const setup = calibrationSetup(PLAYERS); const bad: string[] = [];
+  for (const p of buildPrompts(setup)) { const r = evaluateHeard(p, [p.text], setup, emptyProfile()); if (r.status !== 'ok') bad.push(p.text); }
+  assert.deepEqual(bad, []);
+});
+t('calibrage : un mot de commande mal entendu est appris puis appliqué', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Actions', text: 'interception Chloé' }, ['intersection Chloé'], setup, emptyProfile());
+  assert.equal(r.status, 'learned'); assert.equal(r.profile.wordFixes['intersection'], 'interception');
+  const c: any = parseCommand('intersection Chloé', PLAYERS, { onCourt: START_COURT, events: [], wordFixes: r.profile.wordFixes });
+  assert.equal(c.action, 'INTERCEPTION'); assert.equal(c.playerId, 'chloe');
+});
+t('calibrage : un prénom très mal entendu devient une variante de la joueuse', () => {
+  const roster = [P('zoe', 'ZOE', 3), ...PLAYERS.filter((p) => p.id !== 'chloe')];
+  const setup = calibrationSetup(roster);
+  const r = evaluateHeard({ group: 'Prénoms', text: 'Zoé deux points' }, ['sauce deux points'], setup, emptyProfile());
+  assert.equal(r.status, 'learned'); assert.deepEqual(r.profile.aliases['zoe'], ['sauce']);
+});
+t('calibrage : on n\'apprend jamais à remplacer un mot qui a déjà un sens', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Prénoms', text: 'Chloé deux points' }, ['Chloé trois points'], setup, emptyProfile());
+  assert.equal(r.status, 'fail'); assert.deepEqual(r.profile.wordFixes, {});
+});
+t('calibrage : l\'alternative qui suffit est retenue, les autres n\'ajoutent rien', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Actions', text: 'interception Chloé' }, ['intersection Chloé', 'blabla Chloé'], setup, emptyProfile());
+  assert.equal(r.status, 'learned'); assert.deepEqual(Object.keys(r.profile.wordFixes), ['intersection']);
 });
 
 // Phonétique

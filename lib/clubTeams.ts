@@ -84,9 +84,32 @@ export const isCup = (competitionName: string | null) => /coupe|tour\b|challenge
 // Tour d'une coupe : chaque tour est une « compétition » FFBB à part (« 2ème tour Coupe du Rhône… » = tour 2) ; sans mention = 1er tour.
 // Le numéro de journée d'un match de coupe n'est PAS le tour (c'est un numéro de match) : on s'appuie sur le nom de la compétition.
 const TOUR_RE = /^\s*(\d+)\s*(?:er|ère|ere|e|ème|eme|nd|d)?\s*tour\b\s*[-:–]?\s*/i;
-export const cupTourNumber = (name: string | null | undefined): number => { const m = TOUR_RE.exec(name || ''); return m ? parseInt(m[1], 10) : 1; };
-export const cupBaseName = (name: string | null | undefined): string => (name || '').replace(TOUR_RE, '').trim();
-export const tourLabel = (n: number | string) => (Number(n) === 1 ? '1er tour' : `${n}e tour`);
+// Phases finales d'une coupe : « 1/8 Finale Coupe du Rhône… », « 1/4 de finale », « Demi-finale », « Finale »… Elles font partie de la MÊME coupe.
+// Placé en tête (« 1/8 Finale Coupe… ») ou en queue (« Coupe… - 1/8 finale »).
+const KO_WORD = '(?:seizi[eè]mes?|huiti[eè]mes?|quarts?|demi[-\\s]?finales?|finales?)';
+const KO_CORE = `(?:(\\d+)\\s*\\/\\s*(\\d+)\\s*(?:[eè]mes?|e)?\\s*(?:de\\s+)?finales?|(${KO_WORD})(?:\\s+de\\s+finale)?)`;
+const KO_HEAD = new RegExp(`^\\s*${KO_CORE}\\b\\s*[-:–]?\\s*`, 'i');
+const KO_TAIL = new RegExp(`\\s*[-:–(]?\\s*${KO_CORE}\\s*\\)?\\s*$`, 'i');
+const koDenominator = (m: RegExpExecArray): number => {
+  if (m[2]) return parseInt(m[2], 10);
+  const w = (m[3] || '').toLowerCase();
+  return /^seizi/.test(w) ? 16 : /^huiti/.test(w) ? 8 : /^quart/.test(w) ? 4 : /^demi/.test(w) ? 2 : 1;
+};
+// Rang d'un tour : 1, 2, 3… pour les tours numérotés ; 200 - n pour une phase finale 1/n (1/8 → 192, 1/4 → 196, 1/2 → 198, finale → 199),
+// de sorte que l'ordre chronologique est conservé (tours numérotés, puis 1/16, 1/8, 1/4, demi, finale).
+export const cupTourNumber = (name: string | null | undefined): number => {
+  const t = TOUR_RE.exec(name || '');
+  if (t) return parseInt(t[1], 10);
+  const k = KO_HEAD.exec(name || '') || KO_TAIL.exec(name || '');
+  return k ? 200 - koDenominator(k) : 1;
+};
+export const cupBaseName = (name: string | null | undefined): string =>
+  (name || '').replace(TOUR_RE, '').replace(KO_HEAD, '').replace(KO_TAIL, '').trim();
+export const tourLabel = (n: number | string) => {
+  const v = Number(n);
+  if (v >= 100) { const den = 200 - v; return den === 1 ? 'Finale' : den === 2 ? 'Demi-finale' : `${den === 4 ? '1/4' : `1/${den}`} de finale`; }
+  return v === 1 ? '1er tour' : `${n}e tour`;
+};
 
 // Nom de l'équipe TeamStats associée : « SATHONAY U15F - 2026/2027 ».
 export const statsTeamName = (code: string, season: string) => `${CLUB_SHORT_NAME} ${code} - ${season.replace('-', '/')}`;

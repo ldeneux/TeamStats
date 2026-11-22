@@ -26,6 +26,8 @@ export interface ParseCtx {
   courtSize?: number;
   /** Levée d'ambiguïté déjà obtenue : clé = ids candidats triés et joints par « | », valeur = id choisi. */
   prefer?: Record<string, string>;
+  /** Corrections apprises au calibrage : mot entendu (normalisé) → mot attendu. */
+  wordFixes?: Record<string, string>;
   /** La fenêtre de changement est ouverte à l'écran (permet « valider »). */
   subPanelOpen?: boolean;
   /** Joueuse actuellement sélectionnée à l'écran (sert de joueuse par défaut). */
@@ -312,18 +314,26 @@ function matchName(words: string[], i: number, roster: RosterEntry[]): NameTok |
   return best;
 }
 
-export function normalizeText(text: string): string {
+export function normalizeText(text: string, fixes?: Record<string, string>): string {
   // « 1/3 » → « 1 sur 3 » (avant que la normalisation ne remplace « / » par une espace)
   let t = String(text ?? '').replace(/(\d)\s*\/\s*(\d)/g, '$1 sur $2');
   t = t.replace(/n\s*°\s*(\d)/gi, 'numero $1').replace(/n°/gi, ' numero ');
   t = strip(t).replace(/numeros?(\d)/g, 'numero $1');
+  if (fixes) {
+    // corrections apprises (calibrage) : « poing » → « points », « clauer » → « chloe »… les plus longues d'abord
+    for (const k of Object.keys(fixes).sort((a, b) => b.length - a.length)) {
+      if (!k || k === fixes[k]) continue;
+      if (!/^[a-z0-9 ]+$/.test(k)) continue; // clés déjà normalisées : lettres, chiffres, espaces
+      t = t.replace(new RegExp(`(^| )${k}(?= |$)`, 'g'), `$1${fixes[k]}`);
+    }
+  }
   t = numbersToDigits(t);
   for (const [re, rep] of RULES) t = t.replace(re, rep);
   return t.replace(/\s+/g, ' ').trim();
 }
 
-function tokenize(text: string, roster: RosterEntry[]): Tok[] {
-  const words = normalizeText(text).split(' ').filter(Boolean);
+function tokenize(text: string, roster: RosterEntry[], fixes?: Record<string, string>): Tok[] {
+  const words = normalizeText(text, fixes).split(' ').filter(Boolean);
   const toks: Tok[] = [];
   let art = false;
   for (let i = 0; i < words.length;) {
@@ -356,6 +366,12 @@ function nearestPlayer(word: string, roster: RosterEntry[], onCourt: Set<string>
   let top = scored.filter((x) => x.d === best);
   if (top.length > 1) { const onc = top.filter((x) => onCourt.has(x.id)); if (onc.length) top = onc; }
   return top.length === 1 ? top[0].id : null;
+}
+
+/** Mot déjà porteur de sens pour l'analyseur (commande, nombre, petit mot ignoré) : jamais « corrigé » par apprentissage. */
+export function isLexiconWord(word: string): boolean {
+  const w = strip(word);
+  return !w || FILLER.has(w) || ARTICLES.has(w) || /[A-Z0-9]/.test(normalizeText(w));
 }
 
 // ───────────────────────── Aides sur les fautes ─────────────────────────
@@ -482,7 +498,7 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
   const roster = buildRoster(players);
   const env: Env = { players, ctx, onCourt: new Set(ctx.onCourt) };
   const courtSize = ctx.courtSize ?? 5;
-  const toks = tokenize(text, roster);
+  const toks = tokenize(text, roster, ctx.wordFixes);
   if (!toks.length) return { type: 'UNKNOWN', say: "Commande non reconnue." };
 
   const codes = toks.filter((t): t is CodeTok => t.k === 'code').map((t) => t.c);
