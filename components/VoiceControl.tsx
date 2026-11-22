@@ -6,8 +6,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { VoiceDialog, VoiceAction, VoiceView } from '../lib/voice/dialog';
 import VoiceCalibration from './VoiceCalibration';
-import { VoiceProfile, addAliasTo, emptyProfile } from '../lib/voice/calibrate';
-import { loadProfile, saveProfile } from '../lib/voice/profileStore';
+import { VoiceProfile, addAliasTo, emptyProfile, mergeProfiles, profileDelta } from '../lib/voice/calibrate';
+import { loadProfile, loadShared, saveProfile, shareEntries } from '../lib/voice/profileStore';
 import { VoicePlayer, strip } from '../lib/voice/commands';
 import { VoiceEngine, EngineState, EngineMode, LocalSupport, PhraseHint, checkLocalSupport, installLocal, holdWakeLock, isRecognitionSupported, isSynthesisSupported, WakeLockHandle } from '../lib/voice/speech';
 
@@ -43,6 +43,9 @@ interface Props {
   selectedPlayerId: string | null;
   subPanel: { open: boolean; outCount: number; inCount: number };
   actions: VoiceActions;
+  /** Didacticiel : dernière réponse vocale, et état de l'interrupteur. */
+  onVoiceResult?: (r: { say: string; actions: number; at: number }) => void;
+  onEnabledChange?: (enabled: boolean) => void;
 }
 
 const ALIAS_KEY = 'teamstats.voice.aliases.v1';
@@ -92,15 +95,20 @@ export default function VoiceControl(props: Props) {
   const [profileSync, setProfileSync] = useState<'idle' | 'saved' | 'offline'>('idle');
   const [showCal, setShowCal] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [shared, setShared] = useState<VoiceProfile>(emptyProfile());
+  // Profil effectif = apprentissages communs du club + profil personnel (le personnel l'emporte).
+  const effective = useMemo(() => mergeProfiles(shared, profile), [shared, profile]);
+  const effectiveRef = useRef<VoiceProfile>(effective);
+  effectiveRef.current = effective;
   const aliases = profile.aliases;
 
   // ───── Toujours lire l'état le plus récent depuis les rappels asynchrones de la reconnaissance
   const players: VoicePlayer[] = useMemo(
     () => props.roster.map((p) => {
       const first = firstNameOf(p.name);
-      return { id: p.id, number: p.number, name: first, aliases: first ? aliases[strip(first)] ?? [] : [] };
+      return { id: p.id, number: p.number, name: first, aliases: first ? effective.aliases[strip(first)] ?? [] : [] };
     }),
-    [props.roster, aliases],
+    [props.roster, effective],
   );
   const viewRef = useRef<VoiceView>({ players: [], onCourt: [], events: [], scoreHome: 0, scoreAway: 0, period: 1, clockRunning: false, subPanel: { open: false, outCount: 0, inCount: 0 } });
   viewRef.current = {
@@ -111,7 +119,7 @@ export default function VoiceControl(props: Props) {
     scoreAway: props.scoreAway,
     period: props.period,
     clockRunning: props.clockRunning,
-    wordFixes: profile.wordFixes,
+    wordFixes: effective.wordFixes,
     selectedPlayerId: props.selectedPlayerId,
     subPanel: props.subPanel,
   };
@@ -124,12 +132,18 @@ export default function VoiceControl(props: Props) {
   const wakeRef = useRef<WakeLockHandle | null>(null);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const enabledRef = useRef(false);
+  const onEnabledRef = useRef(props.onEnabledChange);
+  onEnabledRef.current = props.onEnabledChange;
+  const onResultCbRef = useRef(props.onVoiceResult);
+  onResultCbRef.current = props.onVoiceResult;
+  useEffect(() => { onEnabledRef.current?.(enabled); }, [enabled]);
   const modeRef = useRef<EngineMode>('auto');
   modeRef.current = engineMode;
   const localReadyRef = useRef(false);
   localReadyRef.current = localSupport?.availability === 'available';
 
   useEffect(() => {
+    void loadShared().then(setShared);
     // Profil vocal du COMPTE (base) : suit l'utilisateur d'un PC à une tablette. Anciennes variantes locales : reprises une fois.
     void loadProfile(props.userId).then(({ profile: p, fromDb }) => {
       let merged = p;
@@ -201,6 +215,7 @@ export default function VoiceControl(props: Props) {
       const dialog = dialogRef.current as VoiceDialog;
       const res = dialog.handle(alts, viewRef.current);
       setHeard(alts);
+      onResultCbRef.current?.({ say: res.say.join('. '), actions: res.actions.length, at: Date.now() });
       setUnknownHeard(res.unknown ?? '');
       // On répond tout de suite à voix haute ; l'écran s'allume pendant ce temps.
       setSaid(res.say.join('. '));
@@ -292,7 +307,10 @@ export default function VoiceControl(props: Props) {
 
   // Apprentissage rapide : un mot non reconnu peut être rattaché à une joueuse d'un seul toucher.
   const addAlias = (first: string, word: string) => {
-    persistProfile(addAliasTo(profileRef.current, first, word));
+    const before = profileRef.current;
+    const after = addAliasTo(before, first, word);
+    persistProfile(after);
+    void shareEntries(profileDelta(before, after));
     setUnknownHeard('');
     setSaid(`« ${word} » compris comme ${first}`);
     setSaidKind('info');
@@ -303,7 +321,10 @@ export default function VoiceControl(props: Props) {
     const key = strip(first);
     const aliasesNext = { ...profileRef.current.aliases };
     if (list.length) aliasesNext[key] = list; else delete aliasesNext[key];
-    persistProfile({ ...profileRef.current, aliases: aliasesNext });
+    const before = profileRef.current;
+    const after = { ...before, aliases: aliasesNext };
+    persistProfile(after);
+    void shareEntries(profileDelta(before, after));
   };
 
   const namedPlayers = props.roster.filter((p) => firstNameOf(p.name));
@@ -394,9 +415,9 @@ export default function VoiceControl(props: Props) {
       {showCal && (
         <VoiceCalibration
           players={players}
-          profile={profile}
+          profile={effective}
           getMode={() => modeRef.current}
-          onSave={async (p) => { profileRef.current = p; setProfile(p); const ok = await saveProfile(props.userId, p); setProfileSync(ok ? 'saved' : 'offline'); return ok; }}
+          onSave={async (p) => { void shareEntries(profileDelta(effectiveRef.current, p)); profileRef.current = p; setProfile(p); const ok = await saveProfile(props.userId, p); setProfileSync(ok ? 'saved' : 'offline'); return ok; }}
           onClose={() => setShowCal(false)}
         />
       )}
@@ -429,7 +450,7 @@ export default function VoiceControl(props: Props) {
 
       {showNames && (
         <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-2 space-y-1.5">
-          <p className="text-[10px] text-slate-400">Variantes de prononciation, séparées par des virgules (ex. « candy, kandis »). Enregistrées sur votre compte {profileSync === 'saved' ? '✓' : profileSync === 'offline' ? '(hors ligne : envoi dès que possible)' : ''}{profile.calibratedAt ? ` · dernier calibrage le ${new Date(profile.calibratedAt).toLocaleDateString('fr-FR')}` : ''}.</p>
+          <p className="text-[10px] text-slate-400">Variantes de prononciation, séparées par des virgules (ex. « candy, kandis »). Enregistrées sur votre compte et partagées avec le club {profileSync === 'saved' ? '✓' : profileSync === 'offline' ? '(hors ligne : envoi dès que possible)' : ''}{profile.calibratedAt ? ` · dernier calibrage le ${new Date(profile.calibratedAt).toLocaleDateString('fr-FR')}` : ''}.</p>
           {namedPlayers.length === 0 && <p className="text-[10px] text-slate-500">Aucune joueuse avec un prénom.</p>}
           {namedPlayers.map((p) => {
             const first = firstNameOf(p.name);
@@ -462,6 +483,7 @@ export default function VoiceControl(props: Props) {
           <p><b>Changements</b> (à confirmer par « oui ») : « remplacement {ex.p[8]}, {ex.p[9]} par {ex.p[0]}, {ex.p[1]} », « sortie de … entrée de … », « sur le terrain on a [5 prénoms ou numéros] ». Fenêtre : « afficher changement », puis « valider » ou « fermer ».</p>
           <p><b>Annuler</b> : « annule la dernière commande » ou « annule dernière action {ex.p[2]} » : immédiat, sans validation. Un changement ne s’annule pas : faire un nouveau changement.</p>
           <p><b>Score adverse</b> : « adversaire deux points », « adversaire moins un ». <b>Questions</b> : « score », « qui est sur le terrain », « combien de fautes {ex.p[3]} », « fautes équipe ».</p>
+          <p><b>Didacticiel</b> : bouton « Didacticiel » sous les onglets (si aucun match n’est ouvert) : un match de démonstration et une cinquantaine de commandes à essayer, sans rien enregistrer.</p>
           <p><b>Calibrage</b> : le bouton « Calibrer » fait lire toutes les phrases ; l’appli apprend les prénoms et mots mal compris et les enregistre sur votre compte (valable sur toutes vos tablettes et PC).</p>
           <p><b>Réponses</b> : « oui » / « non » pour un changement ; si l’appli attend une réponse et que vous dites une autre commande complète, elle abandonne l’attente et exécute la nouvelle.</p>
           <p><b>Conseils</b> : parlez normalement, sans exagérer ; une courte pause est acceptée (la phrase est recollée, et « sur le terrain on a… » attend les prénoms manquants). Les <b>numéros</b> (« deux points la 5 ») sont mieux compris que les prénoms. Si un prénom est mal entendu, touchez la joueuse sous « Mot non reconnu » : l’appli l’apprend.</p>

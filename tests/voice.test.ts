@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { parseCommand, phonetic, normalizeText, Cmd, VoicePlayer, VoiceEventLite } from '../lib/voice/commands';
 import { VoiceDialog, VoiceAction, VoiceView, DialogResult } from '../lib/voice/dialog';
 import { buildPrompts, calibrationSetup, emptyProfile, evaluateHeard } from '../lib/voice/calibrate';
+import { buildTutorial, makeDemo, TutSnap } from '../lib/voice/tutorial';
 
 // ───── Effectif de test (fiche projet § 5)
 const P = (id: string, name: string, number: number, aliases?: string[]): VoicePlayer => ({ id, name, number, aliases });
@@ -19,13 +20,14 @@ class Sim {
   events: VoiceEventLite[] = [];
   onCourt = [...START_COURT];
   home = 0; away = 0; period = 1; clock = false; seq = 0;
+  selected: string | null = null; subPanelOpen = false; ftFilled = 0;
   actions: VoiceAction[] = [];
   ftViews: VoiceAction[] = []; // affichage des lancers francs à l'écran (non comptés comme actions)
   dialog: VoiceDialog;
   players = PLAYERS;
   constructor(opts?: ConstructorParameters<typeof VoiceDialog>[0]) { this.dialog = new VoiceDialog(opts); }
   view(): VoiceView {
-    return { players: this.players, onCourt: this.onCourt, events: this.events, scoreHome: this.home, scoreAway: this.away, period: this.period, clockRunning: this.clock };
+    return { players: this.players, onCourt: this.onCourt, events: this.events, scoreHome: this.home, scoreAway: this.away, period: this.period, clockRunning: this.clock, selectedPlayerId: this.selected, subPanel: { open: this.subPanelOpen, outCount: 0, inCount: 0 } };
   }
   say(...alts: string[]): DialogResult {
     const r = this.dialog.handle(alts, this.view());
@@ -36,6 +38,11 @@ class Sim {
   }
   said(...alts: string[]): string { return this.say(...alts).say.join(' | '); }
   private apply(a: VoiceAction) {
+    if (a.t === 'select') this.selected = a.playerId;
+    else if (a.t === 'ftView') { if (a.playerId) this.selected = a.playerId; this.ftFilled = a.attempts.filter((x) => x !== null).length; }
+    else if (a.t === 'subPanel') this.subPanelOpen = a.op === 'open';
+    if (a.t === 'event' || a.t === 'ft') { this.selected = null; this.ftFilled = 0; }
+    if (a.t === 'sub') this.subPanelOpen = false;
     if (a.t === 'event') {
       this.events = [{ id: 'e' + ++this.seq, actionType: a.action, playerId: a.playerId, period: this.period }, ...this.events];
       this.home += a.points;
@@ -505,6 +512,30 @@ t('calibrage : l\'alternative qui suffit est retenue, les autres n\'ajoutent rie
   const setup = calibrationSetup(PLAYERS);
   const r = evaluateHeard({ group: 'Actions', text: 'interception Chloé' }, ['intersection Chloé', 'blabla Chloé'], setup, emptyProfile());
   assert.equal(r.status, 'learned'); assert.deepEqual(Object.keys(r.profile.wordFixes), ['intersection']);
+});
+
+// ═════════ 14. Didacticiel : le parcours complet fonctionne, avec n'importe quelles joueuses ═════════
+const rng = (seed: number) => () => { seed = (seed + 0x6D2B79F5) | 0; let x = Math.imul(seed ^ (seed >>> 15), 1 | seed); x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+t('didacticiel : ≈ 50 étapes, joueuses et numéros tous différents', () => {
+  const d = makeDemo(rng(1)); const steps = buildTutorial(d.players, d.players.slice(0, 5).map((p) => p.id));
+  assert.equal(d.players.length, 10); assert.equal(new Set(d.players.map((p) => p.number)).size, 10); assert.equal(new Set(d.players.map((p) => p.name)).size, 10);
+  assert.ok(steps.length >= 48 && steps.length <= 60, String(steps.length));
+});
+t('didacticiel : 80 matchs démo au hasard, chaque phrase est comprise et a son effet', () => {
+  const failures: string[] = [];
+  for (let seed = 1; seed <= 80; seed++) {
+    const d = makeDemo(rng(seed)); const court = d.players.slice(0, 5).map((p) => p.id);
+    const sim = new Sim(); sim.players = d.players.map((p) => ({ id: p.id, name: p.name, number: p.number })); sim.onCourt = [...court];
+    const steps = buildTutorial(d.players, court);
+    const snap = (): TutSnap => ({ events: sim.events.map((e) => ({ actionType: e.actionType, playerId: e.playerId })), scoreHome: sim.home, scoreAway: sim.away, clockRunning: sim.clock, onCourt: [...sim.onCourt], selected: sim.selected, subPanelOpen: sim.subPanelOpen, ftFilled: sim.ftFilled, voiceEnabled: true });
+    steps.forEach((st, i) => {
+      if (st.say === '') return;
+      const base = snap(); const say = typeof st.say === 'function' ? st.say({ cur: base, base, last: null }) : st.say;
+      const r = sim.say(say); const last = { say: r.say.join('. '), actions: r.actions.length, at: 0 };
+      if (!st.check({ cur: snap(), base, last })) failures.push(`graine ${seed}, étape ${i + 1} « ${say} » → « ${last.say} »`);
+    });
+  }
+  assert.deepEqual(failures.slice(0, 5), []);
 });
 
 // Phonétique

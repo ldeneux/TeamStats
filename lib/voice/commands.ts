@@ -166,7 +166,7 @@ function numbersToDigits(text: string): string {
     if (word === 'un' || word === 'une') {
       const nxt = w[i + 1], prv = out[out.length - 1];
       const isNum = nxt === 'sur' || nxt === 'point' || nxt === 'points' || nxt === 'pointe' || nxt === 'pointes' || nxt === 'pts' || nxt === 'pt'
-        || prv === 'numero' || prv === 'num' || prv === 'n' || prv === 'la' || prv === 'le' || prv === 'sur';
+        || prv === 'numero' || prv === 'num' || prv === 'n' || prv === 'la' || prv === 'le' || prv === 'sur' || prv === 'moins' || prv === 'plus';
       if (isNum) { out.push('1'); i++; continue; }
       i++; // article : on le jette
       continue;

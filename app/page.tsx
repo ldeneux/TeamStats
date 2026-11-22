@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import CalendarMenu from '../components/CalendarMenu';
 import AdminPanel from '../components/AdminPanel';
@@ -11,6 +11,8 @@ import { adminApi } from '../lib/adminApi';
 import { StatsPdfContext } from '../lib/statsPdfContext';
 import { isLockedDate, useLockedBefore } from '../lib/seasonLock';
 import VoiceControl from '../components/VoiceControl';
+import VoiceTutorial from '../components/VoiceTutorial';
+import { DemoMatch, TutLast, buildTutorial, makeDemo } from '../lib/voice/tutorial';
 
 export interface Player { id: string; number: number; name: string; from?: string; /* renfort : équipe d'origine (ex. U13F) */ }
 export interface SavedTeam { id: string; name: string; roster: Player[]; }
@@ -490,6 +492,13 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const voiceFlashStamp = useRef(0);
   const vf = (action: string) => (voiceFlash?.action === action ? ' outline outline-4 outline-white outline-offset-2 z-10 relative' : '');
   const [ftAttempts, setFtAttempts] = useState<[boolean | null, boolean | null, boolean | null]>([null, null, null]);
+  // Didacticiel de la commande vocale : match de démonstration, jamais enregistré (ni en base, ni brouillon local, ni file d'envoi).
+  const [demo, setDemo] = useState<DemoMatch | null>(null);
+  const demoRef = useRef(false);
+  demoRef.current = !!demo;
+  const [tutLast, setTutLast] = useState<TutLast | null>(null);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const tutSteps = useMemo(() => (demo ? buildTutorial(demo.players, demo.players.slice(0, 5).map(p => p.id)) : []), [demo]);
 
   const [isSubbing, setIsSubbing] = useState(false);
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
@@ -986,6 +995,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const refreshPending = () => setPendingCount(readPending().filter(i => i.userId === userId).length);
 
   const writeDraftNow = () => {
+    if (demoRef.current) return;   // match de démonstration : jamais de brouillon local
     if (!draftReadyRef.current || !latestRef.current) return;
     const L = latestRef.current;
     lsWrite(draftKey, { v: 1, userId, savedAt: Date.now(), savedFp: lastSavedFpRef.current, ...L, game: { ...L.game, isClockRunning: false } });
@@ -1008,6 +1018,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const todayLocal = () => new Date().toLocaleDateString('sv-SE'); // AAAA-MM-JJ, jour local
   const isPastMatch = () => !!matchConfig.matchDate && matchConfig.matchDate < todayLocal();
   const requestSaveMatch = () => {
+    if (demoRef.current) return;   // match de démonstration : enregistrement impossible
     if (saveStatus === 'saving') return;
     if (matchLocked) { setShowLockedInfo(true); return; }   // saison clôturée : aucun enregistrement
     if (isPastMatch()) { setConfirmText(''); setShowPastConfirm(true); return; }
@@ -1021,6 +1032,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   };
 
   const handleSaveMatch = async () => {
+    if (demoRef.current) return;   // match de démonstration : enregistrement impossible
     if (saveStatus === 'saving') return;
     setSaveStatus('saving');
     setSaveErrorMessage('');
@@ -1115,6 +1127,39 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     if (draftTimerRef.current) { clearTimeout(draftTimerRef.current); draftTimerRef.current = null; }
     lsRemove(draftKey);
     setRestoredAt(null);
+    window.location.reload();
+  };
+
+  // ---------------------------------------------------------------------------
+  // DIDACTICIEL : un match de démonstration (SATHONAY contre une équipe au hasard, 10 joueuses au hasard).
+  // Impossible tant qu'un match est ouvert. Rien n'est écrit : ni base, ni brouillon, ni file d'envoi.
+  // Quitter recharge la page (draft jamais écrit) : retour à un écran vierge.
+  // ---------------------------------------------------------------------------
+  const matchOpen = game.matchRoster.length > 0 || game.events.length > 0 || game.scoreHome > 0 || game.scoreAway > 0;
+
+  const startDemo = () => {
+    if (matchOpen || demoRef.current) return;
+    const d = makeDemo();
+    const court = d.players.slice(0, 5).map(p => p.id);
+    const cfg: GameConfig = { teamHome: 'SATHONAY (démo)', teamAway: d.opponent, matchDate: new Date().toISOString().split('T')[0], periodCount: 4, periodMinutes: 10, ffbbMatchId: '' };
+    demoRef.current = true;
+    setMatchConfig(cfg);
+    setHomeAway('DOMICILE');
+    setMatchType('AMICAL');
+    setSelectedMatchPlayerIds(d.players.map(p => p.id));
+    setMatchNumbers(Object.fromEntries(d.players.map(p => [p.id, p.number])));
+    setStartingFiveByPeriod({ 1: court });
+    setGame({ config: cfg, period: 1, clockSeconds: cfg.periodMinutes * 60, isClockRunning: false, scoreHome: 0, scoreAway: 0, scoreByPeriod: {}, matchRoster: d.players, onCourtPlayerIds: court, events: [] });
+    setPlayingTime({});
+    setTutLast(null);
+    setActiveTab('MATCH');
+    setDemo(d);
+  };
+
+  const quitDemo = () => {
+    draftReadyRef.current = false;
+    if (draftTimerRef.current) { clearTimeout(draftTimerRef.current); draftTimerRef.current = null; }
+    lsRemove(draftKey);
     window.location.reload();
   };
 
@@ -2217,7 +2262,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             <span className="w-px h-6 bg-slate-700 self-center mx-0.5" />
             <button
               onClick={requestSaveMatch}
-              disabled={saveStatus === 'saving'}
+              disabled={saveStatus === 'saving' || !!demo}
               title="Enregistrer le match et les statistiques"
               className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
                 saveStatus === 'saved' ? 'bg-emerald-600 text-white' :
@@ -2230,6 +2275,18 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             </>)}
           </nav>
         </div>
+        {!isConsultant && (
+          <div className="flex justify-center pb-1.5">
+            <button
+              onClick={demo ? quitDemo : matchOpen ? handleNewMatch : startDemo}
+              title={demo ? 'Fermer le match de démonstration' : matchOpen ? 'Fermer ce match et repartir de zéro' : 'Apprendre les commandes vocales sur un match de démonstration'}
+              className={`px-3 py-1 rounded-full text-[11px] font-black border transition ${demo ? 'bg-rose-700 border-rose-400 text-white' : matchOpen ? 'bg-slate-800 border-slate-600 text-amber-300' : 'bg-indigo-700 border-indigo-400 text-white'}`}
+            >{demo ? '🎓 Quitter le didacticiel' : matchOpen ? '＋ Nouveau' : '🎓 Didacticiel'}</button>
+          </div>
+        )}
+        {demo && (
+          <p className="text-center text-[10px] font-bold text-indigo-200 pb-1.5 px-2">MODE DÉMO : match fictif, rien n&apos;est enregistré.</p>
+        )}
         {saveStatus === 'error' && (
           <p className="text-center text-[10px] text-rose-400 pb-1 px-2 break-words">Échec de l'enregistrement : {saveErrorMessage || 'vérifie la connexion Supabase.'}</p>
         )}
@@ -2267,6 +2324,25 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           </p>
         )}
       </header>
+
+      {demo && (
+        <VoiceTutorial
+          steps={tutSteps}
+          last={tutLast}
+          onQuit={quitDemo}
+          snap={{
+            events: game.events.map(e => ({ actionType: e.actionType, playerId: e.playerId })),
+            scoreHome: game.scoreHome,
+            scoreAway: game.scoreAway,
+            clockRunning: game.isClockRunning,
+            onCourt: game.onCourtPlayerIds,
+            selected: selectedPlayerId,
+            subPanelOpen: isSubbing,
+            ftFilled: ftAttempts.filter(x => x !== null).length,
+            voiceEnabled: voiceOn,
+          }}
+        />
+      )}
 
       <StatsPdfContext.Provider value={{ exportMatchStats: exportSavedMatchStats }}>
         {impersonation && (
@@ -2717,6 +2793,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           <div className="space-y-4">
             <VoiceControl
               userId={userId}
+              onVoiceResult={setTutLast}
+              onEnabledChange={setVoiceOn}
               roster={game.matchRoster}
               onCourtPlayerIds={game.onCourtPlayerIds}
               events={game.events}

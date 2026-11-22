@@ -20,6 +20,23 @@ export function addAliasTo(p: VoiceProfile, first: string, word: string): VoiceP
   return cur.includes(w) ? p : { ...p, aliases: { ...p.aliases, [k]: [...cur, w] } };
 }
 
+export interface SharedEntry { kind: 'alias' | 'fix'; key: string; value: string }
+
+/** Ce que `next` contient de plus que `base` (nouvelles variantes de prénoms et corrections de mots). */
+export function profileDelta(base: VoiceProfile, next: VoiceProfile): SharedEntry[] {
+  const out: SharedEntry[] = [];
+  for (const [k, list] of Object.entries(next.aliases)) for (const v of list) if (!(base.aliases[k] ?? []).includes(v)) out.push({ kind: 'alias', key: k, value: v });
+  for (const [k, v] of Object.entries(next.wordFixes)) if (base.wordFixes[k] !== v) out.push({ kind: 'fix', key: k, value: v });
+  return out;
+}
+
+/** Profil effectif : apprentissages communs du club, complétés (et corrigés) par le profil personnel. */
+export function mergeProfiles(shared: VoiceProfile, mine: VoiceProfile): VoiceProfile {
+  const aliases: Record<string, string[]> = { ...shared.aliases };
+  for (const [k, list] of Object.entries(mine.aliases)) aliases[k] = Array.from(new Set([...(aliases[k] ?? []), ...list]));
+  return { aliases, wordFixes: { ...shared.wordFixes, ...mine.wordFixes }, calibratedAt: mine.calibratedAt };
+}
+
 // ───────────────────────── Phrases à lire ─────────────────────────
 
 export interface CalPrompt { group: string; text: string; opts?: ParseOpts }

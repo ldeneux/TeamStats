@@ -2,7 +2,7 @@
 // avec copie locale pour le hors ligne. Voir sql/voice_01_calibration.sql.
 
 import { supabase } from '../supabase';
-import { VoiceProfile, emptyProfile } from './calibrate';
+import { SharedEntry, VoiceProfile, emptyProfile } from './calibrate';
 
 // ───────────────────────── Profil (base + cache local hors ligne) ─────────────────────────
 
@@ -46,4 +46,30 @@ export async function loadProfile(userId: string): Promise<{ profile: VoiceProfi
   } catch {
     return { profile: cached ?? emptyProfile(), fromDb: false };
   }
+}
+
+// ───────────────────────── Apprentissages partagés par tous les comptes (table voice_shared) ─────────────────────────
+const SHARED_KEY = 'teamstats:voice-shared:v1';
+
+/** Variantes de prénoms et corrections de mots communes au club (la correction la plus confirmée l'emporte). */
+export async function loadShared(): Promise<VoiceProfile> {
+  const read = (): VoiceProfile => { try { const r = window.localStorage.getItem(SHARED_KEY); return r ? { ...emptyProfile(), ...JSON.parse(r) } : emptyProfile(); } catch { return emptyProfile(); } };
+  try {
+    const { data, error } = await supabase.from('voice_shared').select('kind, key, value, uses').limit(5000);
+    if (error) throw error;
+    const p = emptyProfile();
+    const best: Record<string, number> = {};
+    for (const r of (data ?? []) as Array<{ kind: string; key: string; value: string; uses: number }>) {
+      if (r.kind === 'alias') p.aliases[r.key] = [...(p.aliases[r.key] ?? []), r.value];
+      else if (r.kind === 'fix' && (best[r.key] ?? 0) < r.uses) { p.wordFixes[r.key] = r.value; best[r.key] = r.uses; }
+    }
+    try { window.localStorage.setItem(SHARED_KEY, JSON.stringify(p)); } catch { /* ignoré */ }
+    return p;
+  } catch { return read(); }
+}
+
+/** Envoie ce que ce compte vient d'apprendre à tout le club (silencieux : sans réseau ou sans la table, on ignore). */
+export async function shareEntries(entries: SharedEntry[]): Promise<void> {
+  if (!entries.length) return;
+  try { await supabase.rpc('voice_share', { p_entries: entries.slice(0, 300) }); } catch { /* ignoré */ }
 }
