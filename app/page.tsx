@@ -2275,15 +2275,6 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             </>)}
           </nav>
         </div>
-        {!isConsultant && (
-          <div className="flex justify-center pb-1.5">
-            <button
-              onClick={demo ? quitDemo : matchOpen ? handleNewMatch : startDemo}
-              title={demo ? 'Fermer le match de démonstration' : matchOpen ? 'Fermer ce match et repartir de zéro' : 'Apprendre les commandes vocales sur un match de démonstration'}
-              className={`px-3 py-1 rounded-full text-[11px] font-black border transition ${demo ? 'bg-rose-700 border-rose-400 text-white' : matchOpen ? 'bg-slate-800 border-slate-600 text-amber-300' : 'bg-indigo-700 border-indigo-400 text-white'}`}
-            >{demo ? '🎓 Quitter le didacticiel' : matchOpen ? '＋ Nouveau' : '🎓 Didacticiel'}</button>
-          </div>
-        )}
         {demo && (
           <p className="text-center text-[10px] font-bold text-indigo-200 pb-1.5 px-2">MODE DÉMO : match fictif, rien n&apos;est enregistré.</p>
         )}
@@ -2794,6 +2785,12 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             <VoiceControl
               userId={userId}
               onVoiceResult={setTutLast}
+              tutorial={{
+                kind: demo ? 'quit' : matchOpen ? 'new' : 'demo',
+                label: demo ? '🎓 Quitter le didacticiel' : matchOpen ? '＋ Nouveau' : '🎓 Didacticiel',
+                title: demo ? 'Fermer le match de démonstration' : matchOpen ? 'Fermer ce match et repartir de zéro' : 'Apprendre les commandes vocales sur un match de démonstration',
+                onClick: demo ? quitDemo : matchOpen ? handleNewMatch : startDemo,
+              }}
               onEnabledChange={setVoiceOn}
               roster={game.matchRoster}
               onCourtPlayerIds={game.onCourtPlayerIds}

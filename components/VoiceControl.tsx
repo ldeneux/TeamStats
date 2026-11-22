@@ -46,6 +46,8 @@ interface Props {
   /** Didacticiel : dernière réponse vocale, et état de l'interrupteur. */
   onVoiceResult?: (r: { say: string; actions: number; at: number }) => void;
   onEnabledChange?: (enabled: boolean) => void;
+  /** Bouton à gauche de « Calibrer » : Didacticiel (aucun match ouvert), Nouveau (match ouvert) ou Quitter le didacticiel. */
+  tutorial?: { label: string; kind: 'demo' | 'new' | 'quit'; onClick: () => void; title?: string };
 }
 
 const ALIAS_KEY = 'teamstats.voice.aliases.v1';
@@ -361,6 +363,12 @@ export default function VoiceControl(props: Props) {
           <span>COMMANDE VOCALE : {enabled ? 'ACTIVE' : 'COUPÉE'}</span>
         </button>
         <div className="flex items-center gap-1">
+          {props.tutorial && (
+            <button type="button" onClick={props.tutorial.onClick} title={props.tutorial.title}
+              className={`text-[10px] font-bold px-2 py-1 rounded-lg border text-white ${props.tutorial.kind === 'quit' ? 'bg-rose-700 border-rose-400' : props.tutorial.kind === 'new' ? 'bg-slate-800 border-slate-600 text-amber-300' : 'bg-indigo-700 border-indigo-400'}`}>
+              {props.tutorial.label}
+            </button>
+          )}
           <button type="button" onClick={() => { if (enabledRef.current) stopVoice(); setShowCal(true); }} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-indigo-700 border border-indigo-400 text-white">Calibrer</button>
           <button type="button" onClick={() => setShowEngine((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Moteur</button>
           <button type="button" onClick={() => setShowNames((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Prénoms</button>
@@ -483,7 +491,7 @@ export default function VoiceControl(props: Props) {
           <p><b>Changements</b> (à confirmer par « oui ») : « remplacement {ex.p[8]}, {ex.p[9]} par {ex.p[0]}, {ex.p[1]} », « sortie de … entrée de … », « sur le terrain on a [5 prénoms ou numéros] ». Fenêtre : « afficher changement », puis « valider » ou « fermer ».</p>
           <p><b>Annuler</b> : « annule la dernière commande » ou « annule dernière action {ex.p[2]} » : immédiat, sans validation. Un changement ne s’annule pas : faire un nouveau changement.</p>
           <p><b>Score adverse</b> : « adversaire deux points », « adversaire moins un ». <b>Questions</b> : « score », « qui est sur le terrain », « combien de fautes {ex.p[3]} », « fautes équipe ».</p>
-          <p><b>Didacticiel</b> : bouton « Didacticiel » sous les onglets (si aucun match n’est ouvert) : un match de démonstration et une cinquantaine de commandes à essayer, sans rien enregistrer.</p>
+          <p><b>Didacticiel</b> : bouton « Didacticiel » à gauche de « Calibrer » (si aucun match n’est ouvert) : un match de démonstration et une cinquantaine de commandes à essayer, sans rien enregistrer.</p>
           <p><b>Calibrage</b> : le bouton « Calibrer » fait lire toutes les phrases ; l’appli apprend les prénoms et mots mal compris et les enregistre sur votre compte (valable sur toutes vos tablettes et PC).</p>
           <p><b>Réponses</b> : « oui » / « non » pour un changement ; si l’appli attend une réponse et que vous dites une autre commande complète, elle abandonne l’attente et exécute la nouvelle.</p>
           <p><b>Conseils</b> : parlez normalement, sans exagérer ; une courte pause est acceptée (la phrase est recollée, et « sur le terrain on a… » attend les prénoms manquants). Les <b>numéros</b> (« deux points la 5 ») sont mieux compris que les prénoms. Si un prénom est mal entendu, touchez la joueuse sous « Mot non reconnu » : l’appli l’apprend.</p>
