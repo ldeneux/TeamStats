@@ -231,7 +231,7 @@ export default function VoiceControl(props: Props) {
       setJournal((j) => [{ at: new Date().toLocaleTimeString('fr-FR'), alts, said: res.say.join('. '), kind: kindNow }, ...j].slice(0, 40));
       setSaidKind(res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait' : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(res.say.join(' ')) ? 'error' : 'info');
       setDialogStatus(dialog.status());
-      engineRef.current?.speak(res.say);
+      if (res.say.length) engineRef.current?.speak(res.say);
       for (let i = 0; i < res.actions.length; i++) {
         if (i > 0) await sleep(5); // identifiants d'événements = Date.now() : jamais deux dans la même milliseconde
         await apply(res.actions[i]);

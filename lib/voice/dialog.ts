@@ -166,7 +166,7 @@ export class VoiceDialog {
   private run(cmd: Cmd, text: string, view: VoiceView): DialogResult {
     const players = view.players;
     switch (cmd.type) {
-      case 'UNKNOWN': return { say: [cmd.say], actions: [] };
+      case 'UNKNOWN': return { say: cmd.noise ? [] : [cmd.say], actions: [] };   // aucun mot reconnu : on ne répond pas (bruit, conversation)
       case 'REFUSE': return { say: [cmd.say], actions: [] };
       case 'NOOP': return { say: [cmd.say], actions: [] };
       case 'ASK':

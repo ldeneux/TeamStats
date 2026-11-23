@@ -37,7 +37,7 @@ export interface ParseCtx {
 }
 
 export type Cmd =
-  | { type: 'UNKNOWN'; say: string; heard?: string }
+  | { type: 'UNKNOWN'; say: string; heard?: string; noise?: boolean }
   | { type: 'REFUSE'; say: string }
   | { type: 'ASK'; kind: 'name'; key: string; candidates: string[]; say: string }
   | { type: 'ASK'; kind: 'append'; say: string; progress?: boolean }
@@ -212,9 +212,10 @@ const RULES: Array<[RegExp, string]> = [
   [/\binterceptions?\b|\bintercepte\b|\bvol de balle\b/g, ' STL '],
   [/\bpertes?(?: de)? balles?\b|\bballes? perdu(?:e|es|s)?\b|\bpertes?\b/g, ' TOV '],
   // points
-  [/\b1 (?:points?|pointes?|poings?|poins?|poids|pts?)\b/g, ' P1 '],
-  [/\b2 (?:points?|pointes?|poings?|poins?|poids|pts?)\b/g, ' P2 '],
-  [/\b3 (?:points?|pointes?|poings?|poins?|poids|pts?)\b/g, ' P3 '],
+  [/\b([123]) fois\b/g, ' $1 points '],
+  [/\b1 (?:points?|pointes?|poings?|poins?|poils?|poids|pts?)\b/g, ' P1 '],
+  [/\b2 (?:points?|pointes?|poings?|poins?|poils?|poids|pts?)\b/g, ' P2 '],
+  [/\b3 (?:points?|pointes?|poings?|poins?|poils?|poids|pts?)\b/g, ' P3 '],
   [/\btir a 2\b/g, ' P2 '], [/\btir a 3\b/g, ' P3 '],
   // résultat d'un tir / d'un lancer
   [/\b(?:rates?|ratees?|rater|manques?|manquees?|manquer|loupes?|loupees?)\b/g, ' MISS '],
@@ -342,16 +343,16 @@ export function normalizeText(text: string, fixes?: Record<string, string>, rost
   let t = String(text ?? '').replace(/(\d)\s*\/\s*(\d)/g, '$1 sur $2');
   t = t.replace(/n\s*°\s*(\d)/gi, 'numero $1').replace(/n°/gi, ' numero ');
   t = strip(t).replace(/numeros?(\d)/g, 'numero $1');
+  if (roster) t = correctWords(t, roster);
+  t = numbersToDigits(t);
   if (fixes) {
-    // corrections apprises (calibrage) : « poing » → « points », « clauer » → « chloe »… les plus longues d'abord
+    // corrections apprises (calibrage), appliquées APRÈS la conversion des nombres en chiffres : les clés sont écrites ainsi (« en 10 » → « candice »)
     for (const k of Object.keys(fixes).sort((a, b) => b.length - a.length)) {
       if (!k || k === fixes[k]) continue;
       if (!/^[a-z0-9 ]+$/.test(k)) continue; // clés déjà normalisées : lettres, chiffres, espaces
       t = t.replace(new RegExp(`(^| )${k}(?= |$)`, 'g'), `$1${fixes[k]}`);
     }
   }
-  if (roster) t = correctWords(t, roster);
-  t = numbersToDigits(t);
   for (const [re, rep] of RULES) t = t.replace(re, rep);
   return t.replace(/\s+/g, ' ').trim();
 }
@@ -390,6 +391,15 @@ function nearestPlayer(word: string, roster: RosterEntry[], onCourt: Set<string>
   let top = scored.filter((x) => x.d === best);
   if (top.length > 1) { const onc = top.filter((x) => onCourt.has(x.id)); if (onc.length) top = onc; }
   return top.length === 1 ? top[0].id : null;
+}
+
+/** Texte normalisé avec nombres en chiffres (« trois » → « 3 ») : base de comparaison du calibrage. */
+export const toDigitsText = (t: string): string => numbersToDigits(strip(t));
+
+/** Mot qui déclenche une commande ou un nombre (hors petits mots et prénoms) : ne doit jamais être remplacé par apprentissage. */
+export function isCommandWord(word: string): boolean {
+  const w = strip(word);
+  return !!w && /[A-Z0-9]/.test(normalizeText(w));
 }
 
 /** Mot déjà porteur de sens pour l'analyseur (commande, nombre, petit mot ignoré) : jamais « corrigé » par apprentissage. */
@@ -523,7 +533,7 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
   const env: Env = { players, ctx, onCourt: new Set(ctx.onCourt) };
   const courtSize = ctx.courtSize ?? 5;
   const toks = tokenize(text, roster, ctx.wordFixes);
-  if (!toks.length) return { type: 'UNKNOWN', say: "Commande non reconnue." };
+  if (!toks.length) return { type: 'UNKNOWN', say: "Commande non reconnue.", noise: true };
 
   const codes = toks.filter((t): t is CodeTok => t.k === 'code').map((t) => t.c);
   const has = (c: string) => codes.includes(c);
@@ -644,7 +654,7 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
 
   if (!actionCodes.length && !hasLF) {
     if (who && !unknown.length) return { type: 'ASK', kind: 'append', say: `${designation(env, who, byNumber)}, quoi ?` };
-    return { type: 'UNKNOWN', say: "Commande non reconnue.", heard: unknown.join(' ') };
+    return { type: 'UNKNOWN', say: "Commande non reconnue.", heard: unknown.join(' '), noise: toks.every((t) => t.k === 'unk' && !CMD_SET.has(t.w)) };
   }
   if (actionCodes.length > 1 || (actionCodes.length === 1 && hasLF)) return { type: 'REFUSE', say: 'Une seule action à la fois.' };
   if (!who && unknown.length === 1 && (actionCodes.length > 0 || hasLF)) {

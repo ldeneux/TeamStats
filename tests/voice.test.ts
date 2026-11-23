@@ -475,7 +475,7 @@ t('prénom mal entendu : le mot restant est rapproché de la joueuse la plus pro
 });
 t('mot inconnu trop éloigné : pas de devinette', () => assert.notEqual(parse('2 points Zorglub').type, 'EVENT'));
 t('le mot inconnu est remonté pour être appris comme variante', () => {
-  const s = new Sim(); const r = s.dialog.handle(['bonjour zorglub'], s.view()); assert.equal(r.unknown, 'bonjour zorglub'); assert.equal(r.say[0], 'Commande non reconnue.');
+  const s = new Sim(); const r = s.dialog.handle(['bonjour zorglub'], s.view()); assert.equal(r.unknown, 'bonjour zorglub'); assert.deepEqual(r.say, []);   // aucun mot de commande : on ne répond pas
 });
 
 // ═════════ 13. Calibrage ═════════
@@ -561,12 +561,44 @@ t('peek n\'a aucun effet de bord', () => {
   const s = new Sim(); const v = s.view(); s.dialog.peek(['Chloé deux points'], v); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
 });
 
+t('journal réel : « un litre de points » pour « Alice deux points » est appris puis compris', () => {
+  const roster = [P('alice', 'ALICE', 1), ...PLAYERS.filter((p) => p.id !== 'chloe')];
+  const setup = calibrationSetup(roster);
+  const r = evaluateHeard({ group: 'Tirs', text: 'Alice deux points' }, ['un litre de points'], setup, emptyProfile());
+  assert.equal(r.status, 'learned');
+  const c: any = parseCommand('un litre de points', roster, { onCourt: ['alice', ...START_COURT.slice(1)], events: [], wordFixes: r.profile.wordFixes });
+  assert.equal(c.type, 'EVENT'); assert.equal(c.playerId, 'alice'); assert.equal(c.action, 'TIR 2PTS RÉUSSI');
+});
+t('journal réel : « en 10 3 points » pour « Candice trois points » (prénom entendu comme un nombre)', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Prénoms', text: 'Candice trois points' }, ['en 10 3 points'], setup, emptyProfile());
+  assert.equal(r.status, 'learned');
+  const c: any = parseCommand('en 10 3 points', PLAYERS, { onCourt: START_COURT, events: [], wordFixes: r.profile.wordFixes });
+  assert.equal(c.playerId, 'candice'); assert.equal(c.action, 'TIR 3PTS RÉUSSI');
+});
+t('moteur local : « deux poils », « trois fois » = points', () => {
+  assert.equal(ev(parse('Chloé deux poils')).action, 'TIR 2PTS RÉUSSI'); assert.equal(ev(parse('tir à trois fois réussi Chloé')).action, 'TIR 3PTS RÉUSSI');
+});
+t('bruit pur (« merci à bientôt ») : l\'appli ne répond pas', () => {
+  const s = new Sim(); const r = s.dialog.handle(['merci à bientôt'], s.view()); assert.deepEqual(r.say, []); assert.equal(r.actions.length, 0);
+  const q = s.dialog.handle(['un litre de points'], s.view()); assert.equal(q.say.length > 0, true);
+});
+t('calibrage : les joueuses du banc sont testées par un remplacement, sans refus attendu', () => {
+  const setup = calibrationSetup(PLAYERS); const ps = buildPrompts(setup);
+  const benchPrompts = ps.filter((p) => p.group === 'Prénoms (banc)'); assert.ok(benchPrompts.length >= 3);
+  for (const p of ps) { const c: any = parseCommand(p.text, setup.players, setup.ctx, p.opts); assert.ok(!['REFUSE', 'UNKNOWN'].includes(c.type), `${p.text} → ${c.type} ${c.say}`); }
+});
+t('calibrage : une phrase sans rapport (« merci à bientôt ») n\'apprend rien', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Prénoms', text: 'Annaelle rebond défensif' }, ['merci à bientôt'], setup, emptyProfile());
+  assert.equal(r.status, 'fail'); assert.deepEqual(r.profile.wordFixes, {}); assert.deepEqual(r.profile.aliases, {});
+});
 t('calibrage : le détail montre attendu, entendu et compris', () => {
   const setup = calibrationSetup(PLAYERS);
   const r = evaluateHeard({ group: 'Tirs', text: 'Chloé deux points' }, ['un litre de points', 'Chloé deux points'], setup, emptyProfile());
   assert.equal(r.status, 'ok'); assert.match(r.detail.expected, /TIR 2PTS RÉUSSI · Chloé/);
   assert.equal(r.detail.perAlt.length, 2); assert.equal(r.detail.perAlt[0].ok, false); assert.equal(r.detail.perAlt[1].ok, true);
-  const f = evaluateHeard({ group: 'Tirs', text: 'Chloé deux points' }, ['un litre de points'], setup, emptyProfile());
+  const f = evaluateHeard({ group: 'Tirs', text: 'Chloé deux points' }, ['blablabla bloblo'], setup, emptyProfile());
   assert.equal(f.status, 'fail'); assert.match(f.detail.perAlt[0].understood, /question|refus|non reconnu/);
 });
 

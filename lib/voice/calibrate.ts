@@ -2,7 +2,7 @@
 // liste de phrases à lire, évaluation de ce que le navigateur a entendu, apprentissage des écarts.
 // Pas d'audio : seulement du texte (variantes de prénoms, corrections de mots).
 
-import { Cmd, ParseCtx, ParseOpts, VoicePlayer, isLexiconWord, parseCommand, strip } from './commands';
+import { Cmd, ParseCtx, ParseOpts, VoicePlayer, isCommandWord, parseCommand, strip, toDigitsText } from './commands';
 
 export interface VoiceProfile {
   /** prénom normalisé → variantes entendues. */
@@ -62,15 +62,17 @@ export function buildPrompts(setup: CalSetup): CalPrompt[] {
   const C = (i: number) => nm(court[i % Math.max(1, court.length)]);
   const B = (i: number) => (bench.length ? nm(bench[i % bench.length]) : C(i + 2));
   const out: CalPrompt[] = [];
-  // 1) chaque prénom, avec une action différente
+  // 1) chaque prénom, avec une action différente (sur le terrain) ; les joueuses du banc par un remplacement (seule façon valable pour elles)
   const acts = ['deux points', 'interception', 'passe décisive', 'rebond défensif', 'trois points', 'faute de'];
-  players.slice(0, 16).forEach((p, i) => {
+  court.forEach((id, i) => {
     const a = acts[i % acts.length];
-    out.push({ group: 'Prénoms', text: a === 'faute de' ? `faute de ${cap(p.name)}` : `${cap(p.name)} ${a}` });
+    out.push({ group: 'Prénoms', text: a === 'faute de' ? `faute de ${nm(id)}` : `${nm(id)} ${a}` });
   });
+  bench.slice(0, 11).forEach((id, i) => out.push({ group: 'Prénoms (banc)', text: `remplacement ${C(i)} par ${nm(id)}` }));
   // 2) numéros de maillot
-  const jn = (i: number) => num(court[i % Math.max(1, court.length)]);
-  if (court.length) {
+  const uniq = court.filter((id) => players.filter((p) => p.number === num(id)).length === 1);   // numéros portés par une seule joueuse
+  const jn = (i: number) => num(uniq[i % Math.max(1, uniq.length)]);
+  if (uniq.length) {
     out.push({ group: 'Numéros', text: `deux points la ${jn(0)}` }, { group: 'Numéros', text: `faute de la ${jn(1)}` }, { group: 'Numéros', text: `sélectionne le ${jn(2)}` });
   }
   // 3) actions
@@ -180,13 +182,27 @@ function diffSegments(E: string[], H: string[]): Array<{ e: string[]; h: string[
 export function learnFrom(expected: string, heard: string, players: VoicePlayer[], p: VoiceProfile): VoiceProfile {
   let next = p;
   const names = new Map(players.filter((x) => x.name).map((x) => [strip(x.name), x.name]));
-  for (const seg of diffSegments(strip(expected).split(' ').filter(Boolean), strip(heard).split(' ').filter(Boolean))) {
+  const E = toDigitsText(expected).split(' ').filter(Boolean);
+  const segs = diffSegments(E, toDigitsText(heard).split(' ').filter(Boolean));
+  // Garde-fou : on n'apprend que si une partie de la phrase attendue a été entendue telle quelle (un « merci à bientôt » sans rapport n'apprend rien).
+  const matched = E.length - segs.reduce((n, g) => n + g.e.length, 0);
+  if (matched < 1 || matched * 3 < E.length) return p;
+  for (const seg of segs) {
     if (!seg.e.length || !seg.h.length || seg.e.length > 3 || seg.h.length > 3) continue;
     const e = seg.e.join(' '), h = seg.h.join(' ');
     if (h.length < 2 || e === h) continue;
     const nameKey = Array.from(names.keys()).find((k) => k === e || k === seg.e.join(''));
-    if (nameKey) { next = addAliasTo(next, names.get(nameKey) as string, h); continue; }
-    if (seg.h.some((w) => isLexiconWord(w))) continue;           // ne jamais « corriger » un mot qui a déjà un sens
+    // Les mots qui déclenchent déjà une commande ou un nombre ne sont jamais remplacés. Les petits mots (« un », « de », « à »…) peuvent faire partie d'une correction.
+    const hasMeaning = seg.h.some((w) => isCommandWord(w) && !/^\d+$/.test(w));
+    const hasDigit = seg.h.some((w) => /^\d+$/.test(w));
+    if (nameKey) {
+      // Un prénom entendu comme « en 10 » ou « à lire » : avec chiffres ou petits mots, la variante est remplacée avant l'analyse (correction de mots) ; sinon variante de prénom.
+      const plain = seg.h.every((w) => !/^\d+$/.test(w) && w.length >= 2);
+      if (plain && !hasMeaning && seg.h.length === 1) next = addAliasTo(next, names.get(nameKey) as string, h);
+      else if (!hasMeaning) next = { ...next, wordFixes: { ...next.wordFixes, [h]: e } };
+      continue;
+    }
+    if (hasMeaning || hasDigit) continue;
     next = { ...next, wordFixes: { ...next.wordFixes, [h]: e } };
   }
   return next;

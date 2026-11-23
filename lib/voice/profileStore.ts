@@ -61,7 +61,7 @@ export async function loadShared(): Promise<VoiceProfile> {
     const best: Record<string, number> = {};
     for (const r of (data ?? []) as Array<{ kind: string; key: string; value: string; uses: number }>) {
       if (r.kind === 'alias') p.aliases[r.key] = [...(p.aliases[r.key] ?? []), r.value];
-      else if (r.kind === 'fix' && (best[r.key] ?? 0) < r.uses) { p.wordFixes[r.key] = r.value; best[r.key] = r.uses; }
+      else if (r.kind === 'fix' && r.uses >= 2 && (best[r.key] ?? 0) < r.uses) { p.wordFixes[r.key] = r.value; best[r.key] = r.uses; }   // correction de mot commune : seulement une fois confirmée 2 fois (évite qu'un bruit appris une seule fois déclenche une commande chez tous)
     }
     try { window.localStorage.setItem(SHARED_KEY, JSON.stringify(p)); } catch { /* ignoré */ }
     return p;

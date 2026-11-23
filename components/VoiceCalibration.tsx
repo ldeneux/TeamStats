@@ -60,6 +60,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
   const idxRef = useRef(0);
   const triesRef = useRef(0);
   const busyRef = useRef(false);
+  const readyAtRef = useRef(0);   // un résultat reçu avant cet instant est la fin de la phrase précédente : ignoré
   const workRef = useRef<VoiceProfile>(profile);
   const resultsRef = useRef<Res[]>([]);
   const engineRef = useRef<VoiceEngine | null>(null);
@@ -75,12 +76,12 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
       timerRef.current = null;
       const next = idxRef.current + 1;
       if (next >= prompts.length) { finish(); return; }
-      idxRef.current = next; setIdx(next); setHeard(''); setNote(''); setDetail(null); busyRef.current = false;
+      idxRef.current = next; setIdx(next); setHeard(''); setNote(''); setDetail(null); busyRef.current = false; readyAtRef.current = Date.now() + 900;
     }, 900);
   };
 
   const onResult = (alts: string[]) => {
-    if (busyRef.current || phase !== 'run') return;
+    if (busyRef.current || phase !== 'run' || Date.now() < readyAtRef.current) return;
     const prompt = prompts[idxRef.current];
     if (!prompt) return;
     const r = evaluateHeard(prompt, alts, setup, workRef.current);
@@ -117,7 +118,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
   }, [phase]);
 
   const skip = () => { if (busyRef.current) return; busyRef.current = true; setNote('Phrase passée.'); advance('skip'); };
-  const start = () => { setSaved(null); idxRef.current = 0; triesRef.current = 0; busyRef.current = false; resultsRef.current = []; setResults([]); setIdx(0); setHeard(''); setNote(''); setPhase('run'); };
+  const start = () => { readyAtRef.current = Date.now() + 900; setSaved(null); idxRef.current = 0; triesRef.current = 0; busyRef.current = false; resultsRef.current = []; setResults([]); setIdx(0); setHeard(''); setNote(''); setPhase('run'); };
   const save = async () => {
     setSaving(true);
     const ok = await onSave({ ...workRef.current, calibratedAt: new Date().toISOString() });

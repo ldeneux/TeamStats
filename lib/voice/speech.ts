@@ -75,6 +75,7 @@ export class VoiceEngine {
   private speakId = 0;
   private state: EngineState = 'off';
   private sessionSeq = 0;
+  private delivered = new Set<string>();   // finals déjà remis (certains moteurs répètent le dernier résultat)
   private forceLocal = false;   // le réseau a lâché : on bascule sur la reconnaissance de l'appareil
 
   constructor(private h: VoiceEngineHandlers) {}
@@ -160,7 +161,12 @@ export class VoiceEngine {
         for (let k = 0; k < r.length; k++) { const tr = String(r[k].transcript || '').trim(); if (tr) alts.push(tr); }
         if (!alts.length) continue;
         const meta = { key: `${session}:${i}` };
-        if (r.isFinal) { this.recentStarts = []; this.h.onResult(alts, meta); }
+        if (r.isFinal) {
+          if (this.delivered.has(meta.key)) continue;
+          this.delivered.add(meta.key);
+          if (this.delivered.size > 200) this.delivered.clear();
+          this.recentStarts = []; this.h.onResult(alts, meta);
+        }
         else this.h.onInterim?.(alts, meta);
       }
     };
