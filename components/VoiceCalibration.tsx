@@ -5,7 +5,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { VoicePlayer } from '../lib/voice/commands';
-import { CalPrompt, CalStatus, VoiceProfile, buildPrompts, calibrationSetup, evaluateHeard } from '../lib/voice/calibrate';
+import { CalDetail, CalPrompt, CalStatus, VoiceProfile, buildPrompts, calibrationSetup, evaluateHeard } from '../lib/voice/calibrate';
 import { EngineMode, PhraseHint, VoiceEngine } from '../lib/voice/speech';
 
 interface Props {
@@ -21,6 +21,26 @@ const countLearned = (a: VoiceProfile, b: VoiceProfile) =>
   Object.values(b.aliases).reduce((n, l) => n + l.length, 0) - Object.values(a.aliases).reduce((n, l) => n + l.length, 0) +
   Object.keys(b.wordFixes).length - Object.keys(a.wordFixes).length;
 
+type LogRow = { n: number; text: string; status: string; engine: string; alts: string[]; expected: string; understood: string; learned: string };
+const journalText = (log: LogRow[]) => [...log].reverse().map((r) => `#${r.n} [${r.status}] moteur=${r.engine}\n  dit : ${r.text}\n  attendu : ${r.expected}\n  entendu : ${r.alts.join(' | ')}\n  compris : ${r.understood}${r.learned ? `\n  appris : ${r.learned}` : ''}`).join('\n');
+
+function JournalBox({ log, open }: { log: LogRow[]; open?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  if (!log.length) return null;
+  return (
+    <details open={open} className="bg-slate-900 border border-slate-700 rounded-2xl p-3 text-[11px]">
+      <summary className="cursor-pointer font-bold text-slate-300">Journal du calibrage ({log.length})</summary>
+      <div className="mt-2 space-y-1 max-h-56 overflow-auto font-mono text-slate-400">
+        {log.slice(0, open ? 200 : 6).map((r, i) => (
+          <p key={i}><span className={r.status === 'ok' ? 'text-emerald-300' : r.status === 'learned' ? 'text-indigo-300' : 'text-amber-300'}>#{r.n} {r.status}</span> « {r.text} » ← « {r.alts[0]} »</p>
+        ))}
+      </div>
+      <button type="button" onClick={() => { try { void navigator.clipboard.writeText(journalText(log)); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* ignoré */ } }}
+        className="mt-2 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-slate-200">{copied ? 'Copié ✓' : 'Copier le journal complet (pour l’envoyer)'}</button>
+    </details>
+  );
+}
+
 export default function VoiceCalibration({ players, profile, getMode, onSave, onClose }: Props) {
   const setup = useMemo(() => calibrationSetup(players), [players]);
   const prompts: CalPrompt[] = useMemo(() => buildPrompts(setup), [setup]);
@@ -33,6 +53,9 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<null | boolean>(null);
   const [listening, setListening] = useState(false);
+  const [detail, setDetail] = useState<CalDetail | null>(null);
+  const [engineUsed, setEngineUsed] = useState<'cloud' | 'local' | null>(null);
+  const [log, setLog] = useState<Array<{ n: number; text: string; status: string; engine: string; alts: string[]; expected: string; understood: string; learned: string }>>([]);
 
   const idxRef = useRef(0);
   const triesRef = useRef(0);
@@ -40,6 +63,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
   const workRef = useRef<VoiceProfile>(profile);
   const resultsRef = useRef<Res[]>([]);
   const engineRef = useRef<VoiceEngine | null>(null);
+  const engineUsedRef = useRef<'cloud' | 'local' | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const finish = () => { engineRef.current?.stop(); engineRef.current = null; setListening(false); setPhase('done'); };
@@ -51,7 +75,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
       timerRef.current = null;
       const next = idxRef.current + 1;
       if (next >= prompts.length) { finish(); return; }
-      idxRef.current = next; setIdx(next); setHeard(''); setNote(''); busyRef.current = false;
+      idxRef.current = next; setIdx(next); setHeard(''); setNote(''); setDetail(null); busyRef.current = false;
     }, 900);
   };
 
@@ -61,6 +85,8 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
     if (!prompt) return;
     const r = evaluateHeard(prompt, alts, setup, workRef.current);
     setHeard(alts[0] ?? '');
+    setDetail(r.detail);
+    setLog((l) => [{ n: idxRef.current + 1, text: prompt.text, status: r.status === 'fail' && triesRef.current < 1 ? 'essai 1 raté' : r.status, engine: engineRef.current ? (engineUsedRef.current ?? '?') : '?', alts, expected: r.detail.expected, understood: r.detail.perAlt[0]?.understood ?? '', learned: r.detail.learned.map((x) => `${x.kind === 'alias' ? 'prénom' : 'mot'} « ${x.value} » → « ${x.key} »`.replace(/^mot « (.*) » → « (.*) »$/, (_m, a, b) => `mot « ${b} » → « ${a} »`)).join(' ; ') }, ...l]);
     if (r.status === 'fail' && triesRef.current < 1) {
       triesRef.current += 1;
       setNote('Pas compris : répétez la phrase.');
@@ -81,6 +107,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
       onState: (s) => setListening(s === 'listening'),
       onFatal: (_k, msg) => { setNote(msg); finish(); },
       getMode,
+      onEngine: (e) => { engineUsedRef.current = e; setEngineUsed(e); },
       getPhrases: (): PhraseHint[] => setup.players.map((p) => ({ phrase: p.name, boost: 5 })),
     });
     engineRef.current = eng;
@@ -128,12 +155,23 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
               <p className="text-2xl font-black text-white leading-snug">« {cur.text} »</p>
             </div>
             <p className="text-xs text-center">{listening ? <span className="text-emerald-300">🎙️ à l’écoute…</span> : <span className="text-slate-500">démarrage du micro…</span>}</p>
-            {heard && <p className="text-xs text-center text-slate-400">Entendu : <span className="font-mono text-slate-200">« {heard} »</span></p>}
+            {detail && (
+              <div className="bg-slate-900 border border-slate-700 rounded-2xl p-3 space-y-1.5 text-[11px]">
+                <p className="text-slate-400">Moteur : <b className="text-slate-200">{engineUsed === 'local' ? 'sur l’appareil' : engineUsed === 'cloud' ? 'en ligne' : '—'}</b></p>
+                <p className="text-slate-400">Attendu : <b className="text-emerald-300">{detail.expected}</b></p>
+                <p className="text-slate-400">Propositions du navigateur :</p>
+                {detail.perAlt.map((a, i) => (
+                  <p key={i} className={`font-mono ${a.ok ? 'text-emerald-300' : 'text-slate-300'}`}>{a.ok ? '✓' : '✗'} {i + 1}. « {a.alt} » <span className="font-sans text-slate-500">→ compris : {a.understood}</span></p>
+                ))}
+                {detail.learned.length > 0 && <p className="text-indigo-300">Appris : {detail.learned.map((x) => (x.kind === 'alias' ? `prénom « ${x.value} » = ${x.key}` : `mot « ${x.key} » = « ${x.value} »`)).join(' ; ')}</p>}
+              </div>
+            )}
             {note && <p className={`text-sm text-center font-bold ${/✓/.test(note) ? 'text-emerald-300' : 'text-amber-300'}`}>{note}</p>}
             <div className="flex gap-2">
               <button type="button" onClick={skip} className="flex-1 py-2 rounded-xl bg-slate-800 border border-slate-600 text-sm font-bold">Passer</button>
               <button type="button" onClick={finish} className="flex-1 py-2 rounded-xl bg-slate-800 border border-slate-600 text-sm font-bold">Terminer maintenant</button>
             </div>
+            <JournalBox log={log} />
             <p className="text-[11px] text-center text-slate-500">✓ {n('ok')} comprises · ↻ {n('learned')} corrigées · ✗ {n('fail')} à retravailler</p>
           </div>
         )}
@@ -151,6 +189,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
               </div>
             )}
             <button type="button" onClick={save} disabled={saving || saved === true} className="w-full py-3 rounded-2xl bg-emerald-600 font-black text-white disabled:opacity-40">{saving ? 'Enregistrement…' : saved === true ? 'Enregistré sur votre compte ✓' : 'Enregistrer sur mon compte'}</button>
+            <JournalBox log={log} open />
             {saved === false && <p className="text-amber-300 text-xs">Pas de connexion à la base : le calibrage est gardé sur cet appareil et sera envoyé dès que possible.</p>}
             <div className="flex gap-2">
               <button type="button" onClick={start} className="flex-1 py-2 rounded-xl bg-slate-800 border border-slate-600 text-sm font-bold">Recommencer</button>

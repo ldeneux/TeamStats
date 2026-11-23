@@ -561,6 +561,15 @@ t('peek n\'a aucun effet de bord', () => {
   const s = new Sim(); const v = s.view(); s.dialog.peek(['Chloé deux points'], v); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
 });
 
+t('calibrage : le détail montre attendu, entendu et compris', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Tirs', text: 'Chloé deux points' }, ['un litre de points', 'Chloé deux points'], setup, emptyProfile());
+  assert.equal(r.status, 'ok'); assert.match(r.detail.expected, /TIR 2PTS RÉUSSI · Chloé/);
+  assert.equal(r.detail.perAlt.length, 2); assert.equal(r.detail.perAlt[0].ok, false); assert.equal(r.detail.perAlt[1].ok, true);
+  const f = evaluateHeard({ group: 'Tirs', text: 'Chloé deux points' }, ['un litre de points'], setup, emptyProfile());
+  assert.equal(f.status, 'fail'); assert.match(f.detail.perAlt[0].understood, /question|refus|non reconnu/);
+});
+
 // Phonétique
 t('clés phonétiques (fiche § 8)', () => {
   assert.equal(phonetic('Candice'), phonetic('Candy'));

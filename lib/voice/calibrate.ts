@@ -121,8 +121,39 @@ export function cmdKey(c: Cmd): string {
   }
 }
 
+/** Résumé lisible de ce que l'appli a compris (pour comparer « attendu » et « entendu » au calibrage). */
+export function describeCmd(c: Cmd, players: VoicePlayer[]): string {
+  const nm = (id: string | null | undefined) => { const p = players.find((x) => x.id === id); return p ? (p.name ? p.name.charAt(0) + p.name.slice(1).toLowerCase() : `n°${p.number}`) : '?'; };
+  switch (c.type) {
+    case 'EVENT': return `${c.action} · ${nm(c.playerId)}`;
+    case 'FREE_THROWS': return `lancers francs ${c.made}/${c.attempts} · ${nm(c.playerId)}`;
+    case 'FT_START': return `série de lancers francs · ${nm(c.playerId)}`;
+    case 'FT_ATTEMPT': return `tentative ${c.index === null ? 'suivante' : (c.index ?? 0) + 1} ${c.made ? 'réussie' : 'ratée'}`;
+    case 'FT_DONE': return 'fin de série';
+    case 'FT_RATIO': return `lancers francs ${c.made}/${c.attempts}`;
+    case 'SUB': return `changement : sortent ${c.outs.map(nm).join(', ')} ; entrent ${c.ins.map(nm).join(', ')}`;
+    case 'SET_COURT': return `cinq sur le terrain : ${c.ins.map(nm).join(', ')}`;
+    case 'CLOCK': return c.running ? 'chrono : démarrer' : 'chrono : arrêter';
+    case 'SELECT': return c.playerId ? `sélection · ${nm(c.playerId)}` : 'désélection';
+    case 'SUBPANEL': return `fenêtre de changement : ${c.op}`;
+    case 'OPP': return `score adverse ${c.delta > 0 ? '+' : ''}${c.delta}`;
+    case 'UNDO': return `annulation${c.playerId ? ' · ' + nm(c.playerId) : ''}`;
+    case 'Q_FOULS': return `question fautes · ${nm(c.playerId)}`;
+    case 'ASK': return `question de l'appli : ${c.say}`;
+    case 'REFUSE': return `refus : ${c.say}`;
+    case 'UNKNOWN': return 'non reconnu';
+    default: return c.type;
+  }
+}
+
+export interface CalDetail {
+  expected: string;
+  perAlt: Array<{ alt: string; ok: boolean; understood: string }>;
+  learned: SharedEntry[];
+}
+
 export type CalStatus = 'ok' | 'learned' | 'fail';
-export interface CalResult { status: CalStatus; heard: string; profile: VoiceProfile }
+export interface CalResult { status: CalStatus; heard: string; profile: VoiceProfile; detail: CalDetail }
 
 const isBad = (c: Cmd) => c.type === 'UNKNOWN' || c.type === 'REFUSE';
 
@@ -165,17 +196,23 @@ export function learnFrom(expected: string, heard: string, players: VoicePlayer[
 export function evaluateHeard(prompt: CalPrompt, alts: string[], setup: CalSetup, profile: VoiceProfile): CalResult {
   const ctxWith = (pr: VoiceProfile): ParseCtx => ({ ...setup.ctx, wordFixes: pr.wordFixes });
   const players = (pr: VoiceProfile): VoicePlayer[] => setup.players.map((pl) => ({ ...pl, aliases: [...(pl.aliases ?? []), ...(pr.aliases[strip(pl.name)] ?? [])] }));
-  const expected = parseCommand(prompt.text, players(profile), ctxWith(profile), prompt.opts);
+  const parse = (a: string, pr: VoiceProfile) => parseCommand(a, players(pr), ctxWith(pr), prompt.opts);
+  const expected = parse(prompt.text, profile);
   const heard = alts[0] ?? '';
-  if (isBad(expected)) return { status: 'ok', heard, profile };           // phrase non évaluable dans ce contexte : on ne pénalise pas
   const key = cmdKey(expected);
-  const matches = (pr: VoiceProfile, list: string[]) => list.some((a) => cmdKey(parseCommand(a, players(pr), ctxWith(pr), prompt.opts)) === key);
-  if (matches(profile, alts)) return { status: 'ok', heard, profile };
+  const detailFor = (pr: VoiceProfile, learned: SharedEntry[]): CalDetail => ({
+    expected: describeCmd(expected, setup.players),
+    perAlt: alts.map((a) => { const c = parse(a, pr); return { alt: a, ok: !isBad(expected) && cmdKey(c) === key, understood: describeCmd(c, setup.players) }; }),
+    learned,
+  });
+  if (isBad(expected)) return { status: 'ok', heard, profile, detail: detailFor(profile, []) };   // phrase non évaluable dans ce contexte : on ne pénalise pas
+  const matches = (pr: VoiceProfile, list: string[]) => list.some((a) => cmdKey(parse(a, pr)) === key);
+  if (matches(profile, alts)) return { status: 'ok', heard, profile, detail: detailFor(profile, []) };
   // apprentissage à partir de chaque alternative, de la plus probable à la moins probable
   // (on ne retient que l'apprentissage d'UNE alternative qui suffit à comprendre la phrase : pas de pollution par les autres)
   for (const a of alts) {
     const cand = learnFrom(prompt.text, a, setup.players, profile);
-    if (cand !== profile && matches(cand, alts)) return { status: 'learned', heard, profile: cand };
+    if (cand !== profile && matches(cand, alts)) return { status: 'learned', heard, profile: cand, detail: detailFor(cand, profileDelta(profile, cand)) };
   }
-  return { status: 'fail', heard, profile };
+  return { status: 'fail', heard, profile, detail: detailFor(profile, []) };
 }
