@@ -24,7 +24,7 @@ const countLearned = (a: VoiceProfile, b: VoiceProfile) =>
 type LogRow = { n: number; text: string; status: string; engine: string; alts: string[]; expected: string; understood: string; learned: string };
 const journalText = (log: LogRow[]) => [...log].reverse().map((r) => `#${r.n} [${r.status}] moteur=${r.engine}\n  dit : ${r.text}\n  attendu : ${r.expected}\n  entendu : ${r.alts.join(' | ')}\n  compris : ${r.understood}${r.learned ? `\n  appris : ${r.learned}` : ''}`).join('\n');
 
-function JournalBox({ log, open }: { log: LogRow[]; open?: boolean }) {
+function JournalBox({ log, open, engineLog }: { log: LogRow[]; open?: boolean; engineLog?: string[] }) {
   const [copied, setCopied] = useState(false);
   if (!log.length) return null;
   return (
@@ -35,7 +35,7 @@ function JournalBox({ log, open }: { log: LogRow[]; open?: boolean }) {
           <p key={i}><span className={r.status === 'ok' ? 'text-emerald-300' : r.status === 'learned' ? 'text-indigo-300' : 'text-amber-300'}>#{r.n} {r.status}</span> « {r.text} » ← « {r.alts[0]} »</p>
         ))}
       </div>
-      <button type="button" onClick={() => { try { void navigator.clipboard.writeText(journalText(log)); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* ignoré */ } }}
+      <button type="button" onClick={() => { try { void navigator.clipboard.writeText(journalText(log) + (engineLog && engineLog.length ? '\n--- événements du moteur ---\n' + [...engineLog].reverse().join('\n') : '')); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* ignoré */ } }}
         className="mt-2 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-slate-200">{copied ? 'Copié ✓' : 'Copier le journal complet (pour l’envoyer)'}</button>
     </details>
   );
@@ -53,6 +53,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<null | boolean>(null);
   const [listening, setListening] = useState(false);
+  const [engineLog, setEngineLog] = useState<string[]>([]);
   const [detail, setDetail] = useState<CalDetail | null>(null);
   const [engineUsed, setEngineUsed] = useState<'cloud' | 'local' | null>(null);
   const [log, setLog] = useState<Array<{ n: number; text: string; status: string; engine: string; alts: string[]; expected: string; understood: string; learned: string }>>([]);
@@ -98,6 +99,21 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
     else setNote(r.status === 'ok' ? 'Compris ✓' : 'Toujours pas compris : on passe à la suivante.');
     advance(r.status);
   };
+  // Aucun résultat du navigateur au bout de 8 s : on le dit (et on le note au journal) au lieu de laisser croire que l'appli attend.
+  const silentRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (phase !== 'run') return;
+    if (silentRef.current) clearTimeout(silentRef.current);
+    const p = prompts[idx];
+    silentRef.current = setTimeout(() => {
+      if (busyRef.current || !p) return;
+      setNote('Rien reçu du navigateur : parlez plus près du micro, ou touchez « Passer ».');
+      setLog((l) => [{ n: idx + 1, text: p.text, status: 'RIEN REÇU', engine: engineUsedRef.current ?? '?', alts: ['(aucun résultat)'], expected: detailExpected(p.text), understood: '', learned: '' }, ...l]);
+    }, 8000);
+    return () => { if (silentRef.current) clearTimeout(silentRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, idx]);
+  const detailExpected = (t: string) => t;
   const onResultRef = useRef(onResult);
   onResultRef.current = onResult;
 
@@ -109,6 +125,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
       onFatal: (_k, msg) => { setNote(msg); finish(); },
       getMode,
       onEngine: (e) => { engineUsedRef.current = e; setEngineUsed(e); },
+      onDebug: (l) => setEngineLog((x) => [`${new Date().toLocaleTimeString('fr-FR')} ${l}`, ...x].slice(0, 30)),
       getPhrases: (): PhraseHint[] => setup.players.map((p) => ({ phrase: p.name, boost: 5 })),
     });
     engineRef.current = eng;
@@ -117,7 +134,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  const skip = () => { if (busyRef.current) return; busyRef.current = true; setNote('Phrase passée.'); advance('skip'); };
+  const skip = () => { if (busyRef.current) return; busyRef.current = true; setNote('Phrase passée.'); const p = prompts[idxRef.current]; setLog((l) => [{ n: idxRef.current + 1, text: p?.text ?? '', status: 'passée', engine: engineUsedRef.current ?? '?', alts: ['(passée)'], expected: '', understood: '', learned: '' }, ...l]); advance('skip'); };
   const start = () => { readyAtRef.current = Date.now() + 900; setSaved(null); idxRef.current = 0; triesRef.current = 0; busyRef.current = false; resultsRef.current = []; setResults([]); setIdx(0); setHeard(''); setNote(''); setPhase('run'); };
   const save = async () => {
     setSaving(true);
@@ -172,7 +189,12 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
               <button type="button" onClick={skip} className="flex-1 py-2 rounded-xl bg-slate-800 border border-slate-600 text-sm font-bold">Passer</button>
               <button type="button" onClick={finish} className="flex-1 py-2 rounded-xl bg-slate-800 border border-slate-600 text-sm font-bold">Terminer maintenant</button>
             </div>
-            <JournalBox log={log} />
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-3 text-[10px] font-mono text-slate-500">
+              <p className="font-sans font-bold text-slate-400 mb-1">Événements du moteur</p>
+              {engineLog.slice(0, 6).map((l, i) => <p key={i}>{l}</p>)}
+              {engineLog.length === 0 && <p>—</p>}
+            </div>
+            <JournalBox log={log} engineLog={engineLog} />
             <p className="text-[11px] text-center text-slate-500">✓ {n('ok')} comprises · ↻ {n('learned')} corrigées · ✗ {n('fail')} à retravailler</p>
           </div>
         )}
@@ -190,7 +212,7 @@ export default function VoiceCalibration({ players, profile, getMode, onSave, on
               </div>
             )}
             <button type="button" onClick={save} disabled={saving || saved === true} className="w-full py-3 rounded-2xl bg-emerald-600 font-black text-white disabled:opacity-40">{saving ? 'Enregistrement…' : saved === true ? 'Enregistré sur votre compte ✓' : 'Enregistrer sur mon compte'}</button>
-            <JournalBox log={log} open />
+            <JournalBox log={log} engineLog={engineLog} open />
             {saved === false && <p className="text-amber-300 text-xs">Pas de connexion à la base : le calibrage est gardé sur cet appareil et sera envoyé dès que possible.</p>}
             <div className="flex gap-2">
               <button type="button" onClick={start} className="flex-1 py-2 rounded-xl bg-slate-800 border border-slate-600 text-sm font-bold">Recommencer</button>

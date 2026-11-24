@@ -6,7 +6,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { VoiceDialog, VoiceAction, VoiceView } from '../lib/voice/dialog';
 import VoiceCalibration from './VoiceCalibration';
-import { VoiceProfile, addAliasTo, emptyProfile, mergeProfiles, profileDelta } from '../lib/voice/calibrate';
+import { VoiceProfile, addAliasTo, emptyProfile, mergeProfiles, profileDelta, sanitizeProfile } from '../lib/voice/calibrate';
 import { loadProfile, loadShared, saveProfile, shareEntries } from '../lib/voice/profileStore';
 import { VoicePlayer, strip } from '../lib/voice/commands';
 import { VoiceEngine, EngineState, EngineMode, LocalSupport, PhraseHint, checkLocalSupport, installLocal, holdWakeLock, isRecognitionSupported, isSynthesisSupported, WakeLockHandle } from '../lib/voice/speech';
@@ -88,6 +88,7 @@ export default function VoiceControl(props: Props) {
   const [usePhrases, setUsePhrases] = useState(false);   // liste de mots favorisés : désactivée par défaut (à essayer)
   const phrasesRef = useRef(false);
   phrasesRef.current = usePhrases;
+  const [engineLog, setEngineLog] = useState<string[]>([]);
   const [journal, setJournal] = useState<Array<{ at: string; alts: string[]; said: string; kind: string }>>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [showNames, setShowNames] = useState(false);
@@ -154,7 +155,7 @@ export default function VoiceControl(props: Props) {
     void loadShared().then(setShared);
     // Profil vocal du COMPTE (base) : suit l'utilisateur d'un PC à une tablette. Anciennes variantes locales : reprises une fois.
     void loadProfile(props.userId).then(({ profile: p, fromDb }) => {
-      let merged = p;
+      let merged = sanitizeProfile(p);   // retire les corrections dangereuses apprises avant (« pas », « avec »…)
       const legacy = readAliases();
       for (const [k, list] of Object.entries(legacy)) for (const w of list) merged = addAliasTo(merged, k, w);
       profileRef.current = merged;
@@ -293,6 +294,7 @@ export default function VoiceControl(props: Props) {
       onState: setEngineState,
       onFatal: (_kind, msg) => stopVoice(msg),
       onEngine: setActiveEngine,
+      onDebug: (l) => setEngineLog((x) => [`${new Date().toLocaleTimeString('fr-FR')} ${l}`, ...x].slice(0, 30)),
       getMode: () => modeRef.current,
       getPhrases: (): PhraseHint[] => !phrasesRef.current ? [] : [
         ...viewRef.current.players.flatMap((p) => (p.name ? [p.name, ...(p.aliases ?? [])] : [])).map((phrase) => ({ phrase, boost: 5 })),
@@ -442,9 +444,11 @@ export default function VoiceControl(props: Props) {
         <div className="text-[10px] text-slate-400 font-mono bg-slate-950/60 rounded-lg p-2 space-y-0.5">
           <p>Entendu :</p>
           {heard.length === 0 ? <p>—</p> : heard.map((h, i) => <p key={i}>{i + 1}. {h}</p>)}
+          <p className="pt-1 text-slate-300">Événements du moteur (les plus récents d’abord) :</p>
+          {engineLog.slice(0, 10).map((l, i) => <p key={i} className="text-slate-500">{l}</p>)}
           <p className="pt-1 text-slate-300">Journal ({journal.length}) :</p>
           {journal.slice(0, 8).map((j, i) => <p key={i}>{j.at} · {j.kind} · « {j.alts[0]} » → {j.said || '—'}</p>)}
-          <button type="button" onClick={() => { try { void navigator.clipboard.writeText(journal.map((j) => `${j.at}\t${j.kind}\t${j.alts.join(' | ')}\t=> ${j.said}`).join('\n')); } catch { /* ignoré */ } }} className="mt-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 font-sans">Copier le journal (pour l'envoyer)</button>
+          <button type="button" onClick={() => { try { void navigator.clipboard.writeText(journal.map((j) => `${j.at}\t${j.kind}\t${j.alts.join(' | ')}\t=> ${j.said}`).join('\n') + '\n--- événements du moteur ---\n' + [...engineLog].reverse().join('\n')); } catch { /* ignoré */ } }} className="mt-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 font-sans">Copier le journal (pour l'envoyer)</button>
         </div>
       )}
       {enabled && (

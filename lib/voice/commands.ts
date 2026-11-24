@@ -192,6 +192,8 @@ const RULES: Array<[RegExp, string]> = [
   [/\bcombien (?:de|d) fautes?\b|\bcombien fautes?\b/g, ' QFOULS '],
   [/\bscore\b/g, ' QSCORE '],
   [/\bsur le terrain\b|\bterrain\b|\ben jeu\b/g, ' COURT '],
+  // « sur Alice » seul (la reconnaissance a perdu « faute ») = faute subie
+  [/^\s*sur(?= (?!le terrain)\S)/g, ' FSUBIE '],
   // contres
   [/\bcontres? subis?e?\b|\bcontrees?\b/g, ' BLKD '],
   [/\bcontres?\b/g, ' BLK '],
@@ -210,7 +212,7 @@ const RULES: Array<[RegExp, string]> = [
   // passe, interception, perte
   [/\bpasses? decisives?\b|\bpasses?\b/g, ' AST '],
   [/\binterceptions?\b|\bintercepte\b|\bvol de balle\b/g, ' STL '],
-  [/\bpertes?(?: de)? balles?\b|\bballes? perdu(?:e|es|s)?\b|\bpertes?\b/g, ' TOV '],
+  [/\bpertes?(?: de)? balles?\b|\b(?:balles?|bal) perdu(?:e|es|s)?\b|\bperdu(?:e|es|s)?\b|\bpertes?\b/g, ' TOV '],
   // points
   [/\b([123]) fois\b/g, ' $1 points '],
   [/\b1 (?:points?|pointes?|poings?|poins?|poils?|poids|pts?)\b/g, ' P1 '],
@@ -230,7 +232,7 @@ const RULES: Array<[RegExp, string]> = [
   // annulation
   [/\b(?:annule|annuler|annulation|supprime|supprimer|efface|effacer)\b/g, ' UNDO '],
   // chrono
-  [/\b(?:temps|tant|ten|tan|tem) ?(?:morts?|mors?|more?|mord)\b/g, ' CSTOP '],
+  [/\b(?:temps|tant|ten|tan|tem) ?(?:morts?|mors?|more?|mord)\b|\barrets? de jeu\b|\bcoups? de sifflet\b|\bsifflet\b|\bpause\b|\bstop\b(?! chrono)/g, ' CSTOP '],
   [/\b(?:debuts?|coup d envoi|depart)(?: (?:du|de|des|d))? ?matchs?\b/g, ' CSTART '],
   [/\b(?:demarre|demarrer|demarrez|lance|lancer|lancez|commence|commencer|start)(?: (?:le|du|un|ce))? ?matchs?\b/g, ' CSTART '],
   [/\breprise(?: du jeu)?\b|\breprend\b/g, ' CSTART '],
@@ -340,7 +342,7 @@ function correctWords(t: string, roster: RosterEntry[]): string {
 
 export function normalizeText(text: string, fixes?: Record<string, string>, roster?: RosterEntry[]): string {
   // « 1/3 » → « 1 sur 3 » (avant que la normalisation ne remplace « / » par une espace)
-  let t = String(text ?? '').replace(/(\d)\s*\/\s*(\d)/g, '$1 sur $2');
+  let t = String(text ?? '').replace(/(\d)\s*\/\s*(\d)/g, '$1 sur $2').replace(/(^|\s)[-−–—]\s*(\d)/g, '$1moins $2');   // « adversaire - 1 » = « moins un »
   t = t.replace(/n\s*°\s*(\d)/gi, 'numero $1').replace(/n°/gi, ' numero ');
   t = strip(t).replace(/numeros?(\d)/g, 'numero $1');
   if (roster) t = correctWords(t, roster);

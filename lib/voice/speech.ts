@@ -42,6 +42,8 @@ export interface VoiceEngineHandlers {
   onFatal: (kind: EngineErrorKind, message: string) => void;
   /** Moteur réellement utilisé : en ligne (cloud) ou sur l'appareil. */
   onEngine?: (e: 'cloud' | 'local') => void;
+  /** Événements bruts du moteur (démarrage, son détecté, résultat, erreur…) : pour comprendre pourquoi une phrase n'arrive pas. */
+  onDebug?: (line: string) => void;
   /** Réglage choisi par l'utilisateur (relu à chaque ouverture de l'écoute). */
   getMode?: () => EngineMode;
   /** Mots à favoriser (prénoms, vocabulaire) quand le navigateur sait le faire. */
@@ -153,14 +155,22 @@ export class VoiceEngine {
     rec.maxAlternatives = 5;
 
     rec.onstart = () => { if (this.rec === rec) this.setState(this.speaking ? 'speaking' : 'listening'); };
+    const dbg = (l: string) => { try { this.h.onDebug?.(l); } catch { /* ignoré */ } };
+    rec.onaudiostart = () => dbg('micro ouvert');
+    rec.onsoundstart = () => dbg('son détecté');
+    rec.onspeechstart = () => dbg('voix détectée');
+    rec.onspeechend = () => dbg('fin de voix');
+    rec.onsoundend = () => dbg('fin du son');
+    rec.onnomatch = () => dbg('voix entendue mais rien compris (nomatch)');
     rec.onresult = (e: any) => {
-      if (this.speaking) return; // écho : on ignore ce qui est entendu pendant la synthèse
+      if (this.speaking) { dbg('résultat ignoré : l’appli parle'); return; } // écho : on ignore ce qui est entendu pendant la synthèse
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         const alts: string[] = [];
         for (let k = 0; k < r.length; k++) { const tr = String(r[k].transcript || '').trim(); if (tr) alts.push(tr); }
         if (!alts.length) continue;
         const meta = { key: `${session}:${i}` };
+        dbg(`${r.isFinal ? 'FINAL' : 'provisoire'} #${i} : « ${alts[0]} »`);
         if (r.isFinal) {
           if (this.delivered.has(meta.key)) continue;
           this.delivered.add(meta.key);
@@ -172,6 +182,7 @@ export class VoiceEngine {
     };
     rec.onerror = (e: any) => {
       const code = String(e?.error || '');
+      dbg(`erreur : ${code}`);
       if (code === 'no-speech' || code === 'aborted') return; // silence ou arrêt volontaire : on relance sans bruit
       if (code === 'not-allowed' || code === 'service-not-allowed') { this.fatal('not-allowed'); return; }
       if (code === 'language-not-supported') { this.fatal(local ? 'no-local' : 'other'); return; }
@@ -184,6 +195,7 @@ export class VoiceEngine {
       // autre erreur : on laisse onend relancer
     };
     rec.onend = () => {
+      dbg('écoute terminée (relance automatique)');
       if (this.rec === rec) this.rec = null;
       if (this.active && !this.speaking) {
         this.restartTimer = setTimeout(() => { this.restartTimer = null; this.openRecognition(); }, delay);

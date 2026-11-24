@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { parseCommand, phonetic, normalizeText, Cmd, VoicePlayer, VoiceEventLite } from '../lib/voice/commands';
 import { VoiceDialog, VoiceAction, VoiceView, DialogResult } from '../lib/voice/dialog';
-import { buildPrompts, calibrationSetup, emptyProfile, evaluateHeard } from '../lib/voice/calibrate';
+import { buildPrompts, calibrationSetup, emptyProfile, evaluateHeard, sanitizeProfile } from '../lib/voice/calibrate';
 import { buildTutorial, makeDemo, TutSnap } from '../lib/voice/tutorial';
 
 // ───── Effectif de test (fiche projet § 5)
@@ -600,6 +600,44 @@ t('calibrage : le détail montre attendu, entendu et compris', () => {
   assert.equal(r.detail.perAlt.length, 2); assert.equal(r.detail.perAlt[0].ok, false); assert.equal(r.detail.perAlt[1].ok, true);
   const f = evaluateHeard({ group: 'Tirs', text: 'Chloé deux points' }, ['blablabla bloblo'], setup, emptyProfile());
   assert.equal(f.status, 'fail'); assert.match(f.detail.perAlt[0].understood, /question|refus|non reconnu/);
+});
+
+// ═════════ 16. Journal du calibrage (v11) ═════════
+t('apprentissage : « pas » n\'est jamais appris seul (on apprend « pas décisive »)', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Actions', text: 'Chloé passe décisive' }, ['Chloé pas décisive'], setup, emptyProfile());
+  assert.equal(r.status, 'learned'); assert.equal(r.profile.wordFixes['pas'], undefined); assert.equal(r.profile.wordFixes['pas decisive'], 'passe decisive');
+});
+t('apprentissage : « avec chrono » = « arrêt chrono », sans toucher aux autres « avec »', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'Chrono', text: 'arrêt chrono' }, ['avec chrono'], setup, emptyProfile());
+  assert.equal(r.status, 'learned'); assert.equal(r.profile.wordFixes['avec'], undefined);
+  const fx = r.profile.wordFixes;
+  assert.equal((parseCommand('avec chrono', PLAYERS, { onCourt: START_COURT, events: [], wordFixes: fx }) as any).running, false);
+  assert.equal(ev(parseCommand('avec Chloé deux points', PLAYERS, { onCourt: START_COURT, events: [], wordFixes: fx })).playerId, 'chloe');
+});
+t('apprentissage : jamais d\'écrasement d\'une correction déjà apprise', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const p1 = evaluateHeard({ group: 'a', text: 'interception Chloé' }, ['interdiction Chloé'], setup, emptyProfile()).profile;
+  const p2 = evaluateHeard({ group: 'b', text: 'contre de Chloé' }, ['interdiction de Chloé'], setup, p1);
+  assert.equal(p2.profile.wordFixes['interdiction'], 'interception');
+});
+t('« adversaire - 1 » (tiret) = moins un', () => { assert.equal((parse('adversaire - 1') as any).delta, -1); assert.equal((parse('adversaire −2') as any).delta, -2); assert.equal((parse('adversaire 1') as any).delta, 1); });
+t('balle perdue : « bal perdu », « perdu » seul', () => { for (const x of ['bal perdu Chloé', 'perdu Chloé', 'balle perdue Chloé']) assert.equal(ev(parse(x)).action, 'PERTE DE BALLE', x); });
+t('« sur Chloé » seul = faute subie ; « sur le terrain » reste une question', () => {
+  assert.equal(ev(parse('sur Chloé')).action, 'FAUTE SUBIE'); assert.equal(parse('sur le terrain').type, 'Q_COURT'); assert.equal(parse('sur le terrain on a Hinde, Anaelle').type, 'ASK');
+});
+
+t('nettoyage : les corrections dangereuses d\'un ancien calibrage (« pas », « avec ») sont retirées', () => {
+  const p = { aliases: {}, wordFixes: { pas: 'points', avec: 'arret', 'pas decisive': 'passe decisive', interdiction: 'interception' }, calibratedAt: null };
+  const q = sanitizeProfile(p); assert.deepEqual(Object.keys(q.wordFixes).sort(), ['interdiction', 'pas decisive']);
+});
+
+t('arrêter le chrono : « pause », « stop », « arrêt de jeu », « sifflet », « temps mort »', () => {
+  for (const x of ['pause', 'stop', 'arrêt de jeu', 'coup de sifflet', 'temps mort', 'stop chrono']) assert.equal((parse(x) as any).running, false, x);
+});
+t('« stop » dans une confirmation reste un refus (jamais le chrono)', () => {
+  const s = new Sim(); s.say('remplacement Chloé par Hinde'); assert.equal(s.said('stop'), 'Annulé.'); assert.equal(s.clock, false); assert.equal(s.actions.length, 0);
 });
 
 // Phonétique
