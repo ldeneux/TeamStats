@@ -387,7 +387,7 @@ def page_vocal():
          NumItem(1, f"{b('Désigner une joueuse')} : par son {b('prénom')} ou son {b('numéro')} (« la 5 », « le 12 », « numéro 5 »). L'ordre est libre : « Léa deux points » ou « deux points pour Léa »."),
          NumItem(2, f"{b('Sélectionner')} : « sélectionne Manon » allume sa carte. La joueuse sélectionnée (ou touchée à l'écran) devient la joueuse par défaut : « deux points », « interception », « lancer franc » suffisent."),
          NumItem(3, f"{b('Sans validation')} : les actions sont enregistrées tout de suite. Pour corriger : {b('« annule la dernière commande »')} ou {b('« annule dernière action »')} suivi du prénom."),
-         NumItem(4, f"{b('Changements')} : l'appli lit « Sortent … Entrent … Valide ? » et attend {b('« oui »')} ou {b('« non »')}. Un changement ne s'annule pas : on en refait un."),
+         NumItem(4, f"{b('Changements')} : l'appli lit « Sortent … Entrent … » et les {b('enregistre tout de suite')} (pas de « oui » à dire). Un changement ne s'annule pas : on en refait un."),
          NumItem(5, f"{b('Lancers francs')} : « lancer franc » ouvre la série, visible à l'écran (LF 1, LF 2, LF 3). Dites « premier réussi », « deuxième raté », ou simplement « réussi » / « raté ». La série est enregistrée après la 3e tentative ou par « terminé »."),
          NumItem(6, f"{b('Chrono')} : « démarrer chrono », « démarrer le match », « arrêt chrono », « temps mort »."),
          NumItem(7, f"{b('Calibrage')} : le bouton {chip('Calibrer', 'blue')} fait lire toutes les phrases (environ 6 minutes, casque sur la tête). L'appli apprend les prénoms et mots mal compris et les {b('enregistre sur votre compte')} : ils suivent sur tous vos PC et tablettes. Ils sont aussi {b('partagés avec les autres comptes du club')} (du texte seulement, jamais affiché dans l'appli)."),
@@ -438,12 +438,12 @@ def page_annexe_voix():
         ('Enregistrer', ['Automatique après la 3e tentative', 'Terminé · Fini · Validé · OK · C’est bon · Voilà']),
         ('Abandonner', ['Annule · Annuler (rien n’est enregistré)']),
         ('En une phrase', ['Camille 1/3 · Louise 0/2 · Julie un sur trois · Lancers francs Emma deux sur trois'])])
-    s += sec('6) Changements de joueuses (à confirmer par « oui »)', [
+    s += sec('6) Changements de joueuses (enregistrés tout de suite)', [
         ('Remplacement', ['Remplacement Léa, Manon par Zoé, Jade', 'Remplacement la 4, la 7 par la 9, la 10', 'Changement Inès par Eva']),
         ('Sortie / entrée', ['Sortie de Lola, Nora Entrée de Clara, Sarah (ordre inversable)']),
         ('Cinq sur le terrain', ['Sur le terrain on a Camille, Louise, Julie, Emma et Lina', 'Sur le terrain on a 4, 5, 7, 9, 12', '(une courte pause est permise : l’appli attend les prénoms manquants)']),
         ('Verbe « remplace »', ['Zoé remplace Léa']),
-        ('Répondre', ['Oui · Valide · OK · Confirme · D’accord · C’est bon · Vas-y', 'Non · Annule · Stop · Laisse tomber'])])
+        ('Abandonner une question ou une attente', ['Abandon · Abandonne · Annule · Stop · Laisse tomber'])])
     s += [P("Il faut autant de sorties que d'entrées ; la sortante est sur le terrain, l'entrante au banc et sans 5 fautes ; personne n'est citée deux fois. Sinon l'appli le dit et ne change rien.", small)]
     s += sec('7) Fenêtre de changement (écran)', [
         ('Afficher', ['Afficher changement · Affiche le changement · Ouvrir remplacement']),

@@ -144,7 +144,7 @@ t('entrante à 5 fautes → refus', () => {
   const c = parse('remplacement Chloé par Hinde', START_COURT, evs); assert.equal(c.type, 'REFUSE'); assert.match((c as any).say, /cinq fautes/);
 });
 t('« remplace » (X remplace Y)', () => { const c = sub(parse('Hinde remplace Chloé')); assert.deepEqual(c.outs, ['chloe']); assert.deepEqual(c.ins, ['hinde']); });
-t('changement : lecture avant exécution', () => { const c = sub(parse('Remplacement Chloé par Hinde')); assert.equal(c.needsConfirm, true); assert.match(c.say, /^Sortent Chloé\. Entrent Hinde\. Valide \?$/); });
+t('changement : lu à voix haute', () => { const c = sub(parse('Remplacement Chloé par Hinde')); assert.match(c.say, /^Sortent Chloé\. Entrent Hinde\.$/); });
 t('ambiguïté sans contexte → question « Annabelle ou Annaelle ? »', () => {
   // les deux sont sur le terrain, ou les deux sur le banc : aucun contexte ne tranche pour une action
   const c = parse('Anabel deux points', ['annabelle', 'annaelle', 'chloe', 'laura', 'aliya']);
@@ -235,20 +235,10 @@ t('événement simple : enregistré et répété', () => {
 t('joueuse sur le banc : refus, rien enregistré', () => {
   const s = new Sim(); assert.match(s.said('Hinde deux points'), /n'est pas sur le terrain/); assert.equal(s.actions.length, 0);
 });
-t('changement : lecture, « oui » → exécuté', () => {
-  const s = new Sim();
-  assert.match(s.said('Remplacement Chloé, Annabelle, Candice par Hind, Anaelle, Hanaé'), /Sortent Chloé, Annabelle, Candice\. Entrent Hinde, Annaelle, Hanaé\. Valide \?/);
-  assert.equal(s.actions.length, 0); assert.equal(s.dialog.mode, 'confirm');
-  s.said('oui'); assert.equal(s.actions.length, 1);
-  assert.deepEqual(ids(s.onCourt), ids(['laura', 'aliya', 'hinde', 'annaelle', 'hanae']));
+t('changement : exécuté tout de suite, sans « oui »', () => {
+  assert.match(s0b(), /Sortent Chloé, Annabelle, Candice\. Entrent Hinde, Annaelle, Hanaé\./);
 });
-t('changement : « non » → rien', () => { const s = new Sim(); s.say('Remplacement Chloé par Hinde'); assert.equal(s.said('non'), 'Annulé.'); assert.equal(s.actions.length, 0); assert.deepEqual(s.onCourt, START_COURT); });
-t('changement : réponse incompréhensible deux fois → annulé', () => {
-  const s = new Sim(); s.say('Remplacement Chloé par Hinde'); assert.equal(s.said('blablabla'), 'Oui ou non ?'); assert.equal(s.said('blablabla'), 'Annulé.'); assert.equal(s.actions.length, 0);
-});
-t('« valide » / « d\'accord » / « c\'est bon » valent oui', () => {
-  for (const w of ['valide', "d'accord", "c'est bon", 'ok', 'vas-y']) { const s = new Sim(); s.say('Remplacement Chloé par Hinde'); s.say(w); assert.equal(s.actions.length, 1, w); }
-});
+function s0b(): string { const s = new Sim(); const r = s.said('Remplacement Chloé, Annabelle, Candice par Hind, Anaelle, Hanaé'); assert.equal(s.actions.length, 1); assert.deepEqual(ids(s.onCourt), ids(['laura', 'aliya', 'hinde', 'annaelle', 'hanae'])); return r; }
 t('changement refusé : ne change rien et le dit', () => {
   const s = new Sim(); assert.match(s.said('Remplacement Mayra par Hinde'), /Mayra n'est pas sur le terrain/); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
 });
@@ -264,7 +254,7 @@ t('faute disqualifiante : directe puis « elle sort »', () => {
   const s = new Sim(); assert.match(s.said('faute disqualifiante Chloé'), /disqualifiée, elle sort/);
 });
 t('Annuler la dernière commande après un changement : annule l\'action précédente', () => {
-  const s = new Sim(); s.say('Chloé deux points'); s.say('Remplacement Candice par Hinde'); s.say('oui');
+  const s = new Sim(); s.say('Chloé deux points'); s.say('Remplacement Candice par Hinde');
   assert.match(s.said('annuler la dernière commande'), /Annulé : deux points, Chloé/);
   assert.equal(s.actions[s.actions.length - 1].t, 'delete'); assert.equal(s.home, 0);
   assert.ok(s.events.some((e) => e.actionType.startsWith('REMPLACEMENT')), 'le changement est conservé');
@@ -411,10 +401,17 @@ t('« Quelle joueuse ? » en attente puis commande complète d\'une autre joueus
 t('la réponse courte à une question marche toujours', () => {
   const s = new Sim(); s.say('interception'); s.say('Laura'); assert.deepEqual(s.actions, [{ t: 'event', action: 'INTERCEPTION', playerId: 'laura', points: 0 }]);
 });
-t('confirmation en attente : une nouvelle commande annule le changement proposé', () => {
-  const s = new Sim(); s.say('Remplacement Chloé par Hinde'); assert.equal(s.dialog.mode, 'confirm');
-  s.say('Candice trois points'); assert.equal(s.dialog.mode, 'idle');
-  assert.deepEqual(s.actions.map((a) => a.t), ['event']); assert.deepEqual(s.onCourt, START_COURT);
+t('« Abandon » quitte une question en attente', () => {
+  const s = new Sim(); assert.equal(s.said('deux points'), 'Quelle joueuse ?'); assert.equal(s.dialog.mode, 'ask');
+  assert.equal(s.said('abandon'), 'Abandon.'); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
+  assert.equal(s.said('abandonner'), ''); // rien en attente : silence
+});
+t('« Abandon » quitte une série de lancers francs sans rien enregistrer', () => {
+  const s = new Sim(); s.say('lancer franc Chloé'); s.say('premier réussi'); assert.equal(s.said('abandon'), 'Abandon.'); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
+});
+t('« Abandon » efface aussi un fragment en attente de recollage', () => {
+  const s = new Sim(); const v = s.view(); s.dialog.handle(['euh Chloé'], v, 1000); s.dialog.handle(['abandon'], v, 1500);
+  assert.equal(s.dialog.handle(['deux points'], v, 2000).actions.length, 0);
 });
 t('mots inconnus : message court, pas d\'énumération', () => {
   assert.equal(s0('Remplacement Chloé par Hinde truc machin'), 'Commande non reconnue.');
@@ -446,11 +443,11 @@ t('« sur le terrain on a » coupé en deux par une hésitation : la suite est r
   const s = new Sim();
   assert.equal(s.said('sur le terrain on a Hind Anaelle Hanaé'), '3 sur 5. La suite ?');
   const r = s.said('Victoire et Mayra');
-  assert.match(r, /Sortent .* Entrent .* Valide \?/); s.say('oui');
+  assert.match(r, /Sortent .* Entrent .*\./);
   assert.deepEqual(ids(s.onCourt), ids(['hinde', 'annaelle', 'hanae', 'victoire', 'mayra']));
 });
 t('liste en trois morceaux', () => {
-  const s = new Sim(); s.say('on a sur le terrain Hind'); assert.equal(s.said('Anaelle'), '2 sur 5. La suite ?'); s.say('Hanaé Victoire'); assert.match(s.said('Mayra'), /Valide \?/);
+  const s = new Sim(); s.say('on a sur le terrain Hind'); assert.equal(s.said('Anaelle'), '2 sur 5. La suite ?'); s.say('Hanaé Victoire'); assert.match(s.said('Mayra'), /Sortent .* Entrent/); assert.equal(s.actions.length, 1);
 });
 t('liste incomplète puis nouvelle commande : l\'attente est abandonnée', () => {
   const s = new Sim(); s.say('sur le terrain on a Hind Anaelle'); s.say('Candice deux points'); assert.equal((s.actions[0] as any).playerId, 'candice'); assert.equal(s.dialog.mode, 'idle');
@@ -555,7 +552,7 @@ t('peek : une phrase complète est repérée, une phrase incomplète non', () =>
   const s = new Sim(); const v = s.view();
   assert.equal(s.dialog.peek(['Chloé deux points'], v), true); assert.equal(s.dialog.peek(['Chloé'], v), false); assert.equal(s.dialog.peek(['deux points'], v), false);
   assert.equal(s.dialog.peek(['démarrer chrono'], v), true); assert.equal(s.dialog.peek(['remplacement Chloé par'], v), false);
-  s.say('remplacement Chloé par Hinde'); assert.equal(s.dialog.peek(['oui'], v), true); assert.equal(s.dialog.peek(['hum'], v), false);
+  assert.equal(s.dialog.peek(['hum'], v), false);
 });
 t('peek n\'a aucun effet de bord', () => {
   const s = new Sim(); const v = s.view(); s.dialog.peek(['Chloé deux points'], v); assert.equal(s.dialog.mode, 'idle'); assert.equal(s.actions.length, 0);
@@ -636,8 +633,25 @@ t('nettoyage : les corrections dangereuses d\'un ancien calibrage (« pas », «
 t('arrêter le chrono : « pause », « stop », « arrêt de jeu », « sifflet », « temps mort »', () => {
   for (const x of ['pause', 'stop', 'arrêt de jeu', 'coup de sifflet', 'temps mort', 'stop chrono']) assert.equal((parse(x) as any).running, false, x);
 });
-t('« stop » dans une confirmation reste un refus (jamais le chrono)', () => {
-  const s = new Sim(); s.say('remplacement Chloé par Hinde'); assert.equal(s.said('stop'), 'Annulé.'); assert.equal(s.clock, false); assert.equal(s.actions.length, 0);
+t('« stop » dans une question en attente abandonne la question (jamais le chrono)', () => {
+  const s = new Sim(); s.say('deux points'); assert.equal(s.said('stop'), 'Annulé.'); assert.equal(s.clock, false); assert.equal(s.actions.length, 0);
+});
+
+t('adversaire moins : « moi », « moin », « retire » ; sans nombre = -1', () => {
+  for (const x of ['adversaire moins un', 'adversaire moi un', 'adversaire moi', 'adversaire moin', 'adversaire retire un']) assert.equal((parse(x) as any).delta, -1, x);
+  assert.equal((parse('adversaire moins deux') as any).delta, -2); assert.equal((parse('adversaire - 1') as any).delta, -1);
+});
+t('apprentissage : « moi » n\'est pas appris seul (pronom courant)', () => {
+  const setup = calibrationSetup(PLAYERS);
+  const r = evaluateHeard({ group: 'x', text: 'adversaire moins un' }, ['adversaire blabla'], setup, emptyProfile());
+  assert.equal(r.profile.wordFixes['moi'], undefined);
+});
+t('journal réel : « Alice de points » n\'apprend jamais « de » → « 2 »', () => {
+  const roster = [P('alice', 'ALICE', 1), ...PLAYERS.filter((p) => p.id !== 'chloe')]; const setup = calibrationSetup(roster);
+  const r = evaluateHeard({ group: 'x', text: 'Alice deux points' }, ['Alice de points'], setup, emptyProfile());
+  assert.equal(r.profile.wordFixes['de'], undefined);
+  const fx = r.profile.wordFixes;
+  assert.equal(ev(parseCommand('faute de Candice', roster, { onCourt: ['alice', ...START_COURT.slice(1)], events: [], wordFixes: fx })).action, 'FAUTE PERSONNELLE');
 });
 
 // Phonétique

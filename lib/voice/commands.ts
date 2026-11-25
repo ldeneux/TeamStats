@@ -211,7 +211,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\brebonds?\b/g, ' REB '],
   // passe, interception, perte
   [/\bpasses? decisives?\b|\bpasses?\b/g, ' AST '],
-  [/\binterceptions?\b|\bintercepte\b|\bvol de balle\b/g, ' STL '],
+  [/\binterceptions?\b|\bintercepte\b|\bvol de balle\b|\b(?:la )?perceptions?\b/g, ' STL '],
   [/\bpertes?(?: de)? balles?\b|\b(?:balles?|bal) perdu(?:e|es|s)?\b|\bperdu(?:e|es|s)?\b|\bpertes?\b/g, ' TOV '],
   // points
   [/\b([123]) fois\b/g, ' $1 points '],
@@ -228,7 +228,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(?:troisiemes?|3e|3eme)\b/g, ' ORD3 '],
   // adversaire
   [/\b(?:l )?autres? equipes?\b|\bequipes? adverses?\b|\b(?:adversaires?|adverses?|eux|visiteurs?)\b/g, ' OPP '],
-  [/\bmoins\b/g, ' MOINS '],
+  [/\bmoi(?:ns?|ne?)?\b|\bretire(?:r|z)?\b|\benleve(?:r|z)?\b/g, ' MOINS '],
   // annulation
   [/\b(?:annule|annuler|annulation|supprime|supprimer|efface|effacer)\b/g, ' UNDO '],
   // chrono
@@ -236,7 +236,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(?:debuts?|coup d envoi|depart)(?: (?:du|de|des|d))? ?matchs?\b/g, ' CSTART '],
   [/\b(?:demarre|demarrer|demarrez|lance|lancer|lancez|commence|commencer|start)(?: (?:le|du|un|ce))? ?matchs?\b/g, ' CSTART '],
   [/\breprise(?: du jeu)?\b|\breprend\b/g, ' CSTART '],
-  [/\bchronos?\b|\bchronometre\b/g, ' CHRONO '],
+  [/\bchron(?:os?|ometre)?\b/g, ' CHRONO '],
   [/\b(?:arrete|arreter|arretez|arrets?|stop|stoppe|stopper|pause|coupe|couper)\b/g, ' VSTOP '],
   [/\b(?:demarre|demarrer|demarrez|debuts?|depart|commence|commencer|lance|lancer|lancez|relance|relancer|start|go)\b/g, ' VSTART '],
   // sélection d'une joueuse à l'écran
@@ -619,7 +619,8 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
   if (has('OPP')) {
     const fromCode = codes.find((c) => c === 'P1' || c === 'P2' || c === 'P3');
     const fromNum = numToks.find((t) => t.n >= 1 && t.n <= 3)?.n;
-    const pts = fromCode ? Number(fromCode[1]) : fromNum;
+    // « adversaire moins » sans nombre (le « un » s'est perdu) : -1
+    const pts = fromCode ? Number(fromCode[1]) : fromNum ?? (has('MOINS') ? 1 : undefined);
     if (!pts) return { type: 'ASK', kind: 'append', say: "Combien de points pour l'adversaire ?" };
     const delta = pts * (has('MOINS') ? -1 : 1);
     return { type: 'OPP', delta, say: `Adversaire ${delta > 0 ? 'plus' : 'moins'} ${Math.abs(delta)}` };
@@ -759,7 +760,7 @@ function parseSubstitution(
     }
     const current = Array.from(env.onCourt);
     if (current.length === 0) {
-      return { type: 'SET_COURT', ins: ids, needsConfirm: true, say: `Sur le terrain : ${ids.map((i) => sayName(env.players, i)).join(', ')}. Valide ?` };
+      return { type: 'SET_COURT', ins: ids, needsConfirm: true, say: `Cinq de départ : ${ids.map((i) => sayName(env.players, i)).join(', ')}.` };
     }
     const outs = current.filter((id) => !ids.includes(id));
     const ins = ids.filter((id) => !env.onCourt.has(id));
@@ -838,7 +839,7 @@ function subCmd(outIds: string[], inIds: string[], env: Env): Cmd {
   const n = (ids: string[]) => ids.map((i) => sayName(env.players, i)).join(', ');
   return {
     type: 'SUB', outs: outIds, ins: inIds, needsConfirm: true,
-    say: `Sortent ${n(outIds)}. Entrent ${n(inIds)}. Valide ?`,
+    say: `Sortent ${n(outIds)}. Entrent ${n(inIds)}.`,
   };
 }
 

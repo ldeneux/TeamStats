@@ -20,6 +20,15 @@ export function addAliasTo(p: VoiceProfile, first: string, word: string): VoiceP
   return cur.includes(w) ? p : { ...p, aliases: { ...p.aliases, [k]: [...cur, w] } };
 }
 
+/** Retire d'un profil les corrections dangereuses apprises par les versions précédentes (un mot très courant seul : « pas », « avec »…). */
+export function sanitizeProfile(p: VoiceProfile): VoiceProfile {
+  const bad = Object.keys(p.wordFixes).filter((k) => !k.includes(' ') && COMMON.has(k));
+  if (!bad.length) return p;
+  const wordFixes = { ...p.wordFixes };
+  for (const k of bad) delete wordFixes[k];
+  return { ...p, wordFixes };
+}
+
 export interface SharedEntry { kind: 'alias' | 'fix'; key: string; value: string }
 
 /** Ce que `next` contient de plus que `base` (nouvelles variantes de prénoms et corrections de mots). */
@@ -160,15 +169,16 @@ export interface CalResult { status: CalStatus; heard: string; profile: VoicePro
 const isBad = (c: Cmd) => c.type === 'UNKNOWN' || c.type === 'REFUSE';
 
 /** Découpe en segments qui diffèrent (plus longue sous-suite commune), mots attendus vs mots entendus. */
-function diffSegments(E: string[], H: string[]): Array<{ e: string[]; h: string[] }> {
+interface Seg { e: string[]; h: string[]; i: number; j: number }
+function diffSegments(E: string[], H: string[]): Seg[] {
   const n = E.length, m = H.length;
   const L: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = E[i] === H[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
-  const segs: Array<{ e: string[]; h: string[] }> = [];
-  let i = 0, j = 0, cur = { e: [] as string[], h: [] as string[] };
-  const flush = () => { if (cur.e.length || cur.h.length) segs.push(cur); cur = { e: [], h: [] }; };
+  const segs: Seg[] = [];
+  let i = 0, j = 0, cur: Seg = { e: [], h: [], i: 0, j: 0 };
+  const flush = () => { if (cur.e.length || cur.h.length) segs.push(cur); cur = { e: [], h: [], i, j }; };
   while (i < n && j < m) {
-    if (E[i] === H[j]) { flush(); i++; j++; }
+    if (E[i] === H[j]) { flush(); i++; j++; cur = { e: [], h: [], i, j }; }
     else if (L[i + 1][j] >= L[i][j + 1]) cur.e.push(E[i++]);
     else cur.h.push(H[j++]);
   }
@@ -178,32 +188,49 @@ function diffSegments(E: string[], H: string[]): Array<{ e: string[]; h: string[
   return segs;
 }
 
+// Mots très courants du français : jamais appris seuls (« pas » → « passe » casserait toutes les phrases avec « pas »).
+// Dans ce cas on apprend la tournure avec son voisin (« pas décisive » → « passe décisive »).
+const COMMON = new Set(['pas', 'avec', 'dans', 'pour', 'par', 'votre', 'vous', 'nous', 'mais', 'donc', 'ces', 'ses', 'sur', 'sous', 'une', 'des', 'les', 'aux', 'est', 'sont', 'que', 'qui', 'quoi', 'comme', 'plus',
+  'moins', 'tres', 'bien', 'tout', 'tous', 'elle', 'il', 'ils', 'on', 'ca', 'ce', 'cet', 'cette', 'mon', 'ton', 'son', 'ma', 'ta', 'sa', 'la', 'le', 'de', 'du', 'un', 'et', 'ou', 'ni', 'si', 'se', 'ne', 'en', 'au',
+  'a', 'y', 'merci', 'oui', 'non', 'ok', 'alors', 'puis', 'faire', 'fait', 'deja', 'aussi', 'encore', 'sans', 'chez', 'entre', 'vers', 'ici', 'voila', 'bon', 'ben', 'bah', 'euh', 'allez', 'cest', 'sest', 'moi', 'toi', 'lui', 'leur', 'eux', 'nos', 'vos', 'mes', 'tes', 'ses']);
+
 /** Ce qu'on peut apprendre d'un écart entre la phrase lue et la phrase entendue. */
 export function learnFrom(expected: string, heard: string, players: VoicePlayer[], p: VoiceProfile): VoiceProfile {
   let next = p;
   const names = new Map(players.filter((x) => x.name).map((x) => [strip(x.name), x.name]));
   const E = toDigitsText(expected).split(' ').filter(Boolean);
-  const segs = diffSegments(E, toDigitsText(heard).split(' ').filter(Boolean));
+  const H = toDigitsText(heard).split(' ').filter(Boolean);
+  const segs = diffSegments(E, H);
   // Garde-fou : on n'apprend que si une partie de la phrase attendue a été entendue telle quelle (un « merci à bientôt » sans rapport n'apprend rien).
   const matched = E.length - segs.reduce((n, g) => n + g.e.length, 0);
   if (matched < 1 || matched * 3 < E.length) return p;
-  for (const seg of segs) {
+  const setFix = (h: string, e: string) => { if (next.wordFixes[h] === undefined) next = { ...next, wordFixes: { ...next.wordFixes, [h]: e } }; };   // jamais d'écrasement
+  for (const raw of segs) {
+    let seg = raw;
+    // mot courant isolé : on l'apprend avec un voisin identique des deux côtés, sinon on ne l'apprend pas
+    if (seg.h.length === 1 && COMMON.has(seg.h[0])) {
+      const ne = E[seg.i + seg.e.length], nh = H[seg.j + seg.h.length];
+      const pe = E[seg.i - 1], ph = H[seg.j - 1];
+      if (ne !== undefined && ne === nh) seg = { ...seg, e: [...seg.e, ne], h: [...seg.h, nh] };
+      else if (pe !== undefined && pe === ph) seg = { ...seg, e: [pe, ...seg.e], h: [ph, ...seg.h], i: seg.i - 1, j: seg.j - 1 };
+      else continue;
+    }
     if (!seg.e.length || !seg.h.length || seg.e.length > 3 || seg.h.length > 3) continue;
     const e = seg.e.join(' '), h = seg.h.join(' ');
     if (h.length < 2 || e === h) continue;
     const nameKey = Array.from(names.keys()).find((k) => k === e || k === seg.e.join(''));
     // Les mots qui déclenchent déjà une commande ou un nombre ne sont jamais remplacés. Les petits mots (« un », « de », « à »…) peuvent faire partie d'une correction.
-    const hasMeaning = seg.h.some((w) => isCommandWord(w) && !/^\d+$/.test(w));
-    const hasDigit = seg.h.some((w) => /^\d+$/.test(w));
+    const hasMeaning = raw.h.some((w) => isCommandWord(w) && !/^\d+$/.test(w));   // le voisin ajouté pour le contexte, lui, peut être un mot de commande
+    const hasDigit = raw.h.some((w) => /^\d+$/.test(w));
     if (nameKey) {
       // Un prénom entendu comme « en 10 » ou « à lire » : avec chiffres ou petits mots, la variante est remplacée avant l'analyse (correction de mots) ; sinon variante de prénom.
       const plain = seg.h.every((w) => !/^\d+$/.test(w) && w.length >= 2);
       if (plain && !hasMeaning && seg.h.length === 1) next = addAliasTo(next, names.get(nameKey) as string, h);
-      else if (!hasMeaning) next = { ...next, wordFixes: { ...next.wordFixes, [h]: e } };
+      else if (!hasMeaning) setFix(h, e);
       continue;
     }
     if (hasMeaning || hasDigit) continue;
-    next = { ...next, wordFixes: { ...next.wordFixes, [h]: e } };
+    setFix(h, e);
   }
   return next;
 }

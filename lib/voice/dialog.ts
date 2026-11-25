@@ -105,6 +105,14 @@ export class VoiceDialog {
     if (!alts.length) return { say: [], actions: [] };
     const st = this.st;
 
+    // « Abandon » : quitte n'importe quelle attente (question, confirmation, série de lancers francs) et efface un fragment en cours.
+    if (alts.some((a) => /\babandon(?:ne|ner|nez|s)?\b/.test(a.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()))) {
+      this.carry = null;
+      this.st = { mode: 'idle' };
+      if (st.mode === 'idle') return { say: [], actions: [] };
+      return { say: ['Abandon.'], actions: st.mode === 'ft' ? [{ t: 'ftView', playerId: null, attempts: [null, null, null] }] : [] };
+    }
+
     if (st.mode === 'confirm') return this.onConfirm(alts, st, view);
     if (st.mode === 'ask') return this.onAsk(alts, st, view);
     if (st.mode === 'ft') return this.onFt(alts, st, view);
@@ -194,10 +202,16 @@ export class VoiceDialog {
       case 'UNDO':
         if (!cmd.eventId || !view.events.some((e) => e.id === cmd.eventId)) return { say: ['Rien à annuler.'], actions: [] };
         return { say: [cmd.say], actions: [{ t: 'delete', eventId: cmd.eventId }] };
-      case 'SUB':
+      // Changements : exécutés tout de suite, sans « oui » (décision : saisie rapide). Une erreur se corrige par un nouveau changement.
+      case 'SUB': {
+        const ids = new Set(view.onCourt);
+        const stale = cmd.ins.some((id) => ids.has(id));
+        if (stale) return { say: ['Changement impossible, le terrain a changé.'], actions: [] };
+        return { say: [cmd.say], actions: [{ t: 'sub', outs: cmd.outs, ins: cmd.ins }] };
+      }
       case 'SET_COURT':
-        this.st = { mode: 'confirm', cmd, retries: 0 };
-        return { say: [cmd.say], actions: [] };
+        if (view.onCourt.length > 0) return { say: ['Le terrain a changé. Redis la liste.'], actions: [] };
+        return { say: [cmd.say], actions: [{ t: 'sub', outs: [], ins: cmd.ins }] };
       case 'CLOCK': {
         if (cmd.running === view.clockRunning) return { say: [cmd.running ? 'Chrono déjà lancé' : 'Chrono déjà arrêté'], actions: [] };
         return { say: [cmd.say], actions: [{ t: 'clock', running: cmd.running }] };

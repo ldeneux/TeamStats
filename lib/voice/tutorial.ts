@@ -79,6 +79,8 @@ export function buildTutorial(players: DemoPlayer[], court: string[]): TutStep[]
   add('Autres actions', `rebond défensif ${n(C)}`, `Rebond défensif de ${n(C)}.`, ev('REBOND DÉFENSIF', C.id));
   add('Autres actions', `rebond ${n(D)}`, "Sans précision, l'appli demande « offensif ou défensif ? ».", saysRe(/offensif ou défensif/));
   add('Autres actions', 'offensif', `Vous répondez : le rebond offensif de ${n(D)} est enregistré.`, ev('REBOND OFFENSIF', D.id));
+  add('Autres actions', 'deux points', "Sans joueuse, l'appli pose une question : « Quelle joueuse ? ».", saysRe(/Quelle joueuse/));
+  add('Autres actions', 'abandon', 'Pour abandonner une question (ou toute attente), dites « abandon » : rien n\'est enregistré.', saysRe(/^Abandon/));
   add('Autres actions', `passe décisive ${n(E)}`, `Passe décisive de ${n(E)}.`, ev('PASSE DÉCISIVE', E.id));
   add('Autres actions', `perte de balle de ${n(A)}`, `Perte de balle de ${n(A)}.`, ev('PERTE DE BALLE', A.id));
   add('Autres actions', `balle perdue ${n(B)}`, 'Autre façon de dire la même chose.', ev('PERTE DE BALLE', B.id));
@@ -102,13 +104,10 @@ export function buildTutorial(players: DemoPlayer[], court: string[]): TutStep[]
 
   add('Changements', 'afficher changement', 'La fenêtre de changement s\'affiche à l\'écran.', (c) => c.cur.subPanelOpen);
   add('Changements', 'fermer', 'La fenêtre se ferme.', (c) => !c.cur.subPanelOpen);
-  add('Changements', `remplacement ${n(A)} par ${n(F)}`, `L'appli répète « Sortent ${n(A)}. Entrent ${n(F)}. Valide ? » : un changement se confirme toujours.`, saysRe(/Valide \?/));
-  add('Changements', 'oui', `${n(F)} entre, ${n(A)} sort : le terrain est mis à jour.`, (c) => c.cur.onCourt.includes(F.id) && !c.cur.onCourt.includes(A.id));
-  add('Changements', `sortie de ${n(B)} entrée de ${n(G)}`, 'Deuxième façon de dire un changement (plusieurs joueuses possibles).', saysRe(/Valide \?/));
-  add('Changements', 'oui', `${n(G)} entre, ${n(B)} sort.`, (c) => c.cur.onCourt.includes(G.id) && !c.cur.onCourt.includes(B.id));
+  add('Changements', `remplacement ${n(A)} par ${n(F)}`, `${n(F)} entre, ${n(A)} sort : le terrain est mis à jour tout de suite (pas de « oui » à dire ; une erreur se corrige par un nouveau changement).`, (c) => c.cur.onCourt.includes(F.id) && !c.cur.onCourt.includes(A.id));
+  add('Changements', `sortie de ${n(B)} entrée de ${n(G)}`, `Deuxième façon de dire un changement (plusieurs joueuses possibles) : ${n(G)} entre, ${n(B)} sort.`, (c) => c.cur.onCourt.includes(G.id) && !c.cur.onCourt.includes(B.id));
   add('Changements', (c) => `sur le terrain on a ${[...c.cur.onCourt.filter((id) => id !== C.id).map((id) => n(by(id))), n(A)].join(', ')}`,
-    `Troisième façon : citez les cinq qui sont sur le terrain, l'appli déduit qui sort (${n(C)}) et qui entre (${n(A)}).`, saysRe(/Valide \?/));
-  add('Changements', 'oui', 'Le terrain est mis à jour.', (c) => c.cur.onCourt.includes(A.id) && !c.cur.onCourt.includes(C.id));
+    `Troisième façon : citez les cinq qui sont sur le terrain, l'appli déduit qui sort (${n(C)}) et qui entre (${n(A)}).`, (c) => c.cur.onCourt.includes(A.id) && !c.cur.onCourt.includes(C.id));
 
   add('Annulation', 'annule la dernière commande', 'La dernière action est supprimée, immédiatement (les changements ne sont pas concernés).', (c) => c.cur.events.length < c.base.events.length);
   add('Annulation', `annule dernière action ${n(A)}`, `La dernière action de ${n(A)} est supprimée.`, (c) => c.cur.events.length < c.base.events.length);
