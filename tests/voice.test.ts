@@ -515,26 +515,42 @@ t('calibrage : l\'alternative qui suffit est retenue, les autres n\'ajoutent rie
 
 // ═════════ 14. Didacticiel : le parcours complet fonctionne, avec n'importe quelles joueuses ═════════
 const rng = (seed: number) => () => { seed = (seed + 0x6D2B79F5) | 0; let x = Math.imul(seed ^ (seed >>> 15), 1 | seed); x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
-t('didacticiel : ≈ 50 étapes, joueuses et numéros tous différents', () => {
-  const d = makeDemo(rng(1)); const steps = buildTutorial(d.players, d.players.slice(0, 5).map((p) => p.id));
-  assert.equal(d.players.length, 10); assert.equal(new Set(d.players.map((p) => p.number)).size, 10); assert.equal(new Set(d.players.map((p) => p.name)).size, 10);
-  assert.ok(steps.length >= 48 && steps.length <= 60, String(steps.length));
+const runTutorial = (seed: number): { failures: string[]; steps: ReturnType<typeof buildTutorial>; demo: ReturnType<typeof makeDemo>; sim: Sim } => {
+  const r = rng(seed); const d = makeDemo(r);
+  const sim = new Sim({}); sim.dialog.setDirect(true);                       // le didacticiel se joue en mode DIRECT
+  sim.players = d.players.map((p) => ({ id: p.id, name: p.name, number: p.number })); sim.onCourt = [];   // terrain vide au départ
+  const steps = buildTutorial(d, r); const failures: string[] = [];
+  const snap = (): TutSnap => ({ events: sim.events.map((e) => ({ actionType: e.actionType, playerId: e.playerId })), scoreHome: sim.home, scoreAway: sim.away, clockRunning: sim.clock, clockSeconds: sim.clockSeconds, onCourt: [...sim.onCourt], numbers: Object.fromEntries(sim.players.map((p) => [p.id, p.number])), selected: sim.selected, subPanelOpen: sim.subPanelOpen, ftFilled: sim.ftFilled, voiceEnabled: true });
+  steps.forEach((st, i) => {
+    if (st.say === '') return;
+    const base = snap(); const say = typeof st.say === 'function' ? st.say({ cur: base, base, last: null }) : st.say;
+    const r1 = sim.say(say); const last = { say: r1.say.join('. '), actions: r1.actions.length, at: 0 };
+    if (!st.check({ cur: snap(), base, last })) failures.push(`graine ${seed}, étape ${i + 1} (${st.section}) « ${say} » → « ${last.say} »`);
+  });
+  return { failures, steps, demo: d, sim };
+};
+t('didacticiel : joueuses et numéros différents, 4 joueuses au numéro 0, terrain vide au départ', () => {
+  const d = makeDemo(rng(1));
+  assert.equal(d.players.length, 10); assert.equal(new Set(d.players.map((p) => p.name)).size, 10);
+  assert.equal(d.players.filter((p) => p.number === 0).length, 4); assert.equal(Object.keys(d.newNumbers).length, 4);
+  const finals = d.players.map((p) => d.newNumbers[p.id] ?? p.number); assert.equal(new Set(finals).size, 10); assert.ok(finals.every((x) => x > 0));
+  assert.equal(d.court.length, 5);
 });
-t('didacticiel : 80 matchs démo au hasard, chaque phrase est comprise et a son effet', () => {
+t('didacticiel : parcours itératif dans l\'ordre (voix, numéros, cinq de départ, coup d\'envoi, actions, temps mort, reprise, suite)', () => {
+  const { steps } = runTutorial(1);
+  const order = steps.map((x) => x.section).filter((x, i, a) => a.indexOf(x) === i).map((x) => x.split(' · ')[0]);
+  assert.deepEqual(order.slice(0, 8), ['1', '2', '3', '4', '5', '6', '7', '8']); assert.ok(steps.length >= 50 && steps.length <= 75, String(steps.length));
+  assert.ok(steps[1].beeps, 'les deux sons sont expliqués');
+});
+t('didacticiel : 120 matchs démo au hasard, chaque phrase est comprise et a son effet', () => {
   const failures: string[] = [];
-  for (let seed = 1; seed <= 80; seed++) {
-    const d = makeDemo(rng(seed)); const court = d.players.slice(0, 5).map((p) => p.id);
-    const sim = new Sim(); sim.players = d.players.map((p) => ({ id: p.id, name: p.name, number: p.number })); sim.onCourt = [...court];
-    const steps = buildTutorial(d.players, court);
-    const snap = (): TutSnap => ({ events: sim.events.map((e) => ({ actionType: e.actionType, playerId: e.playerId })), scoreHome: sim.home, scoreAway: sim.away, clockRunning: sim.clock, onCourt: [...sim.onCourt], selected: sim.selected, subPanelOpen: sim.subPanelOpen, ftFilled: sim.ftFilled, voiceEnabled: true });
-    steps.forEach((st, i) => {
-      if (st.say === '') return;
-      const base = snap(); const say = typeof st.say === 'function' ? st.say({ cur: base, base, last: null }) : st.say;
-      const r = sim.say(say); const last = { say: r.say.join('. '), actions: r.actions.length, at: 0 };
-      if (!st.check({ cur: snap(), base, last })) failures.push(`graine ${seed}, étape ${i + 1} « ${say} » → « ${last.say} »`);
-    });
-  }
-  assert.deepEqual(failures.slice(0, 5), []);
+  for (let seed = 1; seed <= 120; seed++) failures.push(...runTutorial(seed).failures);
+  assert.deepEqual(failures.slice(0, 6), []);
+});
+t('didacticiel : toutes les actions de joueuse sont couvertes (15 types), alternant prénom et numéro', () => {
+  const steps = buildTutorial(makeDemo(rng(3)), rng(3)); const acts = steps.filter((s) => /^(5|8) ·/.test(s.section) && typeof s.say === 'string' && s.alts?.length === 1);
+  assert.equal(acts.length, 15);   // 6 avant le temps mort + 9 après : les 15 actions, chacune une fois
+  assert.equal(new Set(acts.map((x) => x.why.split(' de ')[0])).size, 15);
 });
 
 // ═════════ 15. Robustesse : mots déformés, priorités, réponse anticipée ═════════

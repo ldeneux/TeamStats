@@ -51,7 +51,8 @@ interface Props {
   onVoiceResult?: (r: { say: string; actions: number; at: number }) => void;
   onEnabledChange?: (enabled: boolean) => void;
   /** Bouton à gauche de « Calibrer » : Didacticiel (aucun match ouvert), Nouveau (match ouvert) ou Quitter le didacticiel. */
-  tutorial?: { label: string; kind: 'demo' | 'new' | 'quit'; onClick: () => void; title?: string };
+  /** Menu CONFIGURATION : « Nouveau » et « Didacticiel » (toujours là, avec Calibrer, Moteur, Prénoms et Aide). */
+  tutorial?: { inDemo: boolean; onDemo: () => void; onQuit: () => void; onNew: () => void; canNew: boolean };
 }
 
 const ALIAS_KEY = 'teamstats.voice.aliases.v1';
@@ -447,20 +448,24 @@ export default function VoiceControl(props: Props) {
         </div>
       </div>
 
-      {(configMode || props.tutorial?.kind === 'quit') && (
+      {configMode && (
         <div className="flex items-center justify-end gap-1 flex-wrap">
-          {props.tutorial && (
-            <button type="button" onClick={props.tutorial.onClick} title={props.tutorial.title}
-              className={`text-[10px] font-bold px-2 py-1 rounded-lg border text-white ${props.tutorial.kind === 'quit' ? 'bg-rose-700 border-rose-400' : props.tutorial.kind === 'new' ? 'bg-slate-800 border-slate-600 text-amber-300' : 'bg-indigo-700 border-indigo-400'}`}>
-              {props.tutorial.label}
-            </button>
-          )}
-          {configMode && (<>
-            <button type="button" onClick={() => { if (enabledRef.current) stopVoice(); setShowCal(true); }} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-indigo-700 border border-indigo-400 text-white">Calibrer</button>
-            <button type="button" onClick={() => setShowEngine((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Moteur</button>
-            <button type="button" onClick={() => setShowNames((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Prénoms</button>
-            <button type="button" onClick={() => setShowHelp((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Aide</button>
+          {/* Les six sous-menus sont toujours tous visibles dans CONFIGURATION */}
+          {props.tutorial && (<>
+            <button type="button" disabled={!props.tutorial.canNew} onClick={props.tutorial.onNew} title="Fermer ce match et repartir de zéro"
+              className="text-[10px] font-bold px-2 py-1 rounded-lg border bg-slate-800 border-slate-600 text-amber-300 disabled:opacity-40">＋ Nouveau</button>
+            {props.tutorial.inDemo ? (
+              <button type="button" onClick={props.tutorial.onQuit} title="Fermer le match de démonstration"
+                className="text-[10px] font-bold px-2 py-1 rounded-lg border bg-rose-700 border-rose-400 text-white">🎓 Quitter le didacticiel</button>
+            ) : (
+              <button type="button" onClick={() => { chooseMode(false); props.tutorial?.onDemo(); }} title="Apprendre les commandes vocales sur un match de démonstration (un match ouvert est gardé)"
+                className="text-[10px] font-bold px-2 py-1 rounded-lg border bg-indigo-700 border-indigo-400 text-white">🎓 Didacticiel</button>
+            )}
           </>)}
+          <button type="button" onClick={() => { if (enabledRef.current) stopVoice(); setShowCal(true); }} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-indigo-700 border border-indigo-400 text-white">Calibrer</button>
+          <button type="button" onClick={() => setShowEngine((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Moteur</button>
+          <button type="button" onClick={() => setShowNames((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Prénoms</button>
+          <button type="button" onClick={() => setShowHelp((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Aide</button>
         </div>
       )}
 

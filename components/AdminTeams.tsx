@@ -11,7 +11,7 @@ import { currentSeason, displayCompetitionName, ffbbAssetUrl, tourLabel } from '
 import { isLockedSeason, useLockedBefore } from '../lib/seasonLock';
 
 // Programme à lancer depuis un PC pour (re)charger le cache FFBB (même fichier que dans l'appli Multisports).
-const EXE_URL = process.env.NEXT_PUBLIC_FFBB_EXE_URL || 'https://multisports-eosin.vercel.app/MiseAJourFFBB_Club.exe';
+const EXE_URL = process.env.NEXT_PUBLIC_FFBB_EXE_URL || 'https://team-stats-three.vercel.app/MiseAJourFFBB_Club.exe';
 
 interface PouleResult { pouleId: string; status: 'ok' | 'ignoree' | 'erreur'; message: string; teams: string[]; matches: number }
 const BATCH = 3;

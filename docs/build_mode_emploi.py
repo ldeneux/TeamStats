@@ -280,7 +280,7 @@ def P(text, style=body): return Paragraph(text, style)
 def H2(text): return Paragraph(text, h2)
 
 # ================================================================== PAGE 1 : accueil + programme
-def page_accueil(pg_vocal=14, pg_annexe_a=14, pg_annexe_b=15):
+def page_accueil(pg_vocal=14, pg_temps=16, pg_annexe_a=17, pg_annexe_b=18):
     s = [P('Bienvenue', h1),
          P("TeamStats suit un match de basket en direct, joueuse par joueuse, partage les statistiques en PDF et donne le calendrier, "
            f"les résultats et le classement de vos équipes. Ce guide explique tout, pas à pas, {b('sans notion technique')}."), H2('Au programme')]
@@ -289,7 +289,7 @@ def page_accueil(pg_vocal=14, pg_annexe_a=14, pg_annexe_b=15):
            ('Étape 7 · Changements, périodes et prolongations', 7), ('Étape 8 · Enregistrer et retrouver un match', 8),
            ('Étape 9 · Statistiques et rapports PDF', 9), ("Étape 10 · Utiliser l'appli sans réseau", 10),
            ('Étape 11 · Historique, aide-mémoire et dépannage', 11), ('Étape 12 · Le menu Calendrier', 12),
-           ('Étape 13 · Mon compte et nouveautés', 13), ('Étape 14 · La commande vocale', pg_vocal),
+           ('Étape 13 · Mon compte et nouveautés', 13), ('Étape 14 · La commande vocale', pg_vocal), ('Étape 15 · Le temps de jeu et le chrono', pg_temps),
            ('Annexe A · Module administrateur', pg_annexe_a), ('Annexe B · Récapitulatif des commandes vocales', pg_annexe_b)]
     s += [TocLine(t, p) for t, p in toc]
     s += [H2('Les boutons à connaître'), P('En haut à droite, une petite barre donne accès à tout, sur chaque écran :', ParagraphStyle('x', parent=body, spaceAfter=4))]
@@ -319,7 +319,7 @@ def page_calendrier():
          NumItem(1, f"{b('Touchez l’image de l’équipe')} (U13 F, U15 F…), la même que sur le site de la FFBB. Avec une seule équipe, elle est déjà choisie ; votre dernier choix est retenu."),
          NumItem(2, f"{b('La saison')} : celle en cours par défaut ; la liste permet de revoir une saison passée (« historique », en lecture seule)."),
          NumItem(3, f"{b('La phase')} : {chip('Phase 1', 'yellow')} {chip('Phase 2', 'gray')} {chip('Coupe', 'gray')}… La phase en cours s'ouvre seule. "
-                    "La compétition et la poule sont rappelées dessous (ex. Départementale féminine U15 - Division 2 · Poule C). Une coupe est une seule entrée {chip('Coupe', 'gray')}, rangée par tours (1er tour, 2e tour…)."),
+                    f"La compétition et la poule sont rappelées dessous (ex. Départementale féminine U15 - Division 2 · Poule C). Une coupe est une seule entrée {chip('Coupe', 'gray')}, rangée par tours (1er tour, 2e tour…)."),
          NumItem(4, f"{b('Deux onglets')} : {chip('Calendrier & résultats', 'yellow')} et {chip('Classement', 'gray')}. Au-dessus, {chip('Calendrier', 'yellow')} / {chip('Effectif', 'gray')} : l'effectif de l'équipe, en lecture seule."),
          NumItem(5, f"{b('L’icône graphique')} apparaît sous le score d'un match dont les statistiques sont saisies : un toucher télécharge le PDF du match."),
          H2('Calendrier & résultats'),
@@ -368,33 +368,124 @@ def page_nouveautes():
 
 
 # ================================================================== ÉTAPE 14 : commande vocale
+class MockVoice(Panel):
+    """Bandeau vocal : mode DIRECT (haut) et mode CONFIGURATION avec ses six boutons (bas)."""
+    H = 168
+    def draw(self):
+        c = self.canv; self.bg(); H = self.H; W = self.W
+        slate = HexColor('#1E293B'); grey = HexColor('#94A3B8')
+        c.setFillColor(AMBER); c.setFont('Poppins-Bold', 6.8); c.drawString(14, H - 14, 'MODE DIRECT (par défaut)')
+        self.pill(14, H - 44, 168, 24, 'COMMANDE VOCALE : ACTIVE', GREEN, white, 7.2)
+        self.pill(190, H - 42, 124, 20, 'TIR 2PTS RÉUSSI · Léa', HexColor('#064E3B'), HexColor('#6EE7B7'), 7)
+        self.pill(W - 170, H - 42, 74, 20, 'DIRECT', GREEN, white, 7.4)
+        self.pill(W - 92, H - 42, 80, 20, 'CONFIGURATION', slate, grey, 6.2)
+        self.mark(1, 22, H - 52); self.mark(2, 196, H - 50); self.mark(3, W - 176, H - 50)
+        c.setStrokeColor(HexColor('#334155')); c.setLineWidth(0.6); c.line(14, H - 70, W - 14, H - 70)
+        c.setFillColor(AMBER); c.setFont('Poppins-Bold', 6.8); c.drawString(14, H - 84, 'MODE CONFIGURATION')
+        self.pill(14, H - 116, 168, 24, 'COMMANDE VOCALE : COUPÉE', slate, HexColor('#CBD5E1'), 7.2)
+        self.pill(W - 170, H - 114, 74, 20, 'DIRECT', slate, grey, 7.4)
+        self.pill(W - 92, H - 114, 80, 20, 'CONFIGURATION', HexColor('#64748B'), white, 6.2)
+        items = [('＋ Nouveau', 54, slate), ('Didacticiel', 58, HexColor('#4338CA')), ('Calibrer', 46, HexColor('#4338CA')), ('Moteur', 42, slate), ('Prénoms', 48, slate), ('Aide', 34, slate)]
+        x = W - 14 - sum(w for _, w, _ in items) - 4 * (len(items) - 1)
+        for lab, w, col in items:
+            self.pill(x, H - 148, w, 16, lab, col, white, 6.4); x += w + 4
+        self.mark(4, W - 14 - 6, H - 152)
+
+
 def page_vocal():
     faq = _table([[Paragraph(a, cellb), Paragraph(b_, cell)] for a, b_ in (
-        ('« Commande non reconnue »', "Répétez plus lentement et plus près du micro. Si le prénom n'est jamais compris, ajoutez sa prononciation avec le bouton Prénoms (ex. « Candy, kandis »). Le mode diagnostic montre ce que le navigateur a entendu."),
-        ("L'appli pose une question (« Quelle joueuse ? », « offensif ou défensif ? »)", "Répondez simplement (« Léa », « offensif »), ou dites directement une autre commande complète : la question est abandonnée."),
-        ("« Untel n'est pas sur le terrain »", "L'action est refusée comme avec les boutons. Faites d'abord le changement, puis répétez l'action."),
-        ('Rien ne se passe', "Vérifiez que l'interrupteur est vert (ACTIVE), que le réseau est présent (ou le mode hors ligne prêt) et que le micro est autorisé pour le site dans le navigateur."),
-        ('Un mauvais prénom ou une mauvaise action est enregistré', "Dites « annule la dernière commande », ou « annule dernière action » suivi du prénom."))],
+        ('2 bips à chaque phrase, rien ne se passe', "Le micro entend mal : rapprochez-le (casque), parlez un peu plus lentement, ou lancez Calibrer (CONFIGURATION). Si un prénom n'est jamais compris, ajoutez sa prononciation avec Prénoms (ex. « Candy », « kandis »)."),
+        ('2 bips sur « deux points » tout seul', "En mode DIRECT l'appli ne pose aucune question : il manque la joueuse. Redites la phrase entière (« Léa deux points ») ou sélectionnez d'abord la joueuse."),
+        ('« Untel n\'est pas sur le terrain »', "L'action est refusée comme avec les boutons. Faites d'abord le changement, puis répétez l'action."),
+        ('Rien ne se passe, pas même un bip', "Le bouton doit être vert (ACTIVE). Vérifiez le réseau (ou le moteur hors ligne préparé), l'autorisation du micro pour le site, et que le navigateur est Chrome."),
+        ('Une mauvaise action est enregistrée', "Dites « annule la dernière commande » (ou « annule dernière action » suivi du prénom). Un changement ne s'annule pas : on en refait un."),
+        ("Je veux revoir les traces, les questions ou la voix", "Passez en CONFIGURATION : diagnostic, apprentissage des mots, retour vocal et questions y sont disponibles. Repassez en DIRECT pour jouer."),
+        ('« Les numéros ne se changent qu\'avant le match »', "Dès qu'une action, un point ou un changement de période est enregistré, ou que le chrono tourne, les numéros se règlent dans Configuration → Feuille de Match (N° match)."))],
         [150, CW - 150], ('Situation', 'Que faire ?'))
-    return [Banner(14, 'La commande vocale', 'Saisir les actions à la voix, sans quitter le match des yeux'),
-         P(f"Dans l'écran {b('Direct')}, un petit bandeau {b('Commande vocale')} permet de saisir presque tout à la voix : tirs, fautes, rebonds, lancers francs, changements, chrono. "
-           f"{b('Les boutons restent toujours là')} et font tout, comme avant : la voix est un plus, jamais une obligation."),
+    steps = _table([[Paragraph(a, cellb), Paragraph(b_, cell)] for a, b_ in (
+        ('1 · Activer la voix', "Touchez COMMANDE VOCALE, autorisez le micro. Les deux sons sont expliqués (boutons pour les écouter) ; un essai à 2 bips, un essai à 1 bip."),
+        ('2 · Numéros', "Quatre joueuses sont restées au numéro 0, comme dans la vraie vie : « contrôle numéros joueuses » les nomme, puis vous leur donnez un numéro (quatre façons de le dire), puis un nouveau contrôle."),
+        ('3 · Les cinq de départ', "Le terrain est vide : annoncez les cinq joueuses, par prénom ou par numéro."),
+        ("4 · Coup d'envoi", "« démarrer le match »."),
+        ('5 · Premières actions', "Six actions au hasard, sur des joueuses au hasard : une fois par le prénom, une fois par le numéro."),
+        ('6 · Temps mort', "Arrêt du chrono, remise du chrono à une valeur, trois façons de faire un changement, la fenêtre de changement."),
+        ('7 · Reprise du jeu', "« reprise du jeu »."),
+        ('8 · Suite du match', "Les neuf autres actions (au total les 15 actions de joueuse), numéros refusés après le coup d'envoi, sélection d'une joueuse."),
+        ('9 à 12', "Lancers francs · score adverse · annulation · questions (score, terrain, fautes).") )],
+        [150, CW - 150], ('Phase', 'Ce que vous faites'))
+    return [Banner(14, 'La commande vocale', "Saisir à la voix, sans quitter le match des yeux"),
+         P(f"Dans l'écran {b('Direct')}, le bandeau {b('Commande vocale')} permet de tout saisir à la voix : numéros, cinq de départ, chrono, tirs, rebonds, fautes, lancers francs, changements, score adverse. "
+           f"{b('Les boutons restent toujours là')} et font tout, comme avant : la voix est un plus, jamais une obligation. Annexe B : toutes les phrases reconnues."),
          H2('Mettre en route'),
-         NumItem(1, f"Touchez {chip('COMMANDE VOCALE : COUPÉE', 'gray')} : il devient {chip('ACTIVE', 'green')}. Le mode est coupé à chaque ouverture de l'appli. Autorisez le micro la première fois."),
-         NumItem(2, f"Il faut {b('Chrome')}. En ligne, le navigateur envoie l'audio à son fournisseur pour le comprendre ; {b('hors ligne')}, la reconnaissance se fait sur l'appareil si vous l'avez préparée une fois avec du réseau (bouton {chip('Moteur', 'blue')} puis « Préparer le mode hors ligne » ; Chrome 139 ou plus, selon l'appareil). Un {b('casque')} est conseillé : l'appli ne s'entend pas elle-même. L'écran reste allumé tant que le mode est actif."),
-         NumItem(3, f"Parlez naturellement, {b('une commande par phrase')}. L'appli répète en quelques mots (« Candice, deux points »). Un bandeau coloré donne le résultat : {b('vert')} enregistré, {b('orange')} en attente d'une réponse, {b('rouge')} commande non reconnue ou refusée. La joueuse et la touche concernées s'allument à l'écran."),
+         NumItem(1, f"Touchez {chip('COMMANDE VOCALE : COUPÉE', 'gray')} : il devient {chip('ACTIVE', 'green')}. Le mode est coupé à chaque ouverture de l'appli. Autorisez le micro la première fois. Un casque-micro est recommandé."),
+         NumItem(2, f"Il faut {b('Chrome')}. En ligne, le navigateur envoie l'audio à son fournisseur pour le comprendre ; {b('hors ligne')}, la reconnaissance se fait sur l'appareil si vous l'avez préparée une fois avec du réseau (bouton {chip('Moteur', 'blue')}, dans CONFIGURATION)."),
+         NumItem(3, f"Parlez naturellement, {b('une commande par phrase')}. Dès la fin de la phrase l'action est faite, en général en moins d'une seconde ; le résultat s'écrit dans le bandeau (ex. « TIR 2PTS RÉUSSI · Léa »)."),
+         H2('L\'interrupteur DIRECT / CONFIGURATION'),
+         MockVoice(), P("Le bandeau vocal : mode DIRECT (haut) et mode CONFIGURATION (bas)", caption),
+         NumItem(1, f"{b('Bouton vocal')} : vert = la voix écoute, gris = coupée."),
+         NumItem(2, f"{b('Résultat')} : ce que l'appli a compris, ou ce qui manque quand elle refuse (« Quelle joueuse ? »)."),
+         NumItem(3, f"{b('L’interrupteur')} : {chip('DIRECT', 'green')} (vert, choisi à chaque ouverture) pour jouer ; {chip('CONFIGURATION', 'gray')} pour régler. Rien d'autre n'est affiché en DIRECT : pas de trace, pas de diagnostic."),
+         NumItem(4, f"{b('Les six menus de CONFIGURATION')}, toujours tous visibles : {chip('＋ Nouveau', 'gray')} (repartir de zéro), {chip('Didacticiel', 'blue')} (toujours accessible, même avec un match ouvert), {chip('Calibrer', 'blue')}, {chip('Moteur', 'gray')}, {chip('Prénoms', 'gray')}, {chip('Aide', 'gray')}. En CONFIGURATION s'ajoutent le diagnostic, l'apprentissage des mots mal compris, le retour vocal et les questions."),
+         Callout('good', 'En DIRECT, tout va au plus court', "L'appli écoute et agit. Elle ne parle jamais (parler coupe le micro pendant 1 à 2 secondes) et ne pose aucune question en attente : une phrase incomplète est refusée tout de suite, et la suivante repart de zéro. Si deux prénoms se ressemblent exactement, elle prend le premier et l'affiche ; « annule » corrige."),
+         H2('Les deux sons à retenir'),
+         _table([[Paragraph("1 bip aigu", cellb), Paragraph(f"{b('Commande effectuée')} ✓ : l'action est enregistrée (ou la vérification est bonne).", cell)],
+                 [Paragraph("2 bips graves", cellb), Paragraph(f"{b('Commande non reconnue ou impossible')} ✗ : rien n'a été fait. Lisez le bandeau pour savoir pourquoi, puis redites la phrase en entier : prénom ou numéro mal compris, joueuse manquante, joueuse pas sur le terrain, chrono déjà lancé, joueuse à 5 fautes, numéros demandés après le coup d'envoi, doublons de numéros, secondes au-delà de 59.", cell)]],
+                [100, CW - 100], ('Son', 'Signification')),
          H2('Comment parler'),
-         NumItem(1, f"{b('Désigner une joueuse')} : par son {b('prénom')} ou son {b('numéro')} (« la 5 », « le 12 », « numéro 5 »). L'ordre est libre : « Léa deux points » ou « deux points pour Léa »."),
-         NumItem(2, f"{b('Sélectionner')} : « sélectionne Manon » allume sa carte. La joueuse sélectionnée (ou touchée à l'écran) devient la joueuse par défaut : « deux points », « interception », « lancer franc » suffisent."),
+         NumItem(1, f"{b('Désigner une joueuse')} : par son {b('prénom')} ou son {b('numéro')} (« la 5 », « le 12 », « numéro 5 »). L'ordre est libre : « Léa deux points » ou « deux points pour Léa ». Les petits mots (de, du, pour, la, le, et…) sont ignorés."),
+         NumItem(2, f"{b('Sélectionner')} : « sélectionne Manon » allume sa carte. La joueuse sélectionnée (ou touchée à l'écran) devient la joueuse par défaut : « deux points », « interception » suffisent."),
          NumItem(3, f"{b('Sans validation')} : les actions sont enregistrées tout de suite. Pour corriger : {b('« annule la dernière commande »')} ou {b('« annule dernière action »')} suivi du prénom."),
-         NumItem(4, f"{b('Changements')} : l'appli lit « Sortent … Entrent … » et les {b('enregistre tout de suite')} (pas de « oui » à dire). Un changement ne s'annule pas : on en refait un."),
-         NumItem(5, f"{b('Lancers francs')} : « lancer franc » ouvre la série, visible à l'écran (LF 1, LF 2, LF 3). Dites « premier réussi », « deuxième raté », ou simplement « réussi » / « raté ». La série est enregistrée après la 3e tentative ou par « terminé »."),
-         NumItem(6, f"{b('Chrono')} : « démarrer chrono », « démarrer le match », « arrêt chrono », « temps mort »."),
-         NumItem(7, f"{b('Calibrage')} : le bouton {chip('Calibrer', 'blue')} fait lire toutes les phrases (environ 6 minutes, casque sur la tête). L'appli apprend les prénoms et mots mal compris et les {b('enregistre sur votre compte')} : ils suivent sur tous vos PC et tablettes. Ils sont aussi {b('partagés avec les autres comptes du club')} (du texte seulement, jamais affiché dans l'appli)."),
-         NumItem(8, f"{b('Didacticiel')} : quand aucun match n'est ouvert, le bouton {chip('Didacticiel', 'blue')} (dans le bandeau vocal, à gauche de Calibrer) lance un {b('match de démonstration')} (SATHONAY contre une équipe au hasard, 10 joueuses au hasard) et une fenêtre vous fait dire une cinquantaine de commandes, avec ce qui se passe à l'écran. {b('Rien n’est enregistré.')} Le même bouton devient {chip('Nouveau', 'gray')} quand un match est ouvert, et {chip('Quitter le didacticiel', 'blue')} pendant la démo."),
-         Callout('warn', 'Décalage', "Comptez 1 à 3 secondes entre la voix et son effet, chrono compris : le temps de jeu en tient compte, pas besoin de corriger."),
-         Callout('tip', 'Aide intégrée', f"Le bouton {chip('Aide', 'blue')} du bandeau liste toutes les commandes, avec des exemples ; le bouton {chip('Prénoms', 'blue')} apprend à l'appli la prononciation des prénoms difficiles. La liste complète est en annexe B."),
+         CondPageBreak(160),
+         H2("Avant le coup d'envoi (commandes valables uniquement avant le match)"),
+         NumItem(1, f"{b('Donner un numéro de maillot')} : « {b('Candice a le numéro 5')} ». Autres façons : « Candice prend le 5 », « Candice porte le numéro 5 », « Candice a le 5 ». Le numéro est mis à jour dans la {b('feuille de match')} (N° match) et sur la joueuse du match. Plusieurs joueuses dans la même phrase sont possibles. Si une autre joueuse a déjà ce numéro, l'appli prévient (« Attention : Laura a aussi le 7 »)."),
+         NumItem(2, f"{b('Contrôler les numéros')} : « {b('contrôle numéros joueuses')} » (ou « vérifie les numéros »). Tous différents : 1 bip et « Numéros tous différents ». Sinon 2 bips et les doublons sont nommés (« Numéro 0 : Alice, Aliya, Annaelle » : les joueuses restées au numéro 0 par défaut)."),
+         NumItem(3, f"{b('Annoncer les cinq de départ')} (terrain vide) : « sur le terrain on a Léa, Jade, Inès, Lina et Zoé », ou par numéros (« sur le terrain on a 4, 7, 9, 12, 15 »). Une courte pause est permise : l'appli attend les prénoms manquants. Rien n'est inscrit dans l'historique."),
+         Callout('note', 'Après le coup d\'envoi', "Dès qu'une action, un point, un changement de période est enregistré, ou que le chrono tourne, les deux commandes de numéros sont refusées (2 bips) : on ne change pas un maillot en cours de match. Corrigez alors dans Configuration → Feuille de Match."),
+         H2('Pendant le match'),
+         NumItem(1, f"{b('Chrono')} : « démarrer chrono », « démarrer le match », « reprise du jeu » ; « arrêt chrono », « temps mort ». {b('Remettre le chrono à une valeur')}, à tout moment : « {b('mettre chrono à 8 minutes et 30 secondes')} » (ou « mets le chrono à 5 minutes »). Le chrono s'arrête : dites « démarrer chrono » pour repartir."),
+         NumItem(2, f"{b('Actions de joueuse')} : tirs à 2 et 3 points réussis ou manqués, rebonds offensif et défensif, passe décisive, interception, perte de balle, contre, contre subi, fautes personnelle, subie, technique, antisportive et disqualifiante (annexe B)."),
+         NumItem(3, f"{b('Lancers francs')} : « lancer franc Nora » ouvre la série, visible à l'écran (LF 1, LF 2, LF 3) ; « premier réussi », « deuxième raté », « terminé » ; ou tout en une phrase : « Camille un sur trois »."),
+         NumItem(4, f"{b('Changements')} : « remplacement Léa par Zoé », « sortie de Léa entrée de Zoé », ou « sur le terrain on a… » avec les cinq. Ils sont {b('enregistrés tout de suite')} (pas de « oui » à dire). « Afficher changement » ouvre la fenêtre de choix à l'écran, « fermer » la ferme."),
+         NumItem(5, f"{b('Score adverse')} : « adversaire deux points », « adversaire trois points », « adversaire moins un »."),
+         NumItem(6, f"{b('Questions')} : « score », « qui est sur le terrain », « combien de fautes Léa », « fautes équipe ». En DIRECT la réponse s'écrit dans le bandeau ; en CONFIGURATION elle est aussi dite à voix haute."),
+         CondPageBreak(200),
+         H2('Le didacticiel : apprendre sur un match de démonstration'),
+         P(f"{chip('CONFIGURATION', 'gray')} puis {chip('Didacticiel', 'blue')} : un {b('match fictif')} (SATHONAY contre une équipe au hasard, 10 joueuses au hasard) se lance en mode DIRECT. "
+           f"Toujours accessible, même quand un vrai match est ouvert : il est {b('gardé sur l’appareil et revient tel quel')} quand vous quittez le didacticiel. Rien du match fictif n'est enregistré."),
+         NumItem(1, f"{b('Une fenêtre à 80 % d’opacité')} : le match reste visible dessous. Si elle gêne, {b('faites-la glisser par son en-tête')} (doigt ou souris) ; « Réduire » la range en pastille."),
+         NumItem(2, "Chaque étape donne la phrase à dire, d'autres façons de la dire (« au choix »), et ce qui doit se passer. Elle passe au vert dès que l'effet est visible, puis la suivante arrive. « Passer » et « Précédent » permettent de sauter ou de revenir."),
+         NumItem(3, "Le parcours suit un vrai match, dans l'ordre, et couvre toutes les actions possibles :"),
+         steps, Spacer(1, 6),
+         H2('Aller plus vite, ou régler la reconnaissance'),
+         NumItem(1, f"{b('Calibrer')} (CONFIGURATION) : fait lire toutes les phrases (environ 6 minutes, casque sur la tête). L'appli apprend les prénoms et mots mal compris et les {b('enregistre sur votre compte')} : ils suivent sur tous vos appareils."),
+         NumItem(2, f"{b('Prénoms')} : ajoute la prononciation d'un prénom difficile. {b('Moteur')} : choisit la reconnaissance en ligne ou sur l'appareil (hors ligne). {b('Aide')} : liste des commandes avec exemples."),
+         NumItem(3, "Phrases courtes, une commande à la fois ; un prénom plus facile à entendre vaut un surnom appris une fois pour toutes."),
+         Callout('tip', 'Contrôle sans parler', "Les boutons de l'écran restent disponibles à tout moment : un geste de la main corrige tout ce que la voix aurait mal compris."),
          CondPageBreak(200), H2('Si ça ne marche pas'), faq]
+
+
+def page_temps():
+    ex = _table([[Paragraph(a, cellb), Paragraph(b_, cell), Paragraph(c_, cell)] for a, b_, c_ in (
+        ('Léa', '20:00', '16:40'), ('Jade', '15:00', '12:30'), ('Inès', '12:00', '10:00'), ('Lina', '6:00', '5:00'), ('Zoé', '7:00', '5:50'))],
+        [110, 180, CW - 290], ('Joueuse', 'Temps cumulé par les chronos (période de 10 min)', 'Temps retenu'))
+    return [Banner(15, 'Le temps de jeu et le chrono', 'Comment il est compté, plafonné et corrigé'),
+         H2('Comment le temps de jeu est compté'),
+         P(f"Le temps de jeu d'une joueuse {b('s’additionne seulement quand le chrono tourne')}, pendant qu'elle est sur le terrain, période par période. "
+           "Lancez le chrono au coup d'envoi et mettez-le en pause à chaque arrêt de jeu ; à la voix : « démarrer le match », « arrêt chrono », « reprise du jeu »."),
+         H2('Le plafond : cinq joueuses × la durée de la période'),
+         P(f"Sur le terrain il y a {b('5 joueuses')} : sur une période de 10 minutes, le temps de jeu de toutes les joueuses réunies ne peut donc pas dépasser {b('50 minutes')} (5 × 10). "
+           f"En prolongation (5 minutes) : {b('25 minutes')}. Comme on peut rejouer avec le chrono (le remettre à une valeur, recommencer une période, corriger un oubli), le total cumulé peut dépasser ce plafond. "
+           f"Dans ce cas l'appli {b('proratise')} : le temps de chaque joueuse est réduit dans la même proportion, pour retomber {b('exactement')} sur le plafond (en secondes entières)."),
+         Callout('good', 'Exemple', "Période de 10 minutes, plafond 50:00. Les chronos ont cumulé 60:00 (20+15+12+6+7). Chaque temps est multiplié par 50/60 : Léa 20:00 devient 16:40, Jade 15:00 devient 12:30, et ainsi de suite ; la somme fait exactement 50:00."),
+         ex, Spacer(1, 6),
+         NumItem(1, f"{b('Sous le plafond, rien ne change')} : une période où l'on n'a pas tout chronométré (par exemple 38 minutes pour 5 joueuses) garde ses temps réels."),
+         NumItem(2, f"{b('Partout le même temps')} : écran Direct, écran Statistiques, PDF, enregistrement dans la base, et PDF d'un match déjà enregistré (anciens matchs plafonnés à l'affichage). Chaque période a son plafond ; le total d'une joueuse est la somme de ses périodes."),
+         H2('Remettre le chrono à la bonne valeur'),
+         NumItem(1, f"{b('À la main')} : double-clic sur les chiffres du chrono, tapez le temps au format mm:ss (ex. 05:30), validez."),
+         NumItem(2, f"{b('À la voix')}, à tout moment du match : « {b('mettre chrono à 5 minutes et 30 secondes')} » ; « mets le chrono à 8 minutes » (secondes à zéro) ; « chrono à 45 secondes ». Secondes de 0 à 59, sinon 2 bips."),
+         NumItem(3, "Le chrono s'arrête après la remise à l'heure : dites « démarrer chrono » (ou « reprise du jeu ») pour repartir. Avant le coup d'envoi, annoncez d'abord les cinq de départ, puis réglez le chrono."),
+         ]
+
 
 # ================================================================== ANNEXE B : récapitulatif des commandes vocales
 def page_annexe_voix():
@@ -404,11 +495,14 @@ def page_annexe_voix():
     s = [Banner('B', 'Récapitulatif des commandes vocales', 'Toutes les phrases reconnues, par thème'),
          P(f"Les prénoms et numéros ci-dessous sont des {b('exemples')} : remplacez-les par ceux de vos joueuses. Une joueuse se désigne par son {b('prénom')} ou son {b('numéro')} "
            "(« la 5 », « le 12 », « numéro 5 », « cinq », de 0 à 99). L'ordre des mots est libre et les petits mots (de, du, pour, la, le, et…) sont ignorés. "
-           "Sans nom, l'action vise la joueuse sélectionnée à l'écran.")]
+           "Sans nom, l'action vise la joueuse sélectionnée à l'écran. "
+           f"En mode {b('DIRECT')} (par défaut) l'appli ne parle jamais et ne pose aucune question : {b('1 bip')} = fait, {b('2 bips')} = refusé (rien n'a été fait, redites la phrase en entier). "
+           f"Les questions et la voix existent en mode {b('CONFIGURATION')}.")]
     s += sec('1) Chronomètre', [
         ('Lancer', ['Démarrer chrono · Lancer chrono · Relancer chrono · Start chrono', 'Début chrono · Départ chrono', 'Reprise du jeu · Reprise', 'Démarrer le match · Début du match · Coup d’envoi du match']),
-        ('Arrêter', ['Arrêter chrono · Arrêt chrono · Arrêt du chrono · Stop chrono · Chrono stop', 'Pause chrono · Couper chrono', 'Temps mort'])])
-    s += [P("« Chrono » seul : l'appli demande « Démarrer ou arrêter ? ». Chrono déjà lancé (ou arrêté) : elle le dit et ne change rien.", small)]
+        ('Arrêter', ['Arrêter chrono · Arrêt chrono · Arrêt du chrono · Stop chrono · Chrono stop', 'Pause chrono · Couper chrono', 'Temps mort']),
+        ('Remettre à une valeur (à tout moment)', ['Mettre chrono à 8 minutes et 30 secondes · Mets le chrono à 5 minutes · Chrono à 45 secondes', 'Mettre chrono à une minute et quinze secondes · Chrono 8 minutes 30', 'Le chrono s’arrête ; secondes de 0 à 59 (sinon 2 bips)'])])
+    s += [P("« Chrono » seul : en DIRECT 2 bips (dites démarrer ou arrêter) ; en CONFIGURATION l'appli demande « Démarrer ou arrêter ? ». Chrono déjà lancé (ou arrêté) : elle le dit et ne change rien. Avec « minutes » seul, la commande part une seconde plus tard pour laisser le temps de dire les secondes.", small)]
     s += sec('2) Sélectionner une joueuse', [
         ('Sélectionner', ['Sélectionne Léa · Sélectionner la 7 · Choisis Zoé · Sélection numéro 12']),
         ('Retirer la sélection', ['Désélectionner · Aucune joueuse'])])
@@ -424,7 +518,7 @@ def page_annexe_voix():
         ('Perte de balle', ['Perte de balle de Sarah · Balle perdue Camille · Louise perte']),
         ('Contre', ['Contre de Julie · Contre de la 11']),
         ('Contre subi', ['Emma contrée · Contre subi Lina'])])
-    s += [P("Le tir est « réussi » par défaut ; pour un tir manqué : raté, manqué ou loupé. « Rebond » seul : l'appli demande offensif ou défensif.", small)]
+    s += [P("Le tir est « réussi » par défaut ; pour un tir manqué : raté, manqué ou loupé. « Rebond » seul : en DIRECT 2 bips (redites avec offensif ou défensif), en CONFIGURATION l'appli pose la question.", small)]
     s += sec('4) Fautes', [
         ('Faute personnelle', ['Faute de Léa · Faute personnelle Manon · Faute de la 5']),
         ('Faute subie', ['Faute sur Zoé · Faute subie Jade · Faute sur le 12']),
@@ -455,9 +549,16 @@ def page_annexe_voix():
     s += [P("Un changement ne s'annule pas : on en refait un.", small)]
     s += sec('9) Score adverse et questions', [
         ('Score adverse', ['Adversaire un point · Adversaire deux points · Adversaire trois points', 'Adversaire moins deux · Adversaire moins un']),
-        ('Questions (réponse vocale)', ['Score · Qui est sur le terrain · Combien de fautes Léa · Combien de fautes la 5 · Fautes équipe'])])
-    s += [Callout('note', "Quand l'appli attend une réponse", "Elle pose parfois une question (« Quelle joueuse ? », « offensif ou défensif ? », « Annabelle ou Annaelle ? »). Répondez, ou dites directement une autre commande complète : "
-                  "l'attente est abandonnée et la nouvelle commande s'exécute.")]
+        ('Questions (réponse écrite dans le bandeau ; dite aussi en CONFIGURATION)', ['Score · Qui est sur le terrain · Combien de fautes Léa · Combien de fautes la 5 · Fautes équipe'])])
+    s += sec('10) Numéros de maillot (avant le match seulement)', [
+        ('Donner un numéro', ['Candice a le numéro 5 · Candice prend le 5 · Candice porte le numéro 5 · Candice a le 5', 'Candice a le numéro 5 Chloé a le numéro 8 (plusieurs joueuses)', 'Numéro et feuille de match mis à jour ; avertit si une autre joueuse a déjà ce numéro']),
+        ('Contrôler les numéros', ['Contrôle numéros joueuses · Contrôle des numéros · Vérifie les numéros · Vérification des numéros', '1 bip : « Numéros tous différents » · 2 bips : les doublons sont nommés (ex. Numéro 0 : Alice, Aliya)'])])
+    s += [P("Ces deux commandes sont refusées (2 bips) dès que le match a commencé : action, point ou période enregistrés, ou chrono lancé. Après, les numéros se corrigent dans Configuration → Feuille de Match.", small)]
+    s += sec('11) Avant le coup d\'envoi : les cinq de départ', [
+        ('Terrain vide', ['Sur le terrain on a Léa, Jade, Inès, Lina et Zoé · Sur le terrain on a 4, 7, 9, 12, 15 · En jeu …', 'Pas d\'événement dans l\'historique ; ensuite « Sur le terrain on a… » devient un changement'])])
+    s += [Callout('note', "DIRECT et CONFIGURATION", "En DIRECT (vert, par défaut) : aucune question, aucune voix, bips seulement. Une phrase incomplète est refusée tout de suite (2 bips) ; si deux prénoms se ressemblent exactement, le premier est pris et affiché (« annule » corrige). "
+                  "En CONFIGURATION, l'appli peut poser des questions (« Quelle joueuse ? », « offensif ou défensif ? », « Annabelle ou Annaelle ? ») et parler : répondez, ou dites directement une autre commande complète, l'attente est alors abandonnée. "
+                  "Le didacticiel (CONFIGURATION → Didacticiel) fait pratiquer toutes ces commandes sur un match de démonstration.")]
     return s
 
 # ================================================================== ANNEXE A : module administrateur
@@ -621,26 +722,34 @@ def patch_page9(c):  # étape 8 : protection des matchs déjà joués
                      "l'envoi automatique au retour du réseau ne la redemande pas.")]
     flow_at(c, items, LM, 566)
 
+def patch_page7(c):  # étape 5 : le temps de jeu (rappel) + commande vocale
+    c.setFillColor(white); c.rect(40, PH - 762, PW - 80, 762 - 697, fill=1, stroke=0)
+    flow_at(c, [Callout('good', 'Le temps de jeu suit le chrono.',
+                        "Le temps de présence de chaque joueuse ne s'additionne que lorsque le chrono tourne : lancez-le au coup d'envoi, mettez-le en pause à chaque arrêt de jeu "
+                        "(à la voix : « démarrer le match », « arrêt chrono », « mettre chrono à… »). Le total est plafonné à 5 joueuses × la durée de la période : étape 15. "
+                        "Le bandeau « Commande vocale » est expliqué à l'étape 14.")], LM, 699)
+
+def patch_page10(c):  # étape 9 : temps de jeu plafonné (ligne Tps du tableau)
+    c.setFillColor(white); c.rect(338, PH - 701, PW - 338 - 40, 701 - 683, fill=1, stroke=0)
+    c.setFillColor(TEXT); c.setFont('Carlito', 10); c.drawString(343.3, PH - 694.3, 'Temps de jeu mm:ss, plafonné (étape 15).')
+
 # ================================================================== assemblage
 def main():
     base = PdfReader(BASE)
     w = PdfWriter()
-    n_voc = len(build(page_vocal(), 0).pages)
-    n_a = len(build(page_annexe(), 0).pages)
-    pg_voc, pg_a, pg_b = 14, 14 + n_voc, 14 + n_voc + n_a
+    n_voc = len(build(page_vocal(), 0).pages); n_t = len(build(page_temps(), 0).pages); n_a = len(build(page_annexe(), 0).pages)
+    pg_voc = 14; pg_t = pg_voc + n_voc; pg_a = pg_t + n_t; pg_b = pg_a + n_a        # numéro de la première page de chaque partie
     w.add_page(base.pages[0])                                       # couverture (inchangée)
-    for p in build(page_accueil(pg_voc, pg_a, pg_b), 1).pages: w.add_page(p)   # accueil / programme (reconstruit)
-    patches = {2: patch_page3, 3: patch_page4, 4: patch_page5, 7: patch_page8, 8: patch_page9}      # index dans le PDF d'origine
+    for p in build(page_accueil(pg_voc, pg_t, pg_a, pg_b), 1).pages: w.add_page(p)   # accueil / programme (reconstruit)
+    patches = {2: patch_page3, 3: patch_page4, 4: patch_page5, 5: patch_page7, 7: patch_page8, 8: patch_page9, 9: patch_page10}   # index dans le PDF d'origine
     for i in range(2, 12):                                          # étapes 1 à 11 (pages d'origine)
         pg = base.pages[i]
         if i in patches: pg.merge_page(overlay(i, patches[i]))
         w.add_page(pg)
     for p in build(page_calendrier(), 12).pages: w.add_page(p)      # étape 12
     for p in build(page_nouveautes(), 13).pages: w.add_page(p)      # étape 13
-    n_voc = len(build(page_vocal(), 0).pages)                       # nombre de pages de chaque partie (pour la numérotation)
-    n_a = len(build(page_annexe(), 0).pages)
-    pg_voc, pg_a, pg_b = 14, 14 + n_voc, 14 + n_voc + n_a
     for p in build(page_vocal(), pg_voc).pages: w.add_page(p)       # étape 14 : commande vocale
+    for p in build(page_temps(), pg_t).pages: w.add_page(p)         # étape 15 : temps de jeu et chrono
     for p in build(page_annexe(), pg_a).pages: w.add_page(p)        # annexe A
     for p in build(page_annexe_voix(), pg_b).pages: w.add_page(p)   # annexe B : récapitulatif des commandes vocales
     w.add_metadata({'/Title': "TeamStats - Mode d'emploi", '/Author': 'Olympic Sathonay', '/Subject': 'Suivi de match et statistiques'})

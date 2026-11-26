@@ -207,6 +207,32 @@ const removePending = (userId: string, ffbbId: string, savedAt?: number) => {
 
 const fingerprintOf = (g: GameState) => [g.events.length, g.scoreHome, g.scoreAway, g.period, Object.keys(g.scoreByPeriod).length].join('|');
 
+// Temps de jeu plafonné. Sur une période, le temps cumulé de toutes les joueuses ne peut pas dépasser
+// 5 × la durée de la période (5 joueuses sur le terrain : 10 min de période = 50 min au total).
+// Au-delà (chrono remis en arrière, période rejouée…), le temps de chaque joueuse est proratisé pour retomber
+// EXACTEMENT sur ce plafond (secondes entières : méthode du plus fort reste). Sous le plafond, rien ne change.
+const COURT_SIZE = 5;
+function capPlayingTimes(pt: PlayingTimeMap, cfg: { periodCount: number; periodMinutes: number }): PlayingTimeMap {
+  const periods = new Set<number>();
+  Object.values(pt).forEach(m => Object.keys(m).forEach(k => periods.add(Number(k))));
+  let out: PlayingTimeMap | null = null;
+  periods.forEach(per => {
+    if (per < 1) return;   // 0 = total global d'un ancien enregistrement : pas de période connue
+    const cap = COURT_SIZE * (per > cfg.periodCount ? OVERTIME_MINUTES : cfg.periodMinutes) * 60;
+    if (cap <= 0) return;
+    const rows = Object.entries(pt).map(([id, m]) => ({ id, v: m[per] || 0 })).filter(r => r.v > 0);
+    const total = rows.reduce((a, r) => a + r.v, 0);
+    if (total <= cap) return;
+    const parts = rows.map(r => { const exact = (r.v * cap) / total; return { id: r.id, exact, secs: Math.floor(exact) }; });
+    let left = cap - parts.reduce((a, r) => a + r.secs, 0);
+    [...parts].sort((a, b) => (b.exact - b.secs) - (a.exact - a.secs)).forEach(r => { if (left > 0) { r.secs++; left--; } });
+    if (!out) out = JSON.parse(JSON.stringify(pt)) as PlayingTimeMap;
+    const target = out;
+    parts.forEach(r => { target[r.id][per] = r.secs; });
+  });
+  return out ?? pt;
+}
+
 function computePlayerStats(gameEvents: GameEvent[], playingTime: PlayingTimeMap, playerId: string, periodFilter: number | 'ALL') {
     const eventsToAnalyze = gameEvents.filter(e => {
       const matchPlayer = e.playerId === playerId;
@@ -288,8 +314,9 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
     }
     check(res, step);
   };
+  const cappedTime = capPlayingTimes(snap.playingTime, snap.game.config);   // temps de jeu plafonné à 5 × la durée de la période
   const statsOf = (playerId: string, periodFilter: number | 'ALL') =>
-    computePlayerStats(snap.game.events, snap.playingTime, playerId, periodFilter);
+    computePlayerStats(snap.game.events, cappedTime, playerId, periodFilter);
 
   const { data: savedMatch, error: matchErr } = await supabase
     .from('stats_matches')
@@ -498,7 +525,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   demoRef.current = !!demo;
   const [tutLast, setTutLast] = useState<TutLast | null>(null);
   const [voiceOn, setVoiceOn] = useState(false);
-  const tutSteps = useMemo(() => (demo ? buildTutorial(demo.players, demo.players.slice(0, 5).map(p => p.id)) : []), [demo]);
+  const tutSteps = useMemo(() => (demo ? buildTutorial(demo) : []), [demo]);
 
   const [isSubbing, setIsSubbing] = useState(false);
   const [selectedOutIds, setSelectedOutIds] = useState<string[]>([]);
@@ -1132,15 +1159,19 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
 
   // ---------------------------------------------------------------------------
   // DIDACTICIEL : un match de démonstration (SATHONAY contre une équipe au hasard, 10 joueuses au hasard).
-  // Impossible tant qu'un match est ouvert. Rien n'est écrit : ni base, ni brouillon, ni file d'envoi.
-  // Quitter recharge la page (draft jamais écrit) : retour à un écran vierge.
+  // Accessible à tout moment (CONFIGURATION → Didacticiel). Rien n'est écrit : ni base, ni brouillon, ni file d'envoi.
+  // Si un vrai match est ouvert, son brouillon est écrit une dernière fois avant d'entrer dans la démo ; quitter recharge
+  // la page et le vrai match revient tel quel (sinon : écran vierge).
   // ---------------------------------------------------------------------------
   const matchOpen = game.matchRoster.length > 0 || game.events.length > 0 || game.scoreHome > 0 || game.scoreAway > 0;
 
   const startDemo = () => {
-    if (matchOpen || demoRef.current) return;
+    if (demoRef.current) return;
+    if (matchOpen) {
+      if (!window.confirm("Un match est ouvert. Le didacticiel utilise un match fictif : votre match est gardé sur cet appareil et revient quand vous quittez le didacticiel. Continuer ?")) return;
+      writeDraftNow();   // dernière sauvegarde du vrai match, avant que la démo ne prenne l'écran
+    }
     const d = makeDemo();
-    const court = d.players.slice(0, 5).map(p => p.id);
     const cfg: GameConfig = { teamHome: 'SATHONAY (démo)', teamAway: d.opponent, matchDate: new Date().toISOString().split('T')[0], periodCount: 4, periodMinutes: 10, ffbbMatchId: '' };
     demoRef.current = true;
     setMatchConfig(cfg);
@@ -1148,8 +1179,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setMatchType('AMICAL');
     setSelectedMatchPlayerIds(d.players.map(p => p.id));
     setMatchNumbers(Object.fromEntries(d.players.map(p => [p.id, p.number])));
-    setStartingFiveByPeriod({ 1: court });
-    setGame({ config: cfg, period: 1, clockSeconds: cfg.periodMinutes * 60, isClockRunning: false, scoreHome: 0, scoreAway: 0, scoreByPeriod: {}, matchRoster: d.players, onCourtPlayerIds: court, events: [] });
+    setStartingFiveByPeriod({});
+    setSelectedPlayerId(null); setIsSubbing(false); setSelectedOutIds([]); setSelectedInIds([]);
+    // Terrain vide et quatre joueuses au numéro 0 : le didacticiel apprend à régler les numéros et à annoncer les cinq de départ.
+    setGame({ config: cfg, period: 1, clockSeconds: cfg.periodMinutes * 60, isClockRunning: false, scoreHome: 0, scoreAway: 0, scoreByPeriod: {}, matchRoster: d.players, onCourtPlayerIds: [], events: [] });
     setPlayingTime({});
     setTutLast(null);
     setActiveTab('MATCH');
@@ -1412,11 +1445,13 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setGame(prev => ({ ...prev, period: target, clockSeconds: clock, isClockRunning: false }));
   };
 
+  // Temps de jeu affiché, enregistré et exporté : plafonné à 5 × la durée de la période (voir capPlayingTimes).
+  const cappedPlayingTime = capPlayingTimes(playingTime, game.config);
   // Durée d'une période : durée normale, ou 5 minutes en prolongation.
   const periodDurationSecs = (p: number) => (p > game.config.periodCount ? OVERTIME_MINUTES : game.config.periodMinutes) * 60;
   // Temps à afficher au chrono quand on arrive sur la période p.
   const clockForPeriod = (p: number) => {
-    const times = Object.values(playingTime).map(m => m[p] || 0);
+    const times = Object.values(cappedPlayingTime).map(m => m[p] || 0);
     const maxT = Math.max(0, ...times);
     const hasEvents = game.events.some(e => e.period === p);
     if (!hasEvents && maxT === 0) return periodDurationSecs(p);                    // période vierge : temps max
@@ -1683,7 +1718,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     });
   };
 
-  const getPlayerStats = (playerId: string, periodFilter: number | 'ALL') => computePlayerStats(game.events, playingTime, playerId, periodFilter);
+  const getPlayerStats = (playerId: string, periodFilter: number | 'ALL') => computePlayerStats(game.events, cappedPlayingTime, playerId, periodFilter);
 
   const persistNewPlayer = async (p: Player) => {
     try {
@@ -2184,7 +2219,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       game: g, matchConfig: cfg, homeAway: weAreAway ? 'EXTERIEUR' : 'DOMICILE',
       matchType: String(row.ffbb_match_id || '').startsWith('AMICAL-') ? 'AMICAL' : 'OFFICIEL',
       selectedPeriodFilter: 'ALL', lastPeriodShown: last,
-      getPlayerStats: (id, pf) => computePlayerStats(events, pt, id, pf)
+      getPlayerStats: (id, pf) => computePlayerStats(events, capPlayingTimes(pt, cfg), id, pf)
     });
   };
 
@@ -2334,6 +2369,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
             scoreHome: game.scoreHome,
             scoreAway: game.scoreAway,
             clockRunning: game.isClockRunning,
+            clockSeconds: game.clockSeconds,
+            numbers: Object.fromEntries(game.matchRoster.map(p => [p.id, p.number])),
             onCourt: game.onCourtPlayerIds,
             selected: selectedPlayerId,
             subPanelOpen: isSubbing,
@@ -2794,10 +2831,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               userId={userId}
               onVoiceResult={demo ? setTutLast : undefined}
               tutorial={{
-                kind: demo ? 'quit' : matchOpen ? 'new' : 'demo',
-                label: demo ? '🎓 Quitter le didacticiel' : matchOpen ? '＋ Nouveau' : '🎓 Didacticiel',
-                title: demo ? 'Fermer le match de démonstration' : matchOpen ? 'Fermer ce match et repartir de zéro' : 'Apprendre les commandes vocales sur un match de démonstration',
-                onClick: demo ? quitDemo : matchOpen ? handleNewMatch : startDemo,
+                inDemo: !!demo,
+                onDemo: startDemo,
+                onQuit: quitDemo,
+                onNew: handleNewMatch,
+                canNew: matchOpen && !demo,
               }}
               onEnabledChange={demo ? setVoiceOn : undefined}
               roster={game.matchRoster}

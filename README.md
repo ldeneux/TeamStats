@@ -14,7 +14,7 @@ Renseigner dans `.env.local` (en local) ou dans les Environment Variables du pro
 - NEXT_PUBLIC_SUPABASE_ANON_KEY
 - SUPABASE_SERVICE_ROLE_KEY : **serveur uniquement** (ne jamais préfixer par NEXT_PUBLIC_). Sert à lister / créer les comptes dans
   Administration > Accès (Supabase > Project Settings > API > `service_role`).
-- NEXT_PUBLIC_FFBB_EXE_URL (facultatif) : adresse de téléchargement de MiseAJourFFBB_Club.exe affichée dans l'administration.
+- NEXT_PUBLIC_FFBB_EXE_URL (facultatif) : adresse de téléchargement de MiseAJourFFBB_Club.exe affichée dans l'administration (par défaut https://team-stats-three.vercel.app/MiseAJourFFBB_Club.exe, le fichier étant dans public/).
 
 ## Scripts SQL (à exécuter dans l'éditeur SQL de Supabase)
 Ordre conseillé pour une base à jour :
