@@ -220,7 +220,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b3 (?:points?|pointes?|poings?|poins?|poils?|poids|pts?)\b/g, ' P3 '],
   [/\btir a 2\b/g, ' P2 '], [/\btir a 3\b/g, ' P3 '],
   // résultat d'un tir / d'un lancer
-  [/\b(?:rates?|ratees?|rater|manques?|manquees?|manquer|loupes?|loupees?)\b/g, ' MISS '],
+  [/\b(?:rat|rates?|ratees?|rater|ratez|rata|ratait|ratent|manques?|manquees?|manquer|loupes?|loupees?|loupe)\b/g, ' MISS '],
   [/\b(?:reussis?|reussies?|reussite|dedans|marques?)\b/g, ' MADE '],
   // rangs des lancers francs
   [/\b(?:premiers?|premieres?|1er|1ere)\b/g, ' ORD1 '],
@@ -323,6 +323,8 @@ const CMD_WORDS = ['interception', 'intercepte', 'rebond', 'rebonds', 'offensif'
   'demarrer', 'demarre', 'arreter', 'termine', 'premier', 'deuxieme', 'troisieme', 'reussi', 'reussie', 'manque', 'manques', 'loupe', 'points', 'pointe', 'contree', 'terrain', 'equipe', 'combien', 'score', 'afficher',
   'fermer', 'valider', 'selectionne', 'selectionner', 'lancer', 'lancers', 'francs', 'reprise', 'match', 'temps', 'marque', 'supprime', 'efface', 'deselectionner', 'decisives'];
 const CMD_SET = new Set(CMD_WORDS);
+
+const MISS_KEYS = ['ra', 'rate', 'rater', 'mak', 'lup'].map((x) => phonetic(x)).filter(Boolean);
 
 function correctWords(t: string, roster: RosterEntry[]): string {
   const words = t.split(' ');
@@ -491,8 +493,8 @@ function askName(res: Extract<Resolved, { kind: 'ask' }>, env: Env): Cmd {
 function designation(env: Env, id: string, byNumber: boolean): string {
   const p = env.players.find((x) => x.id === id);
   if (!p) return '?';
-  if (byNumber) return p.name ? `numéro ${p.number}, ${titleCase(p.name)}` : `numéro ${p.number}`;
-  return sayName(env.players, id);
+  if (byNumber && !p.name) return `numéro ${p.number}`;
+  return sayName(env.players, id);   // désignée par numéro ou par prénom : on répète le prénom, court
 }
 
 // ───────────────────────── Actions ─────────────────────────
@@ -543,6 +545,9 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
   const nameToks = toks.filter((t): t is NameTok => t.k === 'name');
   const numToks = toks.filter((t): t is NumTok => t.k === 'num');
   const anyName = nameToks.length > 0;
+  // Un mot inconnu qui sonne comme « raté » / « manqué » / « loupé » : c'est un tir manqué (le moteur déforme souvent « raté »).
+  const looksLikeMiss = (w: string) => w.length >= 2 && MISS_KEYS.some((k) => lev(phonetic(w), k) <= (k.length >= 4 ? 1 : 0)) && !roster.some((p) => p.keys.some((k) => lev(phonetic(w), k) <= 1));
+  if (!codes.includes('MISS') && unknown.some(looksLikeMiss)) codes.push('MISS');
 
   // Un nombre restant est un numéro de maillot s'il est précédé de « la / le / numéro », ou si la phrase n'a aucun prénom.
   const jerseyToks = numToks.filter((t) => t.art || !anyName);

@@ -53,6 +53,7 @@ interface Props {
 const ALIAS_KEY = 'teamstats.voice.aliases.v1';
 const MODE_KEY = 'teamstats.voice.mode.v1';
 const PHRASES_KEY = 'teamstats.voice.phrases.v1';
+const BARGE_KEY = 'teamstats.voice.casque.v1';
 const VOCAB = ['lancer franc', 'lancers francs', 'interception', 'rebond offensif', 'rebond défensif', 'passe décisive', 'perte de balle', 'balle perdue', 'faute technique', 'faute antisportive', 'faute disqualifiante', 'faute subie', 'remplacement', 'sur le terrain on a', 'démarrer chrono', 'arrêt chrono', 'démarrer le match', 'temps mort', 'annule la dernière commande', 'deux points', 'trois points', 'adversaire', 'contrée', 'sélectionne'];
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -85,6 +86,11 @@ export default function VoiceControl(props: Props) {
   const [unknownHeard, setUnknownHeard] = useState('');
   const [saidKind, setSaidKind] = useState<'ok' | 'wait' | 'info' | 'error'>('info');
   const [diag, setDiag] = useState(false);
+  const [bargeIn, setBargeIn] = useState(true);   // casque : écoute continue pendant que l'appli parle (par défaut)
+  const bargeRef = useRef(true);
+  bargeRef.current = bargeIn;
+  const diagRef = useRef(false);
+  const engineBuf = useRef<string[]>([]);
   const [usePhrases, setUsePhrases] = useState(false);   // liste de mots favorisés : désactivée par défaut (à essayer)
   const phrasesRef = useRef(false);
   phrasesRef.current = usePhrases;
@@ -151,7 +157,7 @@ export default function VoiceControl(props: Props) {
   localReadyRef.current = localSupport?.availability === 'available';
 
   useEffect(() => {
-    try { setUsePhrases(window.localStorage.getItem(PHRASES_KEY) === '1'); } catch { /* ignoré */ }
+    try { setUsePhrases(window.localStorage.getItem(PHRASES_KEY) === '1'); setBargeIn(window.localStorage.getItem(BARGE_KEY) !== '0'); } catch { /* ignoré */ }
     void loadShared().then(setShared);
     // Profil vocal du COMPTE (base) : suit l'utilisateur d'un PC à une tablette. Anciennes variantes locales : reprises une fois.
     void loadProfile(props.userId).then(({ profile: p, fromDb }) => {
@@ -219,7 +225,7 @@ export default function VoiceControl(props: Props) {
 
   const handleSpeech = (alts: string[]) => {
     // Une phrase à la fois, dans l'ordre ; on laisse React afficher l'état à jour avant la suivante.
-    chainRef.current = chainRef.current.then(async () => {
+    chainRef.current = chainRef.current.then(() => Promise.race([(async () => {
       if (!enabledRef.current) return;
       const dialog = dialogRef.current as VoiceDialog;
       const res = dialog.handle(alts, viewRef.current);
@@ -238,7 +244,7 @@ export default function VoiceControl(props: Props) {
         await apply(res.actions[i]);
       }
       if (res.actions.length) await sleep(30);
-    }).catch(() => undefined);
+    })(), sleep(6000)])).catch(() => undefined);   // une étape qui traîne ne bloque jamais les commandes suivantes
   };
 
   // Réponse anticipée : dès que le texte provisoire est une commande complète et ne bouge plus pendant EARLY_MS,
@@ -294,7 +300,8 @@ export default function VoiceControl(props: Props) {
       onState: setEngineState,
       onFatal: (_kind, msg) => stopVoice(msg),
       onEngine: setActiveEngine,
-      onDebug: (l) => setEngineLog((x) => [`${new Date().toLocaleTimeString('fr-FR')} ${l}`, ...x].slice(0, 30)),
+      getBargeIn: () => bargeRef.current,
+      onDebug: (l) => { engineBuf.current = [`${new Date().toLocaleTimeString('fr-FR')} ${l}`, ...engineBuf.current].slice(0, 30); if (diagRef.current) setEngineLog(engineBuf.current); },
       getMode: () => modeRef.current,
       getPhrases: (): PhraseHint[] => !phrasesRef.current ? [] : [
         ...viewRef.current.players.flatMap((p) => (p.name ? [p.name, ...(p.aliases ?? [])] : [])).map((phrase) => ({ phrase, boost: 5 })),
@@ -414,6 +421,7 @@ export default function VoiceControl(props: Props) {
             <span className={`inline-block w-2 h-2 rounded-full ${engineState === 'listening' ? 'bg-emerald-400 animate-pulse' : engineState === 'speaking' ? 'bg-sky-400' : 'bg-slate-500'}`} />
             {statusText}
           </span>
+          <button type="button" onClick={() => { dialogRef.current?.cancel(); setDialogStatus('À l’écoute'); engineRef.current?.refresh(); }} title="Relancer l'écoute (si l'appli ne réagit plus)" className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-600">↻ Relancer</button>
           {waiting && (
             <button type="button" onClick={() => { dialogRef.current?.cancel(); setDialogStatus('À l’écoute'); engineRef.current?.speak('Annulé.'); setSaid('Annulé.'); }} className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-slate-900 border border-amber-400/60">Abandonner</button>
           )}
@@ -453,7 +461,7 @@ export default function VoiceControl(props: Props) {
       )}
       {enabled && (
         <label className="flex items-center gap-2 text-[10px] text-slate-500 select-none">
-          <input type="checkbox" checked={diag} onChange={(e: { target: { checked: boolean } }) => setDiag(e.target.checked)} /> Mode diagnostic (afficher le texte entendu)
+          <input type="checkbox" checked={diag} onChange={(e: { target: { checked: boolean } }) => { diagRef.current = e.target.checked; if (e.target.checked) setEngineLog(engineBuf.current); setDiag(e.target.checked); }} /> Mode diagnostic (afficher le texte entendu)
         </label>
       )}
 
@@ -479,6 +487,10 @@ export default function VoiceControl(props: Props) {
           {localSupport && localSupport.api && localSupport.availability !== 'available' && localSupport.availability !== 'unavailable' && (
             <button type="button" disabled={installing || !online} onClick={prepareOffline} className="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{installing ? 'Téléchargement…' : 'Préparer le mode hors ligne'}</button>
           )}
+          <label className="flex items-center gap-2 select-none">
+            <input type="checkbox" checked={bargeIn} onChange={(e: { target: { checked: boolean } }) => { setBargeIn(e.target.checked); bargeRef.current = e.target.checked; try { window.localStorage.setItem(BARGE_KEY, e.target.checked ? '1' : '0'); } catch { /* ignoré */ } engineRef.current?.refresh(); }} />
+            Casque : continuer d’écouter pendant que l’appli parle (réponse plus rapide ; à décocher sans casque)
+          </label>
           <label className="flex items-center gap-2 select-none">
             <input type="checkbox" checked={usePhrases} onChange={(e: { target: { checked: boolean } }) => { setUsePhrases(e.target.checked); try { window.localStorage.setItem(PHRASES_KEY, e.target.checked ? '1' : '0'); } catch { /* ignoré */ } engineRef.current?.refresh(); }} />
             Favoriser les prénoms et commandes auprès de Chrome (essai : à décocher si les prénoms sont moins bien compris)
@@ -528,7 +540,7 @@ export default function VoiceControl(props: Props) {
           <p><b>Score adverse</b> : « adversaire deux points », « adversaire moins un ». <b>Questions</b> : « score », « qui est sur le terrain », « combien de fautes {ex.p[3]} », « fautes équipe ».</p>
           <p><b>Didacticiel</b> : bouton « Didacticiel » à gauche de « Calibrer » (si aucun match n’est ouvert) : un match de démonstration et une cinquantaine de commandes à essayer, sans rien enregistrer.</p>
           <p><b>Calibrage</b> : le bouton « Calibrer » fait lire toutes les phrases ; l’appli apprend les prénoms et mots mal compris et les enregistre sur votre compte (valable sur toutes vos tablettes et PC).</p>
-          <p><b>Abandon</b> : si l’appli pose une question (« Quelle joueuse ? ») ou attend une suite, dites <b>« abandon »</b> : l’attente est supprimée. Dire une autre commande complète fait la même chose.</p>
+          <p><b>Abandon</b> : si l’appli pose une question (« Quelle joueuse ? ») ou attend une suite, dites <b>« abandon »</b> (ou « ignorer », « oublie ») : l’attente est supprimée. Dire une autre commande complète fait la même chose.</p>
           <p><b>Conseils</b> : parlez normalement, sans exagérer ; une courte pause est acceptée (la phrase est recollée, et « sur le terrain on a… » attend les prénoms manquants). Les <b>numéros</b> (« deux points la 5 ») sont mieux compris que les prénoms. Si un prénom est mal entendu, touchez la joueuse sous « Mot non reconnu » : l’appli l’apprend.</p>
           <p className="text-amber-300">Confidentialité : le navigateur envoie l’audio à son fournisseur (Google pour Chrome). Hors ligne : possible si le mode hors ligne est prêt (bouton Moteur) ; sinon utilisez les boutons. Un casque évite que l’appli s’entende.</p>
         </div>

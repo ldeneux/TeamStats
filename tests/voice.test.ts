@@ -183,7 +183,7 @@ t('numéro porté par deux joueuses → refus', () => {
   const c = parseCommand('faute de la 5', dup, ctxOf());
   assert.equal(c.type, 'REFUSE');
 });
-t('répétition : numéro + prénom', () => assert.match(ev(parse('Faute de la 5')).say, /Faute personnelle, numéro 5, Candice/));
+t('répétition courte : le prénom seul (même désignée par son numéro)', () => assert.equal(ev(parse('Faute de la 5')).say, 'Faute personnelle, Candice'));
 t('joueuse sans prénom : « numéro 5 » seul', () => {
   const noName = PLAYERS.map((p) => (p.id === 'candice' ? { ...p, name: '' } : p));
   const c = parseCommand('faute de la 5', noName, ctxOf()) as any;
@@ -652,6 +652,17 @@ t('journal réel : « Alice de points » n\'apprend jamais « de » → « 2 »'
   assert.equal(r.profile.wordFixes['de'], undefined);
   const fx = r.profile.wordFixes;
   assert.equal(ev(parseCommand('faute de Candice', roster, { onCourt: ['alice', ...START_COURT.slice(1)], events: [], wordFixes: fx })).action, 'FAUTE PERSONNELLE');
+});
+
+t('« raté » déformé : jamais enregistré comme tir réussi', () => {
+  for (const x of ['raté à deux points de Chloé', 'rater de deux points de Chloé', 'radé à deux points de Chloé', 'ratais à 3 points pour Laura', 'rat à deux points Candice'])
+    assert.ok(/Manqué$/.test(ev(parse(x)).action), x);
+  assert.equal(ev(parse('Chloé deux points')).action, 'TIR 2PTS RÉUSSI'); assert.equal(ev(parse('Candice deux points')).action, 'TIR 2PTS RÉUSSI');
+});
+t('abandon : « ignorer », « ignore », « oublie », « tant pis » (comme « abandon »)', () => {
+  for (const w of ['abandon', 'ignorer', 'ignore', 'oublie', 'tant pis']) {
+    const s = new Sim(); s.say('deux points'); assert.equal(s.dialog.mode, 'ask'); assert.equal(s.said(w), 'Abandon.', w); assert.equal(s.dialog.mode, 'idle');
+  }
 });
 
 // Phonétique

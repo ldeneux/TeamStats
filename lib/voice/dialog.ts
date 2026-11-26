@@ -106,7 +106,7 @@ export class VoiceDialog {
     const st = this.st;
 
     // « Abandon » : quitte n'importe quelle attente (question, confirmation, série de lancers francs) et efface un fragment en cours.
-    if (alts.some((a) => /\babandon(?:ne|ner|nez|s)?\b/.test(a.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()))) {
+    if (alts.some((a) => /\b(?:abandon(?:ne|ner|nez|s)?|ignor(?:e|er|ez)|oubli(?:e|er|ez)|tant pis)\b/.test(a.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()))) {
       this.carry = null;
       this.st = { mode: 'idle' };
       if (st.mode === 'idle') return { say: [], actions: [] };
@@ -344,7 +344,7 @@ export class VoiceDialog {
   }
 
   private onFt(alts: string[], st: Extract<State, { mode: 'ft' }>, view: VoiceView): DialogResult {
-    if (this.opts.ftCancelOnUndo && alts.some((a) => /\b(annule|annuler|annulation|abandonne|laisse tomber)\b/i.test(a.normalize('NFD').replace(/[\u0300-\u036f]/g, '')))) {
+    if (this.opts.ftCancelOnUndo && alts.some((a) => /\b(annule|annuler|annulation|abandonne|abandon|ignore|ignorer|oublie|laisse tomber)\b/i.test(a.normalize('NFD').replace(/[\u0300-\u036f]/g, '')))) {
       this.st = { mode: 'idle' };
       return { say: ['Lancers francs abandonnés.'], actions: [{ t: 'ftView', playerId: null, attempts: [null, null, null] }] };
     }

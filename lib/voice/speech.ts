@@ -46,6 +46,8 @@ export interface VoiceEngineHandlers {
   onDebug?: (line: string) => void;
   /** Réglage choisi par l'utilisateur (relu à chaque ouverture de l'écoute). */
   getMode?: () => EngineMode;
+  /** Casque : l'écoute continue pendant que l'appli parle (réponse plus rapide, plus de phrase perdue). */
+  getBargeIn?: () => boolean;
   /** Mots à favoriser (prénoms, vocabulaire) quand le navigateur sait le faire. */
   getPhrases?: () => PhraseHint[];
 }
@@ -77,6 +79,11 @@ export class VoiceEngine {
   private speakId = 0;
   private state: EngineState = 'off';
   private sessionSeq = 0;
+  private spokenNorm = '';
+  private speakDeadline = 0;
+  private spokenEndAt = 0;
+  private keepalive: ReturnType<typeof setInterval> | null = null;
+  private startGuard: ReturnType<typeof setTimeout> | null = null;
   private delivered = new Set<string>();   // finals déjà remis (certains moteurs répètent le dernier résultat)
   private forceLocal = false;   // le réseau a lâché : on bascule sur la reconnaissance de l'appareil
 
@@ -91,6 +98,13 @@ export class VoiceEngine {
     this.recentStarts = [];
     this.setState('starting');
     this.openRecognition();
+    // Auto-réparation : si l'écoute n'est plus ouverte (synthèse restée « en cours », moteur tombé), on la rouvre.
+    if (this.keepalive) clearInterval(this.keepalive);
+    this.keepalive = setInterval(() => {
+      if (!this.active) return;
+      if (this.speaking && Date.now() > this.speakDeadline) { this.speakId++; try { window.speechSynthesis.cancel(); } catch { /* ignoré */ } this.endSpeaking(); }
+      if (!this.speaking && !this.rec && !this.restartTimer) this.openRecognition();
+    }, 3000);
     return true;
   }
 
@@ -104,6 +118,8 @@ export class VoiceEngine {
 
   stop(): void {
     this.active = false;
+    if (this.keepalive) { clearInterval(this.keepalive); this.keepalive = null; }
+    if (this.startGuard) { clearTimeout(this.startGuard); this.startGuard = null; }
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
     this.closeRecognition();
     this.cancelSpeech();
@@ -154,7 +170,7 @@ export class VoiceEngine {
     const session = ++this.sessionSeq;
     rec.maxAlternatives = 5;
 
-    rec.onstart = () => { if (this.rec === rec) this.setState(this.speaking ? 'speaking' : 'listening'); };
+    rec.onstart = () => { if (this.startGuard) { clearTimeout(this.startGuard); this.startGuard = null; } if (this.rec === rec) this.setState(this.speaking && !this.h.getBargeIn?.() ? 'speaking' : 'listening'); };
     const dbg = (l: string) => { try { this.h.onDebug?.(l); } catch { /* ignoré */ } };
     rec.onaudiostart = () => dbg('micro ouvert');
     rec.onsoundstart = () => dbg('son détecté');
@@ -163,13 +179,15 @@ export class VoiceEngine {
     rec.onsoundend = () => dbg('fin du son');
     rec.onnomatch = () => dbg('voix entendue mais rien compris (nomatch)');
     rec.onresult = (e: any) => {
-      if (this.speaking) { dbg('résultat ignoré : l’appli parle'); return; } // écho : on ignore ce qui est entendu pendant la synthèse
+      if (this.speaking && !this.h.getBargeIn?.()) { dbg('résultat ignoré : l’appli parle'); return; } // sans casque : on ignore ce qui est entendu pendant la synthèse
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         const alts: string[] = [];
         for (let k = 0; k < r.length; k++) { const tr = String(r[k].transcript || '').trim(); if (tr) alts.push(tr); }
         if (!alts.length) continue;
-        const meta = { key: `${session}:${i}` };
+        // avec casque l'écoute continue pendant la synthèse : on écarte seulement ce qui est l'écho de la phrase que l'appli vient de dire
+        if (this.isEcho(alts[0])) { dbg(`écho ignoré : « ${alts[0]} »`); continue; }
+        const meta = { key: `${session}:${i}:${alts[0]}` };
         dbg(`${r.isFinal ? 'FINAL' : 'provisoire'} #${i} : « ${alts[0]} »`);
         if (r.isFinal) {
           if (this.delivered.has(meta.key)) continue;
@@ -202,7 +220,15 @@ export class VoiceEngine {
       }
     };
     this.rec = rec;
+    if (this.startGuard) clearTimeout(this.startGuard);
+    this.startGuard = setTimeout(() => { this.startGuard = null; if (this.rec === rec && this.state === 'starting') { this.closeRecognition(); this.restartTimer = setTimeout(() => { this.restartTimer = null; this.openRecognition(); }, 300); } }, 6000);
     try { rec.start(); } catch { this.rec = null; this.restartTimer = setTimeout(() => { this.restartTimer = null; this.openRecognition(); }, 500); }
+  }
+
+  private isEcho(text: string): boolean {
+    const n = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!n || !this.spokenNorm) return false;
+    return (this.speaking || Date.now() < this.spokenEndAt + 700) && this.spokenNorm.includes(n);
   }
 
   private closeRecognition() {
@@ -221,17 +247,23 @@ export class VoiceEngine {
     if (!list.length) return;
     const synth = window.speechSynthesis;
     const id = ++this.speakId;
+    const text = list.join('. ');
+    this.spokenNorm = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    this.speakDeadline = Date.now() + 1500 + text.length * 80;   // au-delà, on considère que la synthèse est restée bloquée (Android ne signale pas toujours la fin)
+    const wasBusy = synth.speaking || synth.pending;
     synth.cancel(); // l'ancienne phrase se termine : son onend est ignoré (id périmé)
     this.beginSpeaking();
-    const u = new SpeechSynthesisUtterance(list.join('. '));
+    const u = new SpeechSynthesisUtterance(text);
     u.lang = 'fr-FR';
-    u.rate = 1.2;
+    u.rate = 1.25;
     const voice = synth.getVoices().find((v: { lang?: string }) => v.lang && v.lang.toLowerCase().startsWith('fr'));
     if (voice) u.voice = voice;
-    const done = () => { if (id === this.speakId) this.endSpeaking(); };
+    const guard = setTimeout(() => { if (id === this.speakId) { try { synth.cancel(); } catch { /* ignoré */ } this.endSpeaking(); } }, this.speakDeadline - Date.now());
+    const done = () => { clearTimeout(guard); if (id === this.speakId) this.endSpeaking(); };
     u.onend = done;
     u.onerror = done;
-    synth.speak(u);
+    // après un cancel() immédiat, certaines versions d'Android avalent la phrase suivante : petit délai
+    if (wasBusy) setTimeout(() => { if (id === this.speakId) synth.speak(u); }, 80); else synth.speak(u);
   }
 
   cancelSpeech(): void {
@@ -243,12 +275,15 @@ export class VoiceEngine {
   private beginSpeaking() {
     if (this.speaking) return;
     this.speaking = true;
-    if (this.active) { this.closeRecognition(); this.setState('speaking'); }
+    // sans casque : on coupe l'écoute pour ne pas entendre l'appli ; avec casque : l'écoute continue
+    if (this.active && !this.h.getBargeIn?.()) { this.closeRecognition(); this.setState('speaking'); }
   }
 
   private endSpeaking() {
     this.speaking = false;
+    this.spokenEndAt = Date.now();
     if (!this.active) return;
+    if (this.rec) return;   // l'écoute n'a jamais été coupée (mode casque)
     this.setState('starting');
     // petit délai : laisse l'écho de la fin de phrase s'éteindre avant de rouvrir le micro
     this.restartTimer = setTimeout(() => { this.restartTimer = null; this.openRecognition(); }, 200);
