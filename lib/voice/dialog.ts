@@ -44,6 +44,8 @@ export interface DialogResult {
   actions: VoiceAction[];
   /** Mots entendus mais non reconnus (pour proposer de les apprendre comme variante d'un prénom). */
   unknown?: string;
+  /** Mode direct : la commande est incomplète ou ambiguë, rien n'a été fait et aucune question n'attend de réponse (bip d'erreur + texte à l'écran). */
+  error?: boolean;
 }
 
 type FtAttempts = [boolean | null, boolean | null, boolean | null];
@@ -76,12 +78,20 @@ export class VoiceDialog {
   private carry: { text: string; at: number } | null = null;
   private pendingSay = '';   // dernière question posée (pour distinguer une réponse d'une nouvelle commande)
   private readonly opts: Required<DialogOptions>;
+  /** Mode DIRECT : jamais de question en attente. Une commande incomplète est refusée tout de suite ; une égalité entre deux prénoms prend le premier. */
+  private direct = false;
 
   constructor(opts: DialogOptions = {}) {
     this.opts = { ftBareNext: opts.ftBareNext ?? true, ftCancelOnUndo: opts.ftCancelOnUndo ?? true };
   }
 
   get mode(): State['mode'] { return this.st.mode; }
+
+  /** Active / désactive le mode DIRECT. En passant en direct, toute attente en cours est abandonnée. */
+  setDirect(on: boolean): void {
+    if (on && !this.direct) { this.st = { mode: 'idle' }; this.carry = null; }
+    this.direct = on;
+  }
 
   /** Texte d'état pour l'écran. */
   status(view?: Pick<VoiceView, 'players'>): string {
@@ -179,6 +189,21 @@ export class VoiceDialog {
       case 'REFUSE': return { say: [cmd.say], actions: [] };
       case 'NOOP': return { say: [cmd.say], actions: [] };
       case 'ASK':
+        if (this.direct) {
+          // Égalité entre deux prénoms : on prend le premier (affiché à l'écran ; « annule » corrige).
+          if (cmd.kind === 'name' && cmd.candidates.length) {
+            const again = this.best([text], view, { [cmd.key]: cmd.candidates[0] });
+            if (again.cmd.type !== 'ASK' && again.cmd.type !== 'UNKNOWN' && again.cmd.type !== 'REFUSE') return this.run(again.cmd, again.text, view);
+          }
+          // Liste « sur le terrain on a… » encore incomplète : on garde le début en mémoire (sans parler) pour recoller la suite.
+          if (cmd.kind === 'append' && cmd.progress) {
+            this.st = { mode: 'ask', kind: 'append', text, retries: 0 };
+            this.pendingSay = cmd.say;
+            return { say: [cmd.say], actions: [] };
+          }
+          // Tout le reste : pas de question. On dit ce qui manque à l'écran, on bipe, et on repart à zéro.
+          return { say: [cmd.say], actions: [], error: true };
+        }
         if (cmd.kind === 'name') {
           this.st = { mode: 'ask', kind: 'name', text, key: cmd.key, candidates: cmd.candidates, prefer: {}, retries: 0 };
         } else {

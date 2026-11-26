@@ -87,6 +87,10 @@ export default function VoiceControl(props: Props) {
   const [unknownHeard, setUnknownHeard] = useState('');
   const [saidKind, setSaidKind] = useState<'ok' | 'wait' | 'info' | 'error'>('info');
   const [diag, setDiag] = useState(false);
+  // Interrupteur DIRECT (par défaut) / CONFIGURATION. En direct : l'appli écoute et agit, ne parle jamais, ne pose aucune question, n'affiche aucune trace.
+  const [configMode, setConfigMode] = useState(false);
+  const directRef = useRef(true);
+  directRef.current = !configMode;
   const [bargeIn, setBargeIn] = useState(false);   // écoute pendant que l'appli parle : désactivé par défaut (l'appli pourrait s'entendre)
   const bargeRef = useRef(false);
   const [feedback, setFeedback] = useState<'beep' | 'voice' | 'silent'>('beep');   // retour : bip instantané (défaut), voix, silence
@@ -146,6 +150,7 @@ export default function VoiceControl(props: Props) {
 
   const dialogRef = useRef<VoiceDialog | null>(null);
   if (!dialogRef.current) dialogRef.current = new VoiceDialog();
+  dialogRef.current.setDirect(!configMode);
   const engineRef = useRef<VoiceEngine | null>(null);
   const wakeRef = useRef<WakeLockHandle | null>(null);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
@@ -224,7 +229,13 @@ export default function VoiceControl(props: Props) {
   };
 
   // Retour sonore : bip (instantané, l'écoute n'est jamais coupée), voix, ou silence. La voix ne sert qu'aux questions et aux réponses (score…).
-  const respond = (res: { say: string[]; actions: unknown[] }, kind: 'ok' | 'wait' | 'info' | 'error') => {
+  const respond = (res: { say: string[]; actions: unknown[]; error?: boolean }, kind: 'ok' | 'wait' | 'info' | 'error') => {
+    // DIRECT : jamais de voix (elle coupe le micro). Bip court si c'est fait, double bip grave si ça ne l'est pas ; le détail est écrit à l'écran.
+    if (directRef.current) {
+      if (kind === 'ok') playBeep('ok');
+      else if (kind === 'error' || res.error) playBeep('error');
+      return;
+    }
     const mode = feedbackRef.current;
     if (mode === 'silent') return;
     const text = res.say.join('. ');
@@ -239,15 +250,15 @@ export default function VoiceControl(props: Props) {
     const dialog = dialogRef.current as VoiceDialog;
     const res = dialog.handle(alts, viewRef.current);
     const said = res.say.join('. ');
-    const kind: 'ok' | 'wait' | 'info' | 'error' = res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait'
+    const kind: 'ok' | 'wait' | 'info' | 'error' = res.actions.length ? 'ok' : res.error ? 'error' : dialog.mode !== 'idle' ? 'wait'
       : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(said) ? 'error' : 'info';
     // 1) l'effet d'abord, 2) le retour sonore, 3) l'affichage
     res.actions.forEach((a, i) => { if (i === 0) apply(a); else setTimeout(() => apply(a), i * 4); });   // identifiants d'événements = Date.now() : jamais deux dans la même milliseconde
     respond(res, kind);
     setSaid(said); setSaidKind(kind); setDialogStatus(dialog.status());
     onResultCbRef.current?.({ say: said, actions: res.actions.length, at: Date.now() });
-    setUnknownHeard(res.unknown ?? '');
-    if (diagRef.current) {   // traces : seulement si le diagnostic est ouvert
+    setUnknownHeard(directRef.current ? '' : res.unknown ?? '');
+    if (diagRef.current && !directRef.current) {   // traces : seulement en CONFIGURATION, diagnostic coché
       setHeard(alts);
       setJournal((j) => [{ at: new Date().toLocaleTimeString('fr-FR'), alts, said, kind }, ...j].slice(0, 40));
     }
@@ -255,21 +266,21 @@ export default function VoiceControl(props: Props) {
 
   // Réponse anticipée : dès que le texte provisoire est une commande complète et ne bouge plus pendant EARLY_MS,
   // on l'exécute sans attendre la fin du silence que Chrome met ~1 s à constater. Le résultat « final » de la même phrase est alors ignoré.
-  const EARLY_MS = 300;
+  // En DIRECT on n'attend que 200 ms. L'emplacement du résultat (et non son texte) sert à ignorer le « final » de la même phrase : sinon un texte final légèrement différent exécutait la commande deux fois.
   const earlyKeyRef = useRef<string | null>(null);
   const interimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onInterim = (alts: string[], meta: { key: string }) => {
-    if (!enabledRef.current || earlyKeyRef.current === meta.key) return;
+  const onInterim = (alts: string[], meta: { key: string; slot: string }) => {
+    if (!enabledRef.current || earlyKeyRef.current === meta.slot) return;
     if (interimTimer.current) clearTimeout(interimTimer.current);
     interimTimer.current = setTimeout(() => {
       interimTimer.current = null;
       if (!enabledRef.current) return;
-      if (dialogRef.current?.peek(alts, viewRef.current)) { earlyKeyRef.current = meta.key; handleSpeech(alts); }
-    }, EARLY_MS);
+      if (dialogRef.current?.peek(alts, viewRef.current)) { earlyKeyRef.current = meta.slot; handleSpeech(alts); }
+    }, directRef.current ? 200 : 300);
   };
-  const onFinal = (alts: string[], meta?: { key: string }) => {
+  const onFinal = (alts: string[], meta?: { key: string; slot: string }) => {
     if (interimTimer.current) { clearTimeout(interimTimer.current); interimTimer.current = null; }
-    if (meta && earlyKeyRef.current === meta.key) { earlyKeyRef.current = null; return; }   // déjà traitée en avance
+    if (meta && earlyKeyRef.current === meta.slot) { earlyKeyRef.current = null; return; }   // déjà traitée en avance
     handleSpeech(alts);
   };
 
@@ -279,7 +290,7 @@ export default function VoiceControl(props: Props) {
     const eng = engineRef.current;
     engineRef.current = null;
     if (eng) {
-      if (speakNote) { eng.speak(speakNote); setTimeout(() => eng.stop(), 2500); } // on laisse finir la phrase
+      if (speakNote && !directRef.current) { eng.speak(speakNote); setTimeout(() => eng.stop(), 2500); } // on laisse finir la phrase
       else eng.stop();
     }
     wakeRef.current?.release(); wakeRef.current = null;
@@ -308,6 +319,7 @@ export default function VoiceControl(props: Props) {
       onFatal: (_kind, msg) => stopVoice(msg),
       onEngine: setActiveEngine,
       getBargeIn: () => bargeRef.current,
+      getMute: () => directRef.current,
       onDebug: (l) => { if (!diagRef.current) return; engineBuf.current = [`${new Date().toLocaleTimeString('fr-FR')} ${l}`, ...engineBuf.current].slice(0, 30); if (diagRef.current) setEngineLog(engineBuf.current); },
       getMode: () => modeRef.current,
       getPhrases: (): PhraseHint[] => !phrasesRef.current ? [] : [
@@ -323,10 +335,21 @@ export default function VoiceControl(props: Props) {
     setDialogStatus('À l’écoute');
     if (!engine.start()) { stopVoice('Impossible de démarrer la reconnaissance vocale.'); return; }
     wakeRef.current = holdWakeLock();
-    if (isSynthesisSupported()) engine.speak('Commande vocale activée');
+    if (directRef.current) playBeep('ok'); else if (isSynthesisSupported()) engine.speak('Commande vocale activée');
   };
 
   const toggle = () => { if (enabled) stopVoice(); else startVoice(); };
+
+  // Interrupteur DIRECT / CONFIGURATION. Retour en DIRECT : diagnostic, panneaux et attentes en cours sont fermés.
+  const chooseMode = (config: boolean) => {
+    if (config === configMode) return;
+    if (!config) {
+      diagRef.current = false; setDiag(false);
+      setShowHelp(false); setShowNames(false); setShowEngine(false); setUnknownHeard('');
+      dialogRef.current?.cancel(); setDialogStatus('À l’écoute');
+    }
+    setConfigMode(config);
+  };
 
   // Hors ligne : le mode vocal se coupe et l'annonce ; les boutons continuent de tout faire.
   useEffect(() => {
@@ -408,19 +431,30 @@ export default function VoiceControl(props: Props) {
           <span className="text-base">{enabled ? '🎙️' : '🔇'}</span>
           <span>COMMANDE VOCALE : {enabled ? 'ACTIVE' : 'COUPÉE'}</span>
         </button>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" role="group" aria-label="Mode">
+          <button type="button" onClick={() => chooseMode(false)} aria-pressed={!configMode}
+            className={`text-[11px] font-black tracking-wide px-3 py-2 rounded-xl border transition ${!configMode ? 'bg-emerald-600 border-emerald-300 text-white shadow' : 'bg-slate-800 border-slate-600 text-slate-400'}`}>DIRECT</button>
+          <button type="button" onClick={() => chooseMode(true)} aria-pressed={configMode}
+            className={`text-[11px] font-black tracking-wide px-3 py-2 rounded-xl border transition ${configMode ? 'bg-slate-500 border-slate-300 text-white shadow' : 'bg-slate-800 border-slate-600 text-slate-400'}`}>CONFIGURATION</button>
+        </div>
+      </div>
+
+      {(configMode || props.tutorial?.kind === 'quit') && (
+        <div className="flex items-center justify-end gap-1 flex-wrap">
           {props.tutorial && (
             <button type="button" onClick={props.tutorial.onClick} title={props.tutorial.title}
               className={`text-[10px] font-bold px-2 py-1 rounded-lg border text-white ${props.tutorial.kind === 'quit' ? 'bg-rose-700 border-rose-400' : props.tutorial.kind === 'new' ? 'bg-slate-800 border-slate-600 text-amber-300' : 'bg-indigo-700 border-indigo-400'}`}>
               {props.tutorial.label}
             </button>
           )}
-          <button type="button" onClick={() => { if (enabledRef.current) stopVoice(); setShowCal(true); }} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-indigo-700 border border-indigo-400 text-white">Calibrer</button>
-          <button type="button" onClick={() => setShowEngine((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Moteur</button>
-          <button type="button" onClick={() => setShowNames((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Prénoms</button>
-          <button type="button" onClick={() => setShowHelp((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Aide</button>
+          {configMode && (<>
+            <button type="button" onClick={() => { if (enabledRef.current) stopVoice(); setShowCal(true); }} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-indigo-700 border border-indigo-400 text-white">Calibrer</button>
+            <button type="button" onClick={() => setShowEngine((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Moteur</button>
+            <button type="button" onClick={() => setShowNames((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Prénoms</button>
+            <button type="button" onClick={() => setShowHelp((v) => !v)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300">Aide</button>
+          </>)}
         </div>
-      </div>
+      )}
 
       {enabled && (
         <div className={`flex items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-[11px] font-bold ${waiting ? 'bg-amber-500/20 border border-amber-400/60 text-amber-200' : 'bg-slate-800/80 border border-slate-700 text-slate-300'}`}>
@@ -428,8 +462,8 @@ export default function VoiceControl(props: Props) {
             <span className={`inline-block w-2 h-2 rounded-full ${engineState === 'listening' ? 'bg-emerald-400 animate-pulse' : engineState === 'speaking' ? 'bg-sky-400' : 'bg-slate-500'}`} />
             {statusText}
           </span>
-          <button type="button" onClick={() => { dialogRef.current?.cancel(); setDialogStatus('À l’écoute'); engineRef.current?.refresh(); }} title="Relancer l'écoute (si l'appli ne réagit plus)" className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-600">↻ Relancer</button>
-          {waiting && (
+          {configMode && <button type="button" onClick={() => { dialogRef.current?.cancel(); setDialogStatus('À l’écoute'); engineRef.current?.refresh(); }} title="Relancer l'écoute (si l'appli ne réagit plus)" className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-600">↻ Relancer</button>}
+          {configMode && waiting && (
             <button type="button" onClick={() => { dialogRef.current?.cancel(); setDialogStatus('À l’écoute'); engineRef.current?.speak('Annulé.'); setSaid('Annulé.'); }} className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-slate-900 border border-amber-400/60">Abandonner</button>
           )}
         </div>
@@ -443,7 +477,7 @@ export default function VoiceControl(props: Props) {
           {saidKind === 'ok' ? '✅ ' : saidKind === 'wait' ? '⏳ ' : saidKind === 'error' ? '⚠️ ' : '💬 '}{said}
         </p>
       )}
-      {enabled && unknownHeard && (
+      {configMode && enabled && unknownHeard && (
         <div className="bg-slate-950/60 border border-slate-700 rounded-xl p-2 space-y-1">
           <p className="text-[10px] text-slate-400">Mot non reconnu : <b className="text-slate-200">« {unknownHeard} »</b> — c’est un prénom ? Touchez la joueuse :</p>
           <div className="flex flex-wrap gap-1">
@@ -455,7 +489,7 @@ export default function VoiceControl(props: Props) {
           </div>
         </div>
       )}
-      {enabled && diag && (
+      {configMode && enabled && diag && (
         <div className="text-[10px] text-slate-400 font-mono bg-slate-950/60 rounded-lg p-2 space-y-0.5">
           <p>Entendu :</p>
           {heard.length === 0 ? <p>—</p> : heard.map((h, i) => <p key={i}>{i + 1}. {h}</p>)}
@@ -466,13 +500,13 @@ export default function VoiceControl(props: Props) {
           <button type="button" onClick={() => { try { void navigator.clipboard.writeText(journal.map((j) => `${j.at}\t${j.kind}\t${j.alts.join(' | ')}\t=> ${j.said}`).join('\n') + '\n--- événements du moteur ---\n' + [...engineLog].reverse().join('\n')); } catch { /* ignoré */ } }} className="mt-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 font-sans">Copier le journal (pour l'envoyer)</button>
         </div>
       )}
-      {enabled && (
+      {configMode && enabled && (
         <label className="flex items-center gap-2 text-[10px] text-slate-500 select-none">
           <input type="checkbox" checked={diag} onChange={(e: { target: { checked: boolean } }) => { diagRef.current = e.target.checked; if (e.target.checked) setEngineLog(engineBuf.current); setDiag(e.target.checked); }} /> Mode diagnostic (afficher le texte entendu)
         </label>
       )}
 
-      {showEngine && (
+      {configMode && showEngine && (
         <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-2 space-y-1.5 text-[11px] text-slate-300">
           <div className="flex items-center gap-2">
             <span className="font-bold text-slate-200">Reconnaissance</span>
@@ -518,7 +552,7 @@ export default function VoiceControl(props: Props) {
         </div>
       )}
 
-      {showNames && (
+      {configMode && showNames && (
         <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-2 space-y-1.5">
           <p className="text-[10px] text-slate-400">Variantes de prononciation, séparées par des virgules (ex. « candy, kandis »). Enregistrées sur votre compte et partagées avec le club {profileSync === 'saved' ? '✓' : profileSync === 'offline' ? '(hors ligne : envoi dès que possible)' : ''}{profile.calibratedAt ? ` · dernier calibrage le ${new Date(profile.calibratedAt).toLocaleDateString('fr-FR')}` : ''}.</p>
           {namedPlayers.length === 0 && <p className="text-[10px] text-slate-500">Aucune joueuse avec un prénom.</p>}
@@ -540,7 +574,7 @@ export default function VoiceControl(props: Props) {
         </div>
       )}
 
-      {showHelp && (
+      {configMode && showHelp && (
         <div className="text-[11px] text-slate-300 bg-slate-950/60 border border-slate-800 rounded-xl p-3 space-y-1.5 leading-snug">
           <p className="font-bold text-slate-100">Commandes vocales (les prénoms et numéros ci-dessous sont des exemples tirés au hasard)</p>
           <p><b>Désigner une joueuse</b> : son prénom, ou son numéro (« la {ex.n[0]} », « le {ex.n[1]} », « numéro {ex.n[2]} », « {ex.n[3]} »). L’ordre est libre : « {ex.p[0]} deux points » = « deux points pour {ex.p[0]} ». Les actions sont enregistrées tout de suite, sans validation ; pour corriger, dites « annule ».</p>

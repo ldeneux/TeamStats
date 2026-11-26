@@ -691,5 +691,41 @@ t('variantes saisies par l\'utilisateur', () => {
 });
 t('phrase incompréhensible', () => assert.equal(parse('bonjour tout le monde').type, 'UNKNOWN'));
 
+// ───── Mode DIRECT : aucune question en attente, tout va au plus court
+t('DIRECT : « deux points » sans joueuse → refus immédiat, aucune attente', () => {
+  const s = new Sim(); s.dialog.setDirect(true);
+  const r = s.say('deux points');
+  assert.equal(r.error, true); assert.equal(r.actions.length, 0); assert.equal(s.dialog.mode, 'idle');
+});
+t('DIRECT : la phrase suivante est traitée comme une commande neuve (plus de réponse perdue)', () => {
+  const s = new Sim(); s.dialog.setDirect(true);
+  s.say('interception');
+  s.say('Candice deux points');
+  assert.equal(s.actions.length, 1); assert.equal((s.actions[0] as any).playerId, 'candice');
+});
+t('DIRECT : « rebond » seul → refus, pas de question offensif/défensif en attente', () => {
+  const s = new Sim(); s.dialog.setDirect(true);
+  const r = s.say('rebond Candice'); assert.equal(r.error, true); assert.equal(s.dialog.mode, 'idle');
+});
+t('DIRECT : la joueuse sélectionnée reste la joueuse par défaut', () => {
+  const s = new Sim(); s.dialog.setDirect(true);
+  s.say('sélectionne Candice'); s.say('deux points');
+  assert.equal((s.actions[s.actions.length - 1] as any).playerId, 'candice');
+});
+t('DIRECT : « sur le terrain on a… » incomplet garde le début en silence et se complète', () => {
+  const s = new Sim(); s.dialog.setDirect(true); s.onCourt = [];
+  s.say('sur le terrain on a Chloé Laura');
+  assert.equal(s.dialog.mode, 'ask');
+  s.say('Candice Aliya Hanaé');
+  assert.equal(s.actions.length, 1); assert.equal((s.actions[0] as any).t, 'sub');
+});
+t('DIRECT : passer en direct abandonne une question déjà posée', () => {
+  const s = new Sim(); assert.equal(s.said('deux points'), 'Quelle joueuse ?');
+  s.dialog.setDirect(true); assert.equal(s.dialog.mode, 'idle');
+});
+t('hors DIRECT : le comportement d\'avant est conservé (question posée)', () => {
+  const s = new Sim(); assert.equal(s.said('deux points'), 'Quelle joueuse ?'); assert.equal(s.dialog.mode, 'ask');
+});
+
 console.log(`\n${ok} réussis, ${ko} échoués`);
 if (ko) process.exit(1);

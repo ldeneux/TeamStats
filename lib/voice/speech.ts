@@ -34,9 +34,9 @@ export type EngineErrorKind = 'unsupported' | 'not-allowed' | 'network' | 'no-mi
 
 export interface VoiceEngineHandlers {
   /** Une phrase finale : les alternatives, la plus probable d'abord. */
-  onResult: (alternatives: string[], meta?: { key: string }) => void;
+  onResult: (alternatives: string[], meta?: { key: string; slot: string }) => void;
   /** Texte provisoire (la phrase n'est pas finie) : permet de répondre sans attendre la fin du silence. */
-  onInterim?: (alternatives: string[], meta: { key: string }) => void;
+  onInterim?: (alternatives: string[], meta: { key: string; slot: string }) => void;
   onState: (s: EngineState) => void;
   /** Erreur fatale : le mode vocal doit être coupé (message à afficher). */
   onFatal: (kind: EngineErrorKind, message: string) => void;
@@ -48,6 +48,8 @@ export interface VoiceEngineHandlers {
   getMode?: () => EngineMode;
   /** Casque : l'écoute continue pendant que l'appli parle (réponse plus rapide, plus de phrase perdue). */
   getBargeIn?: () => boolean;
+  /** Mode DIRECT : l'appli ne parle jamais (parler coupe le micro 1 à 2 secondes). */
+  getMute?: () => boolean;
   /** Mots à favoriser (prénoms, vocabulaire) quand le navigateur sait le faire. */
   getPhrases?: () => PhraseHint[];
 }
@@ -187,7 +189,7 @@ export class VoiceEngine {
         if (!alts.length) continue;
         // avec casque l'écoute continue pendant la synthèse : on écarte seulement ce qui est l'écho de la phrase que l'appli vient de dire
         if (this.h.getBargeIn?.() && this.isEcho(alts[0])) { dbg(`écho ignoré : « ${alts[0]} »`); continue; }
-        const meta = { key: `${session}:${i}:${alts[0]}` };
+        const meta = { key: `${session}:${i}:${alts[0]}`, slot: `${session}:${i}` };
         dbg(`${r.isFinal ? 'FINAL' : 'provisoire'} #${i} : « ${alts[0]} »`);
         if (r.isFinal) {
           if (this.delivered.has(meta.key)) continue;
@@ -242,7 +244,7 @@ export class VoiceEngine {
   // ───────── synthèse vocale
   /** Dit une ou plusieurs phrases courtes. Annule ce qui était en cours. L'écoute est suspendue pendant la parole. */
   speak(phrases: string | string[]): void {
-    if (!isSynthesisSupported()) return;
+    if (!isSynthesisSupported() || this.h.getMute?.()) return;
     const list = (Array.isArray(phrases) ? phrases : [phrases]).map((p) => p.trim()).filter(Boolean);
     if (!list.length) return;
     const synth = window.speechSynthesis;
