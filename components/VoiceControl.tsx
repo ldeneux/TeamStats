@@ -9,7 +9,7 @@ import VoiceCalibration from './VoiceCalibration';
 import { VoiceProfile, addAliasTo, emptyProfile, mergeProfiles, profileDelta, sanitizeProfile } from '../lib/voice/calibrate';
 import { loadProfile, loadShared, saveProfile, shareEntries } from '../lib/voice/profileStore';
 import { VoicePlayer, strip } from '../lib/voice/commands';
-import { VoiceEngine, EngineState, EngineMode, LocalSupport, PhraseHint, checkLocalSupport, installLocal, holdWakeLock, isRecognitionSupported, isSynthesisSupported, WakeLockHandle } from '../lib/voice/speech';
+import { playBeep, warmAudio, VoiceEngine, EngineState, EngineMode, LocalSupport, PhraseHint, checkLocalSupport, installLocal, holdWakeLock, isRecognitionSupported, isSynthesisSupported, WakeLockHandle } from '../lib/voice/speech';
 
 export interface VoiceRosterPlayer { id: string; number: number; name: string }
 export interface VoiceEventLike { id: string; actionType: string; playerId: string; period: number }
@@ -53,7 +53,8 @@ interface Props {
 const ALIAS_KEY = 'teamstats.voice.aliases.v1';
 const MODE_KEY = 'teamstats.voice.mode.v1';
 const PHRASES_KEY = 'teamstats.voice.phrases.v1';
-const BARGE_KEY = 'teamstats.voice.casque.v1';
+const BARGE_KEY = 'teamstats.voice.casque.v2';
+const FEEDBACK_KEY = 'teamstats.voice.feedback.v1';
 const VOCAB = ['lancer franc', 'lancers francs', 'interception', 'rebond offensif', 'rebond défensif', 'passe décisive', 'perte de balle', 'balle perdue', 'faute technique', 'faute antisportive', 'faute disqualifiante', 'faute subie', 'remplacement', 'sur le terrain on a', 'démarrer chrono', 'arrêt chrono', 'démarrer le match', 'temps mort', 'annule la dernière commande', 'deux points', 'trois points', 'adversaire', 'contrée', 'sélectionne'];
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -86,8 +87,11 @@ export default function VoiceControl(props: Props) {
   const [unknownHeard, setUnknownHeard] = useState('');
   const [saidKind, setSaidKind] = useState<'ok' | 'wait' | 'info' | 'error'>('info');
   const [diag, setDiag] = useState(false);
-  const [bargeIn, setBargeIn] = useState(true);   // casque : écoute continue pendant que l'appli parle (par défaut)
-  const bargeRef = useRef(true);
+  const [bargeIn, setBargeIn] = useState(false);   // écoute pendant que l'appli parle : désactivé par défaut (l'appli pourrait s'entendre)
+  const bargeRef = useRef(false);
+  const [feedback, setFeedback] = useState<'beep' | 'voice' | 'silent'>('beep');   // retour : bip instantané (défaut), voix, silence
+  const feedbackRef = useRef<'beep' | 'voice' | 'silent'>('beep');
+  feedbackRef.current = feedback;
   bargeRef.current = bargeIn;
   const diagRef = useRef(false);
   const engineBuf = useRef<string[]>([]);
@@ -157,7 +161,7 @@ export default function VoiceControl(props: Props) {
   localReadyRef.current = localSupport?.availability === 'available';
 
   useEffect(() => {
-    try { setUsePhrases(window.localStorage.getItem(PHRASES_KEY) === '1'); setBargeIn(window.localStorage.getItem(BARGE_KEY) !== '0'); } catch { /* ignoré */ }
+    try { setUsePhrases(window.localStorage.getItem(PHRASES_KEY) === '1'); setBargeIn(window.localStorage.getItem(BARGE_KEY) === '1'); const fb = window.localStorage.getItem(FEEDBACK_KEY); if (fb === 'voice' || fb === 'silent' || fb === 'beep') setFeedback(fb); } catch { /* ignoré */ }
     void loadShared().then(setShared);
     // Profil vocal du COMPTE (base) : suit l'utilisateur d'un PC à une tablette. Anciennes variantes locales : reprises une fois.
     void loadProfile(props.userId).then(({ profile: p, fromDb }) => {
@@ -203,53 +207,55 @@ export default function VoiceControl(props: Props) {
   };
 
   // ───── Exécution des actions décidées par le dialogue (via les adaptateurs de page.tsx)
-  // Durée pendant laquelle la joueuse et la touche restent allumées avant que l'événement soit enregistré.
-  const SHOW_BEFORE_MS = 120;
-  const apply = async (a: VoiceAction) => {
+  // Exécution immédiate : aucune attente (la touche s'allume pendant que l'événement est enregistré).
+  const apply = (a: VoiceAction) => {
+    const act = actionsRef.current;
     switch (a.t) {
-      case 'event':
-        actionsRef.current.highlight(a.playerId, a.action);
-        await sleep(SHOW_BEFORE_MS);
-        actionsRef.current.recordEvent(a.action, a.playerId, a.points);
-        break;
-      case 'opp': actionsRef.current.bumpScore('away', a.delta); break;
-      case 'sub': actionsRef.current.applySubstitution(a.outs, a.ins); break;
-      case 'ft': actionsRef.current.highlight(a.playerId, 'LF'); actionsRef.current.submitFreeThrows(a.playerId, a.made, a.attempts); break;
-      case 'delete': actionsRef.current.deleteEvent(a.eventId); break;
-      case 'clock': actionsRef.current.highlight(null, 'CHRONO'); actionsRef.current.setClockRunning(a.running); break;
-      case 'subPanel': actionsRef.current.subPanel(a.op); break;
-      case 'select': actionsRef.current.selectPlayer(a.playerId); break;
-      case 'ftView': actionsRef.current.ftView(a.playerId, a.attempts); break;
+      case 'event': act.highlight(a.playerId, a.action); act.recordEvent(a.action, a.playerId, a.points); break;
+      case 'opp': act.bumpScore('away', a.delta); break;
+      case 'sub': act.applySubstitution(a.outs, a.ins); break;
+      case 'ft': act.highlight(a.playerId, 'LF'); act.submitFreeThrows(a.playerId, a.made, a.attempts); break;
+      case 'delete': act.deleteEvent(a.eventId); break;
+      case 'clock': act.highlight(null, 'CHRONO'); act.setClockRunning(a.running); break;
+      case 'subPanel': act.subPanel(a.op); break;
+      case 'select': act.selectPlayer(a.playerId); break;
+      case 'ftView': act.ftView(a.playerId, a.attempts); break;
     }
   };
 
+  // Retour sonore : bip (instantané, l'écoute n'est jamais coupée), voix, ou silence. La voix ne sert qu'aux questions et aux réponses (score…).
+  const respond = (res: { say: string[]; actions: unknown[] }, kind: 'ok' | 'wait' | 'info' | 'error') => {
+    const mode = feedbackRef.current;
+    if (mode === 'silent') return;
+    const text = res.say.join('. ');
+    if (mode === 'voice') { if (text) engineRef.current?.speak(res.say); return; }
+    if (kind === 'ok') { playBeep('ok'); return; }
+    if (kind === 'error' && /^Commande non reconnue/.test(text)) { playBeep('error'); return; }
+    if (text) engineRef.current?.speak(res.say);   // question, refus explicite, réponse
+  };
+
   const handleSpeech = (alts: string[]) => {
-    // Une phrase à la fois, dans l'ordre ; on laisse React afficher l'état à jour avant la suivante.
-    chainRef.current = chainRef.current.then(() => Promise.race([(async () => {
-      if (!enabledRef.current) return;
-      const dialog = dialogRef.current as VoiceDialog;
-      const res = dialog.handle(alts, viewRef.current);
+    if (!enabledRef.current) return;
+    const dialog = dialogRef.current as VoiceDialog;
+    const res = dialog.handle(alts, viewRef.current);
+    const said = res.say.join('. ');
+    const kind: 'ok' | 'wait' | 'info' | 'error' = res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait'
+      : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(said) ? 'error' : 'info';
+    // 1) l'effet d'abord, 2) le retour sonore, 3) l'affichage
+    res.actions.forEach((a, i) => { if (i === 0) apply(a); else setTimeout(() => apply(a), i * 4); });   // identifiants d'événements = Date.now() : jamais deux dans la même milliseconde
+    respond(res, kind);
+    setSaid(said); setSaidKind(kind); setDialogStatus(dialog.status());
+    onResultCbRef.current?.({ say: said, actions: res.actions.length, at: Date.now() });
+    setUnknownHeard(res.unknown ?? '');
+    if (diagRef.current) {   // traces : seulement si le diagnostic est ouvert
       setHeard(alts);
-      onResultCbRef.current?.({ say: res.say.join('. '), actions: res.actions.length, at: Date.now() });
-      setUnknownHeard(res.unknown ?? '');
-      // On répond tout de suite à voix haute ; l'écran s'allume pendant ce temps.
-      setSaid(res.say.join('. '));
-      const kindNow = res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait' : 'info';
-      setJournal((j) => [{ at: new Date().toLocaleTimeString('fr-FR'), alts, said: res.say.join('. '), kind: kindNow }, ...j].slice(0, 40));
-      setSaidKind(res.actions.length ? 'ok' : dialog.mode !== 'idle' ? 'wait' : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(res.say.join(' ')) ? 'error' : 'info');
-      setDialogStatus(dialog.status());
-      if (res.say.length) engineRef.current?.speak(res.say);
-      for (let i = 0; i < res.actions.length; i++) {
-        if (i > 0) await sleep(5); // identifiants d'événements = Date.now() : jamais deux dans la même milliseconde
-        await apply(res.actions[i]);
-      }
-      if (res.actions.length) await sleep(30);
-    })(), sleep(6000)])).catch(() => undefined);   // une étape qui traîne ne bloque jamais les commandes suivantes
+      setJournal((j) => [{ at: new Date().toLocaleTimeString('fr-FR'), alts, said, kind }, ...j].slice(0, 40));
+    }
   };
 
   // Réponse anticipée : dès que le texte provisoire est une commande complète et ne bouge plus pendant EARLY_MS,
   // on l'exécute sans attendre la fin du silence que Chrome met ~1 s à constater. Le résultat « final » de la même phrase est alors ignoré.
-  const EARLY_MS = 400;
+  const EARLY_MS = 300;
   const earlyKeyRef = useRef<string | null>(null);
   const interimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onInterim = (alts: string[], meta: { key: string }) => {
@@ -294,6 +300,7 @@ export default function VoiceControl(props: Props) {
       return;
     }
     if (viewRef.current.players.length === 0) { setMessage('Aucune joueuse dans le match : configurez d’abord le match.'); return; }
+    warmAudio();   // autorise les bips (geste de l'utilisateur)
     const engine = new VoiceEngine({
       onResult: onFinal,
       onInterim,
@@ -301,7 +308,7 @@ export default function VoiceControl(props: Props) {
       onFatal: (_kind, msg) => stopVoice(msg),
       onEngine: setActiveEngine,
       getBargeIn: () => bargeRef.current,
-      onDebug: (l) => { engineBuf.current = [`${new Date().toLocaleTimeString('fr-FR')} ${l}`, ...engineBuf.current].slice(0, 30); if (diagRef.current) setEngineLog(engineBuf.current); },
+      onDebug: (l) => { if (!diagRef.current) return; engineBuf.current = [`${new Date().toLocaleTimeString('fr-FR')} ${l}`, ...engineBuf.current].slice(0, 30); if (diagRef.current) setEngineLog(engineBuf.current); },
       getMode: () => modeRef.current,
       getPhrases: (): PhraseHint[] => !phrasesRef.current ? [] : [
         ...viewRef.current.players.flatMap((p) => (p.name ? [p.name, ...(p.aliases ?? [])] : [])).map((phrase) => ({ phrase, boost: 5 })),
@@ -487,9 +494,17 @@ export default function VoiceControl(props: Props) {
           {localSupport && localSupport.api && localSupport.availability !== 'available' && localSupport.availability !== 'unavailable' && (
             <button type="button" disabled={installing || !online} onClick={prepareOffline} className="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{installing ? 'Téléchargement…' : 'Préparer le mode hors ligne'}</button>
           )}
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-slate-200">Retour</span>
+            <select value={feedback} onChange={(e: { target: { value: string } }) => { const m = e.target.value as 'beep' | 'voice' | 'silent'; setFeedback(m); feedbackRef.current = m; try { window.localStorage.setItem(FEEDBACK_KEY, m); } catch { /* ignoré */ } }} className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white">
+              <option value="beep">Bip (le plus rapide) + voix pour les questions</option>
+              <option value="voice">Voix pour tout (plus lent)</option>
+              <option value="silent">Silence (écran seulement)</option>
+            </select>
+          </div>
           <label className="flex items-center gap-2 select-none">
             <input type="checkbox" checked={bargeIn} onChange={(e: { target: { checked: boolean } }) => { setBargeIn(e.target.checked); bargeRef.current = e.target.checked; try { window.localStorage.setItem(BARGE_KEY, e.target.checked ? '1' : '0'); } catch { /* ignoré */ } engineRef.current?.refresh(); }} />
-            Casque : continuer d’écouter pendant que l’appli parle (réponse plus rapide ; à décocher sans casque)
+            Casque : continuer d’écouter pendant que l’appli parle (essai : peut faire entendre l’appli à elle-même)
           </label>
           <label className="flex items-center gap-2 select-none">
             <input type="checkbox" checked={usePhrases} onChange={(e: { target: { checked: boolean } }) => { setUsePhrases(e.target.checked); try { window.localStorage.setItem(PHRASES_KEY, e.target.checked ? '1' : '0'); } catch { /* ignoré */ } engineRef.current?.refresh(); }} />

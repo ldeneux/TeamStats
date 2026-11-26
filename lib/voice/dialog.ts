@@ -74,6 +74,7 @@ export class VoiceDialog {
   private st: State = { mode: 'idle' };
   /** Dernier fragment non compris : une hésitation coupe parfois une phrase en deux, on recolle les morceaux (5 s). */
   private carry: { text: string; at: number } | null = null;
+  private pendingSay = '';   // dernière question posée (pour distinguer une réponse d'une nouvelle commande)
   private readonly opts: Required<DialogOptions>;
 
   constructor(opts: DialogOptions = {}) {
@@ -183,6 +184,7 @@ export class VoiceDialog {
         } else {
           this.st = { mode: 'ask', kind: 'append', text, retries: 0 };
         }
+        this.pendingSay = cmd.say;
         return { say: [cmd.say], actions: [] };
 
       case 'EVENT': {
@@ -319,6 +321,12 @@ export class VoiceDialog {
     // « append » : une commande complète passe d'abord ; sinon on recolle la réponse à la phrase d'origine (« rebond » + « offensif »)
     const nw = startNew();
     if (nw) return nw;
+    // Question « Quelle joueuse ? » en attente et nouvelle commande SANS joueuse (« raté à deux points ») : c'est une nouvelle commande qui remplace l'ancienne
+    // (la recoller à l'ancienne donnait « Commande non reconnue »). Une réponse (un prénom seul) reste recollée.
+    if (/^Quelle joueuse/.test(this.pendingSay)) {
+      const standalone = this.best(alts, view);
+      if (standalone.cmd.type === 'ASK' && standalone.cmd.kind === 'append' && /^Quelle joueuse/.test(standalone.cmd.say)) return this.run(standalone.cmd, standalone.text, view);
+    }
     const joined = alts.map((a) => `${st.text} ${a}`);
     const { cmd, text } = this.best(joined, view);
     // liste « sur le terrain » encore incomplète : on garde l'attente et on la prolonge

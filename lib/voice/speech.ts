@@ -186,7 +186,7 @@ export class VoiceEngine {
         for (let k = 0; k < r.length; k++) { const tr = String(r[k].transcript || '').trim(); if (tr) alts.push(tr); }
         if (!alts.length) continue;
         // avec casque l'écoute continue pendant la synthèse : on écarte seulement ce qui est l'écho de la phrase que l'appli vient de dire
-        if (this.isEcho(alts[0])) { dbg(`écho ignoré : « ${alts[0]} »`); continue; }
+        if (this.h.getBargeIn?.() && this.isEcho(alts[0])) { dbg(`écho ignoré : « ${alts[0]} »`); continue; }
         const meta = { key: `${session}:${i}:${alts[0]}` };
         dbg(`${r.isFinal ? 'FINAL' : 'provisoire'} #${i} : « ${alts[0]} »`);
         if (r.isFinal) {
@@ -288,6 +288,31 @@ export class VoiceEngine {
     // petit délai : laisse l'écho de la fin de phrase s'éteindre avant de rouvrir le micro
     this.restartTimer = setTimeout(() => { this.restartTimer = null; this.openRecognition(); }, 200);
   }
+}
+
+// ───────── Bips de retour : instantanés, n'interrompent jamais l'écoute (contrairement à la synthèse vocale)
+let audioCtx: any = null;
+/** À appeler depuis un geste (clic sur l'interrupteur) : les navigateurs n'autorisent le son qu'à ce moment. */
+export function warmAudio(): void {
+  try {
+    const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!AC) return;
+    if (!audioCtx) audioCtx = new AC();
+    if (audioCtx.state === 'suspended') void audioCtx.resume();
+  } catch { /* pas de son : ignoré */ }
+}
+export function playBeep(kind: 'ok' | 'error'): void {
+  try {
+    if (!audioCtx) return;
+    const notes = kind === 'ok' ? [{ f: 1100, at: 0, d: 0.06 }] : [{ f: 330, at: 0, d: 0.08 }, { f: 260, at: 0.11, d: 0.1 }];
+    for (const n of notes) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = n.f;
+      const t0 = audioCtx.currentTime + n.at;
+      g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t0 + n.d);
+      o.connect(g); g.connect(audioCtx.destination); o.start(t0); o.stop(t0 + n.d + 0.02);
+    }
+  } catch { /* ignoré */ }
 }
 
 // ───────── Wake Lock : écran allumé tant que le mode vocal est actif

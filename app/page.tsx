@@ -2784,14 +2784,14 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
           <div className="space-y-4">
             <VoiceControl
               userId={userId}
-              onVoiceResult={setTutLast}
+              onVoiceResult={demo ? setTutLast : undefined}
               tutorial={{
                 kind: demo ? 'quit' : matchOpen ? 'new' : 'demo',
                 label: demo ? '🎓 Quitter le didacticiel' : matchOpen ? '＋ Nouveau' : '🎓 Didacticiel',
                 title: demo ? 'Fermer le match de démonstration' : matchOpen ? 'Fermer ce match et repartir de zéro' : 'Apprendre les commandes vocales sur un match de démonstration',
                 onClick: demo ? quitDemo : matchOpen ? handleNewMatch : startDemo,
               }}
-              onEnabledChange={setVoiceOn}
+              onEnabledChange={demo ? setVoiceOn : undefined}
               roster={game.matchRoster}
               onCourtPlayerIds={game.onCourtPlayerIds}
               events={game.events}

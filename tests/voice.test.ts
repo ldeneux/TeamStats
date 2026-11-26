@@ -665,6 +665,15 @@ t('abandon : « ignorer », « ignore », « oublie », « tant pis » (comme «
   }
 });
 
+t('question « Quelle joueuse ? » puis une AUTRE commande sans joueuse : elle remplace la question (pas de collage)', () => {
+  const s = new Sim(); assert.equal(s.said('deux points'), 'Quelle joueuse ?');
+  assert.equal(s.said('raté à deux points'), 'Quelle joueuse ?'); assert.equal(s.dialog.mode, 'ask');
+  s.say('Chloé'); assert.deepEqual(s.actions, [{ t: 'event', action: 'TIR 2PTS Manqué', playerId: 'chloe', points: 0 }]);
+});
+t('question « Quelle joueuse ? » : une réponse (prénom seul) reste recollée', () => {
+  const s = new Sim(); s.say('interception'); s.say('Laura'); assert.deepEqual(s.actions, [{ t: 'event', action: 'INTERCEPTION', playerId: 'laura', points: 0 }]);
+});
+
 // Phonétique
 t('clés phonétiques (fiche § 8)', () => {
   assert.equal(phonetic('Candice'), phonetic('Candy'));
