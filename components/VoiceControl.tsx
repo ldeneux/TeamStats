@@ -28,6 +28,10 @@ export interface VoiceActions {
   selectPlayer: (playerId: string | null) => void;
   /** Affiche les lancers francs en cours dans le panneau de l'écran. */
   ftView: (playerId: string | null, attempts: [boolean | null, boolean | null, boolean | null]) => void;
+  /** Numéros de maillot du match (« Candice a le numéro 5 »), avant le match. */
+  setNumbers: (assign: Array<{ playerId: string; number: number }>) => void;
+  /** Remet le chrono à une valeur, en secondes (« mettre chrono à 8 minutes et 30 secondes »). */
+  setClock: (seconds: number) => void;
 }
 
 interface Props {
@@ -55,7 +59,7 @@ const MODE_KEY = 'teamstats.voice.mode.v1';
 const PHRASES_KEY = 'teamstats.voice.phrases.v1';
 const BARGE_KEY = 'teamstats.voice.casque.v2';
 const FEEDBACK_KEY = 'teamstats.voice.feedback.v1';
-const VOCAB = ['lancer franc', 'lancers francs', 'interception', 'rebond offensif', 'rebond défensif', 'passe décisive', 'perte de balle', 'balle perdue', 'faute technique', 'faute antisportive', 'faute disqualifiante', 'faute subie', 'remplacement', 'sur le terrain on a', 'démarrer chrono', 'arrêt chrono', 'démarrer le match', 'temps mort', 'annule la dernière commande', 'deux points', 'trois points', 'adversaire', 'contrée', 'sélectionne'];
+const VOCAB = ['lancer franc', 'lancers francs', 'interception', 'rebond offensif', 'rebond défensif', 'passe décisive', 'perte de balle', 'balle perdue', 'faute technique', 'faute antisportive', 'faute disqualifiante', 'faute subie', 'remplacement', 'sur le terrain on a', 'démarrer chrono', 'arrêt chrono', 'mettre chrono à', 'minutes', 'secondes', 'a le numéro', 'contrôle numéros joueuses', 'démarrer le match', 'temps mort', 'annule la dernière commande', 'deux points', 'trois points', 'adversaire', 'contrée', 'sélectionne'];
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Prénom prononcé : premier mot du nom ; vide si ce n'est pas un vrai prénom (« 5 », « J5 »…). */
@@ -144,6 +148,8 @@ export default function VoiceControl(props: Props) {
     wordFixes: effective.wordFixes,
     selectedPlayerId: props.selectedPlayerId,
     subPanel: props.subPanel,
+    // le match a commencé : plus de changement de numéros à la voix
+    matchStarted: props.events.length > 0 || props.scoreHome > 0 || props.scoreAway > 0 || props.period > 1 || props.clockRunning,
   };
   const actionsRef = useRef<VoiceActions>(props.actions);
   actionsRef.current = props.actions;
@@ -225,6 +231,8 @@ export default function VoiceControl(props: Props) {
       case 'subPanel': act.subPanel(a.op); break;
       case 'select': act.selectPlayer(a.playerId); break;
       case 'ftView': act.ftView(a.playerId, a.attempts); break;
+      case 'setNumbers': act.setNumbers(a.assign); break;
+      case 'setClock': act.highlight(null, 'CHRONO'); act.setClock(a.seconds); break;
     }
   };
 
@@ -250,7 +258,7 @@ export default function VoiceControl(props: Props) {
     const dialog = dialogRef.current as VoiceDialog;
     const res = dialog.handle(alts, viewRef.current);
     const said = res.say.join('. ');
-    const kind: 'ok' | 'wait' | 'info' | 'error' = res.actions.length ? 'ok' : res.error ? 'error' : dialog.mode !== 'idle' ? 'wait'
+    const kind: 'ok' | 'wait' | 'info' | 'error' = res.actions.length || res.ok ? 'ok' : res.error ? 'error' : dialog.mode !== 'idle' ? 'wait'
       : /reconnue|n'est pas|pas de joueuse|impossible|faut|citée|déjà|cinq fautes|maximum|rien à|aucun/i.test(said) ? 'error' : 'info';
     // 1) l'effet d'abord, 2) le retour sonore, 3) l'affichage
     res.actions.forEach((a, i) => { if (i === 0) apply(a); else setTimeout(() => apply(a), i * 4); });   // identifiants d'événements = Date.now() : jamais deux dans la même milliseconde
@@ -586,6 +594,8 @@ export default function VoiceControl(props: Props) {
           <p><b>Lancers francs</b> : « lancer franc » (joueuse sélectionnée) ou « lancer franc {ex.p[5]} » ; les tentatives s’affichent à l’écran : « premier réussi », « deuxième raté » ou simplement « réussi » / « raté ». Après la 3e tentative, ou « terminé », c’est enregistré. En une phrase : « {ex.p[6]} 1/3 », « {ex.p[7]} deux sur trois ». « Annule » abandonne la série.</p>
           <p><b>Changements</b> (enregistrés tout de suite, sans « oui ») : « remplacement {ex.p[8]}, {ex.p[9]} par {ex.p[0]}, {ex.p[1]} », « sortie de … entrée de … », « sur le terrain on a [5 prénoms ou numéros] ». Fenêtre : « afficher changement », puis « valider » ou « fermer ».</p>
           <p><b>Annuler</b> : « annule la dernière commande » ou « annule dernière action {ex.p[2]} » : immédiat, sans validation. Un changement ne s’annule pas : faire un nouveau changement.</p>
+          <p><b>Numéros de maillot (avant le match seulement)</b> : « {ex.p[4]} a le numéro {ex.n[0]} » affecte le numéro à la joueuse (feuille de match et effectif du match) ; l’appli prévient si une autre joueuse a déjà ce numéro. « Contrôle numéros joueuses » vérifie que tous les numéros sont différents et nomme les doublons (par exemple les joueuses restées au 0).</p>
+          <p><b>Remettre le chrono</b> (à tout moment du match) : « mettre chrono à 8 minutes et 30 secondes », « mettre chrono à 5 minutes ». Le chrono s’arrête : dire « démarrer chrono » pour repartir.</p>
           <p><b>Score adverse</b> : « adversaire deux points », « adversaire moins un ». <b>Questions</b> : « score », « qui est sur le terrain », « combien de fautes {ex.p[3]} », « fautes équipe ».</p>
           <p><b>Didacticiel</b> : bouton « Didacticiel » à gauche de « Calibrer » (si aucun match n’est ouvert) : un match de démonstration et une cinquantaine de commandes à essayer, sans rien enregistrer.</p>
           <p><b>Calibrage</b> : le bouton « Calibrer » fait lire toutes les phrases ; l’appli apprend les prénoms et mots mal compris et les enregistre sur votre compte (valable sur toutes vos tablettes et PC).</p>

@@ -55,6 +55,12 @@ export type Cmd =
   | { type: 'SUBPANEL'; op: 'open' | 'close' | 'validate'; say: string }
   | { type: 'UNDO'; playerId: string | null; eventId: string | null; say: string }
   | { type: 'CLOCK'; running: boolean; say: string }
+  /** « Mettre chrono à 8 minutes et 30 secondes » : valable pendant tout le match. secondsGiven = false : les secondes ne sont peut-être pas encore dites. */
+  | { type: 'SET_CLOCK'; seconds: number; secondsGiven: boolean; say: string }
+  /** « Candice a le numéro 5 » : numéro de maillot du match (avant le match seulement). */
+  | { type: 'SET_NUMBERS'; assign: Array<{ playerId: string; number: number }>; say: string }
+  /** « Contrôle numéros joueuses » : tous les numéros sont-ils différents ? (avant le match seulement) */
+  | { type: 'CHECK_NUMBERS'; say: string }
   | { type: 'Q_SCORE'; say: string }
   | { type: 'Q_COURT'; say: string }
   | { type: 'Q_FOULS'; playerId: string; say: string }
@@ -165,7 +171,7 @@ function numbersToDigits(text: string): string {
     const word = w[i];
     if (word === 'un' || word === 'une') {
       const nxt = w[i + 1], prv = out[out.length - 1];
-      const isNum = nxt === 'sur' || nxt === 'point' || nxt === 'points' || nxt === 'pointe' || nxt === 'pointes' || nxt === 'pts' || nxt === 'pt'
+      const isNum = nxt === 'minute' || nxt === 'minutes' || nxt === 'seconde' || nxt === 'secondes' || nxt === 'sur' || nxt === 'point' || nxt === 'points' || nxt === 'pointe' || nxt === 'pointes' || nxt === 'pts' || nxt === 'pt'
         || prv === 'numero' || prv === 'num' || prv === 'n' || prv === 'la' || prv === 'le' || prv === 'sur' || prv === 'moins' || prv === 'plus';
       if (isNum) { out.push('1'); i++; continue; }
       i++; // article : on le jette
@@ -183,6 +189,15 @@ function numbersToDigits(text: string): string {
 
 // Chaque règle remplace une expression par un code MAJUSCULE (jamais pris pour un prénom).
 const RULES: Array<[RegExp, string]> = [
+  // contrôle des numéros de maillot : avant la règle « numéro » ci-dessous
+  [/\b(?:controle|controles|controler|controlez|verifie|verifies|verifier|verifiez|verification|verifications|teste|tester)\b(?: (?:des|les|de|d|du|tous|toutes|la))*(?: numeros?| num)\b/g, ' CHECKNUM '],
+  // « Candice a le numéro 5 », « Candice prend le 5 », « Candice a le 5 » : le numéro suit le verbe, on le garde dans le code
+  [/\b(?:a|as|prend|prends|porte|portent|aura|devient)(?: (?:le|la|au))? (?:numeros?|num|n) (\d{1,2})\b/g, ' SETNUM$1 '],
+  [/\b(?:prend|prends|porte|portent|aura|devient)(?: (?:le|la|au))? (\d{1,2})\b/g, ' SETNUM$1 '],
+  [/\ba le (\d{1,2})\b/g, ' SETNUM$1 '],
+  // durées du chrono : avant « seconde » → ORD2 (rang de lancer franc)
+  [/\b(\d{1,2}) (?:minutes?|mins?|mn)\b/g, ' MINX$1 '],
+  [/\b(\d{1,2}) (?:secondes?|secs?)\b/g, ' SECX$1 '],
   // « 1/3 » (la normalisation a déjà transformé « 1/3 » en « 1 sur 3 ») ; « x sur n » en premier (lancers francs)
   [/\b([0-3]) sur ([1-3])\b/g, ' LFX$1N$2 '],
   [/\bnumeros?\b|\bnum\b|\bn\b/g, ' NUM '],
@@ -262,6 +277,7 @@ const FILLER = new Set([
   'allez', 'bon', 'on', 'il', 'y', 'ya', 'est', 'sont', 'qui', 'sur', 'sous', 'en', 'ca', 'cest', 'ce', 'c', 's',
   'derniere', 'dernier', 'commande', 'action', 'joueuse', 'joueuses', 'tir', 'est', 'a', 'fait', 'plus', 'un', 'une',
   'merci', 'svp', 'stp',
+  'porte', 'portent', 'prend', 'prends', 'aura', 'devient', 'as', 'mettre', 'mets', 'met', 'mettez', 'remettre', 'remets', 'remettez',
 ]);
 const ARTICLES = new Set(['la', 'le']);
 
@@ -558,6 +574,54 @@ export function parseCommand(text: string, players: VoicePlayer[], ctx: ParseCtx
   if (opts.ftSession) {
     const ft = parseFtSessionWord(toks, codes, numToks, desig.length > 0, opts.ftBareNext !== false);
     if (ft) return ft;
+  }
+
+  // ───── Numéros de maillot (avant le match) : « Candice a le numéro 5 », « contrôle numéros joueuses »
+  if (has('CHECKNUM')) return { type: 'CHECK_NUMBERS', say: 'Contrôle des numéros' };
+  if (codes.some((c) => /^SETNUM\d+$/.test(c))) {
+    const assign: Array<{ playerId: string; number: number }> = [];
+    let subject: string | null = null;     // dernière joueuse nommée, pas encore associée à un numéro
+    for (const t of toks) {
+      if (t.k === 'name') {
+        const r = resolveTok(t, 'any', env);
+        if (!r.ok) return r.kind === 'ask' ? askName(r, env) : { type: 'REFUSE', say: r.say };
+        subject = r.id;
+      } else if (t.k === 'unk') {
+        const near = nearestPlayer(t.w, roster, env.onCourt);    // prénom mal entendu
+        if (near) subject = near;
+      } else if (t.k === 'code' && /^SETNUM\d+$/.test(t.c)) {
+        if (!subject) return { type: 'REFUSE', say: 'Quelle joueuse a ce numéro ?' };
+        const n = parseInt(t.c.slice(6), 10);
+        const i = assign.findIndex((a) => a.playerId === subject);
+        if (i >= 0) assign[i] = { playerId: subject, number: n }; else assign.push({ playerId: subject, number: n });
+        subject = null;
+      }
+    }
+    if (!assign.length) return { type: 'REFUSE', say: 'Quelle joueuse a ce numéro ?' };
+    return { type: 'SET_NUMBERS', assign, say: assign.map((a) => `${sayName(players, a.playerId)}, numéro ${a.number}`).join('. ') };
+  }
+
+  // ───── Remise du chrono à une valeur : « mettre chrono à 8 minutes et 30 secondes » (valable tout le match)
+  if (has('CHRONO') && !has('CSTART') && !has('CSTOP') && !has('VSTART') && !has('VSTOP')) {
+    const minC = codes.find((c) => /^MINX\d+$/.test(c));
+    const secC = codes.find((c) => /^SECX\d+$/.test(c));
+    const bare = numToks.filter((t) => !t.art);
+    let m: number | null = null, sec = 0, given = false;
+    if (minC || secC) {
+      m = minC ? parseInt(minC.slice(4), 10) : 0;
+      if (secC) { sec = parseInt(secC.slice(4), 10); given = true; }
+      else {
+        // « 8 minutes 30 » : le nombre qui suit les minutes sont les secondes
+        const at = toks.findIndex((t) => t.k === 'code' && t.c === minC);
+        const nx = toks[at + 1];
+        if (nx && nx.k === 'num') { sec = nx.n; given = true; }
+      }
+    } else if (bare.length === 2) { m = bare[0].n; sec = bare[1].n; given = true; }          // « chrono 8 30 »
+    else if (bare.length === 1) return { type: 'REFUSE', say: 'Chrono : dis les minutes et les secondes.' };
+    if (m !== null) {
+      if (sec > 59) return { type: 'REFUSE', say: 'Les secondes vont de 0 à 59.' };
+      return { type: 'SET_CLOCK', seconds: m * 60 + sec, secondsGiven: given, say: `Chrono ${m}:${String(sec).padStart(2, '0')}` };
+    }
   }
 
   // ───── Questions

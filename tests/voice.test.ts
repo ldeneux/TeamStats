@@ -19,7 +19,7 @@ const START_COURT = ['chloe', 'annabelle', 'candice', 'laura', 'aliya'];
 class Sim {
   events: VoiceEventLite[] = [];
   onCourt = [...START_COURT];
-  home = 0; away = 0; period = 1; clock = false; seq = 0;
+  home = 0; away = 0; period = 1; clock = false; seq = 0; clockSeconds = 600;
   selected: string | null = null; subPanelOpen = false; ftFilled = 0;
   actions: VoiceAction[] = [];
   ftViews: VoiceAction[] = []; // affichage des lancers francs à l'écran (non comptés comme actions)
@@ -27,7 +27,7 @@ class Sim {
   players = PLAYERS;
   constructor(opts?: ConstructorParameters<typeof VoiceDialog>[0]) { this.dialog = new VoiceDialog(opts); }
   view(): VoiceView {
-    return { players: this.players, onCourt: this.onCourt, events: this.events, scoreHome: this.home, scoreAway: this.away, period: this.period, clockRunning: this.clock, selectedPlayerId: this.selected, subPanel: { open: this.subPanelOpen, outCount: 0, inCount: 0 } };
+    return { players: this.players, onCourt: this.onCourt, events: this.events, scoreHome: this.home, scoreAway: this.away, period: this.period, clockRunning: this.clock, selectedPlayerId: this.selected, subPanel: { open: this.subPanelOpen, outCount: 0, inCount: 0 }, matchStarted: this.events.length > 0 || this.home > 0 || this.away > 0 || this.period > 1 || this.clock };
   }
   say(...alts: string[]): DialogResult {
     const r = this.dialog.handle(alts, this.view());
@@ -59,6 +59,8 @@ class Sim {
       if (ev) { const m = ev.actionType.match(/RÉUSSI/) ? Number(ev.actionType.match(/(\d)PTS/)?.[1]) : 0; this.home -= m; }
       this.events = this.events.filter((e) => e.id !== a.eventId);
     } else if (a.t === 'clock') this.clock = a.running;
+    else if (a.t === 'setNumbers') this.players = this.players.map((p) => { const x = a.assign.find((y) => y.playerId === p.id); return x ? { ...p, number: x.number } : p; });
+    else if (a.t === 'setClock') { this.clockSeconds = a.seconds; this.clock = false; }
   }
 }
 
@@ -725,6 +727,84 @@ t('DIRECT : passer en direct abandonne une question déjà posée', () => {
 });
 t('hors DIRECT : le comportement d\'avant est conservé (question posée)', () => {
   const s = new Sim(); assert.equal(s.said('deux points'), 'Quelle joueuse ?'); assert.equal(s.dialog.mode, 'ask');
+});
+
+// ───── Numéros de maillot (avant le match) et remise du chrono
+const withZeros = (): Sim => { const s = new Sim(); s.players = PLAYERS.map((p) => (['candice', 'chloe', 'aliya'].includes(p.id) ? { ...p, number: 0 } : p)); return s; };
+t('« Candice a le numéro 5 » → numéro affecté', () => {
+  const s = withZeros(); const r = s.say('Candice a le numéro 5');
+  assert.equal(r.actions.length, 1); const a: any = r.actions[0];
+  assert.equal(a.t, 'setNumbers'); assert.deepEqual(a.assign, [{ playerId: 'candice', number: 5 }]);
+  assert.equal(s.players.find((p) => p.id === 'candice')!.number, 5);
+});
+t('« Chloé a le numéro sept » (nombre en lettres, accents)', () => { const s = withZeros(); s.say('Chloé à le numéro sept'); assert.equal(s.players.find((p) => p.id === 'chloe')!.number, 7); });
+t('numéro : variantes « prend le 9 », « a le 9 », « porte le numéro 9 »', () => {
+  for (const ph of ['Chloé prend le 9', 'Chloé a le 9', 'Chloé porte le numéro 9', 'Chloé a le numéro 9']) {
+    const s = withZeros(); s.say(ph); assert.equal(s.players.find((p) => p.id === 'chloe')!.number, 9, ph);
+  }
+});
+t('numéro : deux joueuses dans la même phrase', () => {
+  const s = withZeros(); s.say('Candice a le numéro 5 Chloé a le numéro 8');
+  assert.equal(s.players.find((p) => p.id === 'candice')!.number, 5); assert.equal(s.players.find((p) => p.id === 'chloe')!.number, 8);
+});
+t('numéro : une joueuse du banc peut être réglée (pas seulement le terrain)', () => {
+  const s = withZeros(); s.say('Hanaé a le numéro 3'); assert.equal(s.players.find((p) => p.id === 'hanae')!.number, 3);
+});
+t('numéro : prévient si un autre joueuse a déjà ce numéro', () => {
+  const s = withZeros(); const r = s.say('Candice a le numéro 7'); assert.equal(r.actions.length, 1);
+  assert.match(r.say.join(' '), /Laura a aussi le 7/);
+});
+t('numéro : pas d\'avertissement pour 0 ni quand le numéro est libre', () => {
+  const s = withZeros(); assert.doesNotMatch(s.say('Candice a le numéro 0').say.join(' '), /Attention/); assert.doesNotMatch(s.say('Chloé a le numéro 21').say.join(' '), /Attention/);
+});
+t('numéro sans joueuse → refus, rien changé', () => { const s = withZeros(); const r = s.say('a le numéro 5'); assert.equal(r.actions.length, 0); });
+t('numéro refusé une fois le match commencé', () => {
+  const s = withZeros(); s.say('Laura deux points'); s.actions.length = 0;
+  const r = s.say('Candice a le numéro 5'); assert.equal(r.actions.length, 0); assert.equal(r.error, true);
+  assert.equal(s.players.find((p) => p.id === 'candice')!.number, 0);
+});
+t('numéro refusé si le chrono tourne', () => { const s = withZeros(); s.say('démarrer chrono'); const r = s.say('Candice a le numéro 5'); assert.equal(r.error, true); });
+t('non-régression : « faute de la 7 » et « Candice deux points » ne touchent pas aux numéros', () => {
+  const s = new Sim(); s.say('faute de la 7'); s.say('Candice deux points');
+  assert.ok(s.actions.every((a) => a.t === 'event'));
+});
+t('contrôle : doublons de numéros nommés, erreur', () => {
+  const s = withZeros(); const r = s.say('contrôle numéros joueuses');
+  assert.equal(r.actions.length, 0); assert.equal(r.error, true);
+  assert.match(r.say.join(' '), /Numéro 0 : (Aliya|Chloé|Candice)/); assert.match(r.say.join(' '), /Candice/); assert.match(r.say.join(' '), /Chloé/);
+});
+t('contrôle : tout est différent → ok', () => {
+  const s = new Sim(); const r = s.say('contrôle des numéros'); assert.equal(r.ok, true); assert.equal(r.error, undefined); assert.match(r.say.join(' '), /tous différents/);
+});
+t('contrôle : variantes « vérifie les numéros », « contrôle numéro joueuses »', () => {
+  for (const ph of ['vérifie les numéros', 'contrôle numéro joueuses', 'vérification des numéros']) assert.equal(new Sim().say(ph).ok, true, ph);
+});
+t('contrôle refusé une fois le match commencé', () => { const s = new Sim(); s.say('Laura deux points'); assert.equal(s.say('contrôle numéros joueuses').error, true); });
+t('contrôle : après correction des numéros, plus aucun doublon', () => {
+  const s = withZeros(); s.say('Candice a le numéro 15'); s.say('Chloé a le numéro 16'); s.say('Aliya a le numéro 17');
+  assert.equal(s.say('contrôle numéros joueuses').ok, true);
+});
+const clockCmd = (txt: string): any => parse(txt);
+t('chrono : « mettre chrono à 8 minutes et 30 secondes »', () => { const c = clockCmd('mettre chrono à 8 minutes et 30 secondes'); assert.equal(c.type, 'SET_CLOCK'); assert.equal(c.seconds, 510); });
+t('chrono : en lettres, « mets le chrono à huit minutes trente secondes »', () => assert.equal(clockCmd('mets le chrono à huit minutes trente secondes').seconds, 510));
+t('chrono : minutes seules → secondes à 0', () => { const c = clockCmd('mettre chrono à 5 minutes'); assert.equal(c.seconds, 300); assert.equal(c.secondsGiven, false); });
+t('chrono : « 1 minute 15 » / « une minute et quinze secondes »', () => { assert.equal(clockCmd('mettre chrono à une minute et quinze secondes').seconds, 75); assert.equal(clockCmd('chrono à 1 minute 15').seconds, 75); });
+t('chrono : secondes seules', () => assert.equal(clockCmd('mettre chrono à 45 secondes').seconds, 45));
+t('chrono : « chrono 8 30 »', () => assert.equal(clockCmd('mettre chrono à 8 30').seconds, 510));
+t('chrono : 75 secondes refusé', () => assert.equal(clockCmd('mettre chrono à 2 minutes et 75 secondes').type, 'REFUSE'));
+t('chrono : valable en plein match, arrête le chrono', () => {
+  const s = new Sim(); s.say('Laura deux points'); s.say('démarrer chrono'); const r = s.say('mettre chrono à 4 minutes et 12 secondes');
+  assert.equal(r.actions.length, 1); assert.equal((r.actions[0] as any).seconds, 252); assert.equal(s.clock, false); assert.match(r.say.join(' '), /4:12, arrêté/);
+});
+t('chrono : « démarrer chrono » / « arrêt chrono » inchangés', () => { assert.equal(clockCmd('démarrer chrono').type, 'CLOCK'); assert.equal(clockCmd('arrêt chrono').type, 'CLOCK'); });
+t('chrono : minutes seules ne partent pas en avance (les secondes peuvent suivre)', () => {
+  const d = new VoiceDialog(); const v = new Sim().view();
+  assert.equal(d.peek(['mettre chrono à 8 minutes'], v), false);
+  assert.equal(d.peek(['mettre chrono à 8 minutes et 30 secondes'], v), true);
+  assert.equal(d.peek(['Candice a le numéro 5'], v), true);
+});
+t('ordinaux des lancers francs inchangés (« deuxième raté », « seconde réussie »)', () => {
+  const s = new Sim(); s.say('lancer franc Alice'.replace('Alice', 'Laura')); s.say('premier réussi'); const r = s.say('deuxième raté'); assert.match(r.say.join(' '), /Deuxième raté/);
 });
 
 console.log(`\n${ok} réussis, ${ko} échoués`);

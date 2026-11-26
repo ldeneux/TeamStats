@@ -1636,6 +1636,14 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setVoiceFlash({ playerId, action });
     setTimeout(() => { if (voiceFlashStamp.current === stamp) setVoiceFlash(null); }, 1500);
   };
+  // Numéro de maillot dit à la voix (avant le match) : feuille de match ET joueuses du match, comme si on tapait dans « N° match ».
+  const voiceSetNumbers = (assign: Array<{ playerId: string; number: number }>) => {
+    const byId = Object.fromEntries(assign.map(a => [a.playerId, a.number]));
+    setMatchNumbers(prev => ({ ...prev, ...byId }));
+    setGame(prev => ({ ...prev, matchRoster: prev.matchRoster.map(p => (p.id in byId ? { ...p, number: byId[p.id] } : p)) }));
+  };
+  // Chrono remis à une valeur (comme la correction par double-clic : le chrono s'arrête).
+  const voiceSetClock = (seconds: number) => setGame(prev => ({ ...prev, clockSeconds: Math.max(0, seconds), isClockRunning: false }));
   const voiceSelect = (playerId: string | null) => { if (!isSubbing) setSelectedPlayerId(playerId); };
   // Lancers francs dits à la voix : la série s'affiche dans le panneau (LF 1, LF 2, LF 3) comme si on touchait les boutons.
   const voiceFt = (playerId: string | null, attempts: [boolean | null, boolean | null, boolean | null]) => {
@@ -2801,7 +2809,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
               clockRunning={game.isClockRunning}
               selectedPlayerId={selectedPlayerId}
               subPanel={{ open: isSubbing, outCount: selectedOutIds.length, inCount: selectedInIds.length }}
-              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning, subPanel: voiceSubPanel, highlight: voiceHighlight, selectPlayer: voiceSelect, ftView: voiceFt }}
+              actions={{ recordEvent, bumpScore, applySubstitution, submitFreeThrows, deleteEvent, setClockRunning, subPanel: voiceSubPanel, highlight: voiceHighlight, selectPlayer: voiceSelect, ftView: voiceFt, setNumbers: voiceSetNumbers, setClock: voiceSetClock }}
             />
             <div className="bg-slate-900/90 backdrop-blur-md border border-white/10 text-white p-4 rounded-3xl shadow-2xl">
               {matchConfig.matchDate && (

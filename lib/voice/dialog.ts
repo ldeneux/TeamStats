@@ -23,6 +23,8 @@ export interface VoiceView {
   wordFixes?: Record<string, string>;
   /** Fenêtre de changement de l'écran : ouverte ? nombre de sorties / d'entrées déjà cochées. */
   subPanel?: { open: boolean; outCount: number; inCount: number };
+  /** Le match a commencé (action enregistrée, score, chrono lancé ou période > 1) : les numéros de maillot ne se changent plus à la voix. */
+  matchStarted?: boolean;
 }
 
 /** Ce que l'interface doit exécuter (via les adaptateurs de page.tsx). */
@@ -35,6 +37,10 @@ export type VoiceAction =
   | { t: 'clock'; running: boolean }
   | { t: 'subPanel'; op: 'open' | 'close' | 'validate' }
   | { t: 'select'; playerId: string | null }
+  /** Numéros de maillot du match (feuille de match + effectif du match). */
+  | { t: 'setNumbers'; assign: Array<{ playerId: string; number: number }> }
+  /** Chrono remis à une valeur (en secondes) ; le chrono s'arrête, comme une correction à la main. */
+  | { t: 'setClock'; seconds: number }
   /** Affiche la série de lancers francs en cours sur l'écran (playerId null : ne pas changer la sélection). */
   | { t: 'ftView'; playerId: string | null; attempts: [boolean | null, boolean | null, boolean | null] };
 
@@ -44,6 +50,8 @@ export interface DialogResult {
   actions: VoiceAction[];
   /** Mots entendus mais non reconnus (pour proposer de les apprendre comme variante d'un prénom). */
   unknown?: string;
+  /** Commande réussie qui n'a pas d'effet à l'écran (contrôle des numéros : tout est bon) : bip « ok ». */
+  ok?: boolean;
   /** Mode direct : la commande est incomplète ou ambiguë, rien n'a été fait et aucune question n'attend de réponse (bip d'erreur + texte à l'écran). */
   error?: boolean;
 }
@@ -135,7 +143,8 @@ export class VoiceDialog {
     const alts = alternatives.map((a) => a.trim()).filter(Boolean);
     if (!alts.length) return false;
     const st = this.st;
-    const complete = (c: Cmd) => c.type !== 'UNKNOWN' && c.type !== 'REFUSE' && c.type !== 'ASK';
+    // « mettre chrono à 8 minutes » : les secondes peuvent suivre après une courte pause, on attend le résultat final
+    const complete = (c: Cmd) => c.type !== 'UNKNOWN' && c.type !== 'REFUSE' && c.type !== 'ASK' && !(c.type === 'SET_CLOCK' && !c.secondsGiven);
     if (st.mode === 'confirm') return alts.some((a) => parseConfirm(a) !== null);
     if (st.mode === 'ask') return false;
     if (st.mode === 'ft') return complete(this.best(alts, view, undefined, true).cmd);
@@ -252,6 +261,35 @@ export class VoiceDialog {
         if (!sp?.open) return { say: ['Aucun changement ouvert.'], actions: [] };
         if (sp.outCount === 0 || sp.outCount !== sp.inCount) return { say: ["Il faut autant de sorties que d'entrées."], actions: [] };
         return { say: [cmd.say], actions: [{ t: 'subPanel', op: 'validate' }] };
+      }
+      case 'SET_CLOCK': {
+        const t = cmd.seconds;
+        const txt = `Chrono ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}${view.clockRunning ? ', arrêté' : ''}`;
+        return { say: [txt], actions: [{ t: 'setClock', seconds: t }] };
+      }
+      case 'SET_NUMBERS': {
+        if (view.matchStarted) return { say: ['Les numéros ne se changent qu’avant le match.'], actions: [], error: true };
+        const setIds = new Set(cmd.assign.map((a) => a.playerId));
+        const warns: string[] = [];
+        for (const a of cmd.assign) {
+          if (a.number === 0) continue;
+          const clash = players.filter((p) => !setIds.has(p.id) && p.number === a.number).map((p) => nameOf(players, p.id));
+          if (clash.length) warns.push(`${clash.join(', ')} a aussi le ${a.number}`);
+        }
+        const say = [cmd.assign.map((a) => `${nameOf(players, a.playerId)}, numéro ${a.number}`).join('. ')];
+        // deux joueuses réglées avec le même numéro dans la même phrase
+        const dupInPhrase = cmd.assign.find((a, i) => a.number !== 0 && cmd.assign.some((b, j) => j !== i && b.number === a.number));
+        if (dupInPhrase) warns.push(`deux joueuses ont le ${dupInPhrase.number}`);
+        if (warns.length) say.push(`Attention : ${warns.join('. ')}`);
+        return { say, actions: [{ t: 'setNumbers', assign: cmd.assign }] };
+      }
+      case 'CHECK_NUMBERS': {
+        if (view.matchStarted) return { say: ['Le contrôle des numéros se fait avant le match.'], actions: [], error: true };
+        const byNum = new Map<number, string[]>();
+        for (const p of players) byNum.set(p.number, [...(byNum.get(p.number) ?? []), nameOf(players, p.id)]);
+        const dups = Array.from(byNum.entries()).filter(([, names]) => names.length > 1).sort((x, y) => x[0] - y[0]);
+        if (!dups.length) return { say: [`Numéros tous différents (${players.length} joueuses)`], actions: [], ok: true };
+        return { say: dups.map(([n, names]) => `Numéro ${n} : ${names.join(', ')}`), actions: [], error: true };
       }
       case 'Q_SCORE':
         return { say: [`Nous ${view.scoreHome}, eux ${view.scoreAway}`], actions: [] };
