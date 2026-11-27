@@ -208,6 +208,34 @@ class SaveConflictError extends Error {
 const isSaveConflict = (e: any): e is SaveConflictError => !!e && e.name === 'SaveConflictError' && !!e.info;
 const isMissingRpc = (err: any) => err?.code === 'PGRST202' || err?.code === '42883' || /could not find the function|schema cache/i.test(String(err?.message ?? ''));
 
+// ── Cadenas de saisie d'un match (sql/stats_match_lock.sql) ───────────────────────────────────────────────
+// Un seul « saisisseur » par match. Le cadenas est un confort : le vrai filet de sécurité reste la comparaison de
+// version à l'enregistrement. Sans réseau, ou si le script SQL n'est pas exécuté, il n'y a simplement pas de cadenas.
+const LOCK_STALE_MIN = 240;   // sans activité depuis 4 h : le cadenas est considéré comme abandonné (prise en un geste)
+const LOCK_BEAT_MS = 90000;   // toutes les 90 s, on confirme qu'on tient toujours le cadenas
+interface LockRow { ffbb_match_id: string; locked_by: string; locked_by_name: string | null; device_id: string; locked_at: string; last_activity_at: string }
+interface LockDialogState { kind: 'claim' | 'save'; holder: string; sameUser: boolean; lastActivityAt: string | null; wasMine: boolean; resolve: (ok: boolean) => void }
+// Identifiant de CET appareil (tablette, téléphone, ordinateur) : deux appareils d'une même personne restent distincts.
+const getDeviceId = (): string => {
+  const fresh = () => (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : `d-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    let id = localStorage.getItem('teamstats:device:v1');
+    if (!id) { id = fresh(); localStorage.setItem('teamstats:device:v1', id); }
+    return id;
+  } catch { return fresh(); }
+};
+// Durée écoulée, lisible : « 12 min », « 3 h », « 2 j ».
+const durationLabel = (iso?: string | null): string => {
+  const ms = iso ? Date.now() - new Date(iso).getTime() : NaN;
+  if (!isFinite(ms) || ms < 0) return 'quelques instants';
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return 'moins d’1 min';
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h} h` : `${Math.floor(h / 24)} j`;
+};
+const lockKey = (id: unknown) => String(id ?? '').trim().slice(0, 20);
+
 const readPending = (): PendingItem[] => lsRead<PendingItem[]>(LS_PENDING, []);
 const writePending = (items: PendingItem[]) => lsWrite(LS_PENDING, items);
 // Un seul envoi en attente par match : chaque enregistrement réécrit tout le match, le plus récent suffit.
@@ -629,6 +657,50 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const [conflictText, setConflictText] = useState('');
   const [pendingConflicts, setPendingConflicts] = useState(0);
   const savedByLabel = (userEmail || '').split('@')[0];
+  // Cadenas de saisie : ce que CET appareil tient, ce que les autres tiennent, et les fenêtres de décision.
+  const deviceIdRef = useRef<string>('');
+  const myLockRef = useRef<string | null>(null);        // numéro du match dont cet appareil tient le cadenas
+  const releasedIdRef = useRef<string | null>(null);    // match libéré volontairement : on ne le reprend pas tout seul
+  const lastActivityRef = useRef<number>(Date.now());
+  const [locks, setLocks] = useState<Record<string, LockRow>>({});
+  const [locksReady, setLocksReady] = useState(false);
+  const [lockHeld, setLockHeld] = useState<string | null>(null);
+  const [lockLost, setLockLost] = useState<{ name: string; at: string } | null>(null);
+  const [lockDialog, setLockDialog] = useState<LockDialogState | null>(null);
+  const [lockText, setLockText] = useState('');
+  // Activité = une action saisie, le chrono, la période ou le score qui bougent.
+  useEffect(() => { lastActivityRef.current = Date.now(); }, [game.events.length, game.isClockRunning, game.period, game.scoreHome, game.scoreAway]);
+  // Liste ouverte : les cadenas des autres se rafraîchissent toutes les 30 s.
+  useEffect(() => {
+    if (!showFfbbPicker) return;
+    const id = setInterval(() => { void refreshLocks(); }, 30000);
+    return () => clearInterval(id);
+  }, [showFfbbPicker]);
+  // Battement de cœur : on confirme qu'on tient le cadenas ; s'il a été repris par quelqu'un, on le signale.
+  // Un brouillon restauré (match ouvert avec des actions) reprend aussi son cadenas, sans rien demander, s'il est libre.
+  useEffect(() => {
+    const beat = async () => {
+      if (!lockActive()) return;
+      const L = latestRef.current;
+      const held = myLockRef.current;
+      const openId = L && L.game && L.game.events && L.game.events.length > 0 ? lockKey(L.matchConfig?.ffbbMatchId) : '';
+      const id = held || (openId && releasedIdRef.current !== openId ? openId : '');
+      if (!id) return;
+      const { data, error } = await lockRpc('lock_take', lockTakeArgs(id, false));
+      if (error || !data) return;
+      if (data.ok) { if (!held) markHeld(id); return; }
+      if (data.status === 'locked' && held) {
+        myLockRef.current = null;
+        setLockHeld(null);
+        setLockLost({ name: data.holder_name || 'Quelqu’un', at: data.locked_at || '' });
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') void beat(); };
+    const timer = setInterval(() => { void beat(); }, LOCK_BEAT_MS);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onVisible);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onVisible); };
+  }, []);
   const latestRef = useRef<any>(null);
   const draftKey = lsKey('draft', userId);
 
@@ -694,8 +766,130 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // CADENAS DE SAISIE (voir sql/stats_match_lock.sql). Hors réseau, en consultation, en démonstration, ou si le script
+  // SQL n'est pas exécuté : aucun cadenas, et rien n'est bloqué.
+  // ---------------------------------------------------------------------------
+  const devId = () => { if (!deviceIdRef.current) deviceIdRef.current = getDeviceId(); return deviceIdRef.current; };
+  const lockActive = () => !isConsultant && !demoRef.current && typeof navigator !== 'undefined' && navigator.onLine;
+  const idleSeconds = () => Math.max(0, Math.round((Date.now() - lastActivityRef.current) / 1000));
+  const lockTakeArgs = (ffbbId: string, force: boolean) => ({ p_ffbb: ffbbId, p_device: devId(), p_name: savedByLabel, p_force: force, p_idle_seconds: idleSeconds(), p_stale_minutes: LOCK_STALE_MIN });
+  const lockRpc = async (fn: string, args: Record<string, unknown>): Promise<{ data?: any; error?: any }> => {
+    try {
+      const { data, error } = await supabase.rpc(fn, args);
+      return error ? { error } : { data };
+    } catch (e) { return { error: e }; }
+  };
+
+  const refreshLocks = async () => {
+    try {
+      const { data, error } = await supabase.from('stats_match_locks').select('ffbb_match_id, locked_by, locked_by_name, device_id, locked_at, last_activity_at');
+      if (error || !data) return;
+      const map: Record<string, LockRow> = {};
+      (data as LockRow[]).forEach(r => { map[lockKey(r.ffbb_match_id)] = r; });
+      setLocks(map);
+      setLocksReady(true);
+    } catch { /* réseau coupé, ou script SQL pas encore exécuté : pas de cadenas à afficher */ }
+  };
+
+  // Cet appareil tient maintenant le cadenas de ce match (et lâche celui d'un autre match qu'il tenait).
+  const markHeld = (ffbbId: string) => {
+    const previous = myLockRef.current;
+    if (previous && previous !== ffbbId) void lockRpc('lock_release', { p_ffbb: previous, p_device: devId() });
+    myLockRef.current = ffbbId;
+    releasedIdRef.current = null;
+    setLockHeld(ffbbId);
+    setLockLost(null);
+    void refreshLocks();
+  };
+
+  const askLockDialog = (d: Omit<LockDialogState, 'resolve'>) => new Promise<boolean>(resolve => { setLockText(''); setLockDialog({ ...d, resolve }); });
+  const closeLockDialog = (ok: boolean) => { const d = lockDialog; setLockDialog(null); setLockText(''); d?.resolve(ok); };
+
+  // Choisir un match : on prend son cadenas. S'il est tenu par quelqu'un d'autre (actif), on demande confirmation.
+  // Renvoie false si l'utilisateur renonce.
+  const claimMatch = async (ffbbId: string): Promise<boolean> => {
+    const id = lockKey(ffbbId);
+    if (!id || !lockActive()) return true;
+    if (myLockRef.current === id) return true;
+    let force = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { data, error } = await lockRpc('lock_take', lockTakeArgs(id, force));
+      if (error || !data) return true;              // script SQL absent ou réseau coupé : on ne bloque rien
+      if (data.ok) { markHeld(id); return true; }
+      if (data.status !== 'locked') return true;
+      const ok = await askLockDialog({ kind: 'claim', holder: data.holder_name || 'Quelqu’un', sameUser: !!data.same_user, lastActivityAt: data.last_activity_at || null, wasMine: false });
+      if (!ok) return false;
+      force = true;
+    }
+    return true;
+  };
+
+  const releaseMyLock = async () => {
+    const id = myLockRef.current;
+    if (!id) return;
+    myLockRef.current = null;
+    releasedIdRef.current = id;
+    setLockHeld(null);
+    if (lockActive()) await lockRpc('lock_release', { p_ffbb: id, p_device: devId() });
+    void refreshLocks();
+  };
+
+  const reclaimLock = async () => {
+    const id = lockKey(latestRef.current?.matchConfig?.ffbbMatchId);
+    if (!id) return;
+    releasedIdRef.current = null;
+    if (await claimMatch(id)) setLockLost(null);
+  };
+
+  // Avant d'enregistrer : si quelqu'un d'autre tient le cadenas (ou a repris le nôtre), on prévient et on demande confirmation.
+  const checkLockBeforeSave = async (ffbbId: string): Promise<boolean> => {
+    const id = lockKey(ffbbId);
+    if (!id || !lockActive()) return true;
+    const wasMine = myLockRef.current === id;
+    let holder: { name: string; last: string | null; same: boolean } | null = null;
+    if (releasedIdRef.current === id) {
+      // Libéré volontairement : on ne reprend pas le cadenas tout seul, on vérifie seulement que personne ne l'a pris.
+      try {
+        const { data } = await supabase.from('stats_match_locks').select('locked_by_name, locked_by, last_activity_at').eq('ffbb_match_id', id).maybeSingle();
+        const row: any = data;
+        if (row && Date.now() - new Date(row.last_activity_at).getTime() <= LOCK_STALE_MIN * 60000) {
+          holder = { name: row.locked_by_name || 'Quelqu’un', last: row.last_activity_at || null, same: row.locked_by === userId };
+        }
+      } catch { return true; }
+      if (!holder) return true;
+    } else {
+      const { data, error } = await lockRpc('lock_take', lockTakeArgs(id, false));
+      if (error || !data) return true;
+      if (data.ok) { markHeld(id); return true; }
+      if (data.status !== 'locked') return true;
+      holder = { name: data.holder_name || 'Quelqu’un', last: data.last_activity_at || null, same: !!data.same_user };
+    }
+    const ok = await askLockDialog({ kind: 'save', holder: holder.name, sameUser: holder.same, lastActivityAt: holder.last, wasMine });
+    if (!ok) return false;
+    const r = await lockRpc('lock_take', lockTakeArgs(id, true));   // on enregistre : on reprend la main
+    if (!r.error && r.data?.ok) markHeld(id);
+    return true;
+  };
+
+  // Affichage dans la liste : cadenas ouvert (libre) ou fermé avec le nom et la dernière activité (écrits, pas de survol : tablette).
+  const lockIcon = (ffbbId: unknown) => (locksReady && !locks[lockKey(ffbbId)] ? '🔓 ' : '');
+  const lockBadge = (ffbbId: unknown) => {
+    const lk = locks[lockKey(ffbbId)];
+    if (!lk) return null;
+    const stale = Date.now() - new Date(lk.last_activity_at).getTime() > LOCK_STALE_MIN * 60000;
+    const mine = lk.locked_by === userId && lk.device_id === devId();
+    const who = mine ? 'vous (cet appareil)' : lk.locked_by === userId ? 'vous (autre appareil)' : (lk.locked_by_name || 'quelqu’un');
+    return (
+      <div className={`text-[10px] mt-0.5 font-bold ${stale ? 'text-slate-400' : mine ? 'text-emerald-400' : 'text-amber-300'}`}>
+        🔒 {who} · {stale ? `inactif depuis ${durationLabel(lk.last_activity_at)} (prise libre)` : `actif il y a ${durationLabel(lk.last_activity_at)}`}
+      </div>
+    );
+  };
+
   // Matchs enregistrés + matchs à venir (liste du sélecteur), mis en cache pour le hors ligne.
   const fetchPickerData = async () => {
+    void refreshLocks();
     let offline = false;
     try {
       const BASE_COLS = 'id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at';
@@ -833,7 +1027,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   };
 
   // PRÉ-REMPLIR UN NOUVEAU MATCH DEPUIS UN MATCH DU CALENDRIER (à venir)
-  const handleSelectUpcomingMatch = (u: any) => {
+  const handleSelectUpcomingMatch = async (u: any) => {
+    // Cadenas : si quelqu'un d'autre saisit déjà ce match, on demande avant de prendre la main.
+    const lockId = lockKey(u.ffbb_rencontre_id);
+    if (lockId && !(await claimMatch(lockId))) return;
     const team = findOurTeamForUpcoming(u);
     if (team) handleLoadTeamFromSelect(team.id);
     setHomeAway(String(u.home_away || '').toLowerCase().startsWith('ext') ? 'EXTERIEUR' : 'DOMICILE');
@@ -932,6 +1129,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       setPickerNotice("Hors connexion : ce match enregistré ne peut pas être rouvert maintenant. Réessayez quand le réseau est revenu.");
       return;
     }
+    // Cadenas (sauf saison clôturée : lecture seule) : si quelqu'un d'autre saisit déjà ce match, on demande avant de prendre la main.
+    if (!isLockedDate(matchRow.match_date, lockedBefore) && !(await claimMatch(String(matchRow.ffbb_match_id || '')))) return;
     try {
       // La version est lue AVANT les données : si quelqu'un enregistre entre les deux, on aura une alerte de trop, jamais un écrasement silencieux.
       let loadedVersion = 0;
@@ -1113,6 +1312,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     try {
       if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('Failed to fetch (hors connexion)');
       const { matchId, version } = await persistMatchSnapshot(snap);
+      lastActivityRef.current = Date.now();
       setCurrentMatchDbId(matchId);
       dbVersionRef.current = { ffbbId, version };
       removePending(userId, ffbbId); // l'enregistrement en ligne remplace un envoi en attente pour ce match
@@ -1157,6 +1357,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       ffbbId = `AMICAL-${Date.now()}`;
       setMatchConfig(prev => ({ ...prev, ffbbMatchId: ffbbId }));
     }
+    // Cadenas : quelqu'un a-t-il repris la saisie (ou la tient-il en ce moment) ? Sinon on enregistre comme avant.
+    if (!(await checkLockBeforeSave(ffbbId))) return;
     await runSave(buildSnapshot(ffbbId));
   };
 
@@ -1261,7 +1463,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     if (draftTimerRef.current) { clearTimeout(draftTimerRef.current); draftTimerRef.current = null; }
     lsRemove(draftKey);
     setRestoredAt(null);
-    window.location.reload();
+    // On rend le cadenas avant de recharger (au plus 1,2 s d'attente : sans réseau, on recharge quand même).
+    void Promise.race([releaseMyLock(), new Promise<void>(resolve => setTimeout(resolve, 1200))]).finally(() => { window.location.reload(); });
   };
 
   // ---------------------------------------------------------------------------
@@ -2441,6 +2644,21 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         {!isOnline && saveStatus !== 'queued' && (
           <p className="text-center text-[10px] text-amber-300 pb-1 px-2">Mode hors ligne : vos saisies restent sur l'appareil et partiront au retour du réseau.</p>
         )}
+        {lockLost && (
+          <div className="mx-2 mb-1 text-center text-[11px] font-bold text-amber-200 bg-amber-500/10 border border-amber-500/50 rounded-xl px-3 py-1.5">
+            ⚠ {lockLost.name} a repris la saisie de ce match{lockLost.at ? ` à ${new Date(lockLost.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}. Votre saisie reste sur cet appareil.
+            <span className="ml-2 inline-flex gap-3">
+              <button onClick={() => void reclaimLock()} className="underline">Reprendre la main</button>
+              <button onClick={() => setLockLost(null)} className="underline text-amber-300/80">Ignorer</button>
+            </span>
+          </div>
+        )}
+        {lockHeld && !lockLost && (
+          <p className="text-center text-[10px] text-emerald-300 pb-1 px-2">
+            🔒 Vous saisissez ce match : les autres le voient verrouillé.{' '}
+            <button onClick={() => void releaseMyLock()} className="underline font-bold">Libérer</button>
+          </p>
+        )}
         {pendingConflicts > 0 && (
           <button onClick={openQueueConflict} className="block mx-auto text-center text-[11px] font-black text-amber-300 bg-amber-500/10 border border-amber-500/50 rounded-full px-3 py-1 mb-1">
             ⚠ {pendingConflicts} match{pendingConflicts > 1 ? 's' : ''} en conflit d'enregistrement : toucher pour décider
@@ -2804,7 +3022,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                         </div>
                         <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1">
                           <span className="truncate">
-                            {entry.m.match_date ? new Date(entry.m.match_date).toLocaleDateString('fr-FR') : 'Date inconnue'}
+                            {lockIcon(entry.m.ffbb_match_id)}{entry.m.match_date ? new Date(entry.m.match_date).toLocaleDateString('fr-FR') : 'Date inconnue'}
                             {' · '}
                             {`ID : ${entry.m.ffbb_match_id}`}
                             {entry.m.saved_by_name && entry.m.saved_at ? (
@@ -2814,6 +3032,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                             )}
                           </span>
                         </div>
+                        {lockBadge(entry.m.ffbb_match_id)}
                       </button>
                       {isLockedDate(entry.m.match_date, lockedBefore)
                         ? <span title="Saison clôturée : lecture seule" className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 text-amber-400">🔒</span>
@@ -2838,12 +3057,13 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                               : <span className="shrink-0 text-[9px] font-black px-2 py-0.5 rounded-full bg-blue-600/80 text-white">À VENIR</span>}
                           </div>
                           <div className="text-[10px] text-slate-500 mt-1 truncate">
-                            {d ? d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Date inconnue'}
+                            {lockIcon(u.ffbb_rencontre_id)}{d ? d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Date inconnue'}
                             {hasTime && d ? ` à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}
                             {u.numero_journee ? ` · J${u.numero_journee}` : ''}
                             {` · ID : ${u.ffbb_rencontre_id}`}
                             {playedCal && <span className="text-emerald-400"> · joué, stats non saisies</span>}
                           </div>
+                          {lockBadge(u.ffbb_rencontre_id)}
                         </button>
                       </div>
                     );
@@ -2904,6 +3124,47 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                 <button onClick={() => void resolveConflictOverwrite()} disabled={conflictText.trim().toLowerCase() !== 'confirmation'} className="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-xl text-sm transition disabled:opacity-40 disabled:cursor-not-allowed">Remplacer par ma version</button>
                 <button onClick={() => void resolveConflictOpenTheirs()} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl text-sm transition">Garder la leur : ouvrir leur version</button>
                 <button onClick={() => { setSaveConflict(null); setConflictText(''); }} className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-sm transition">{saveConflict.source === 'queue' ? 'Décider plus tard' : 'Annuler'}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {lockDialog && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => closeLockDialog(false)}>
+            <div className="bg-slate-900 border border-amber-500/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-bold text-amber-400">
+                {lockDialog.kind === 'claim' ? '🔒 Ce match est en cours de saisie' : lockDialog.wasMine ? '⚠️ Votre saisie a été reprise' : '⚠️ Ce match est en cours de saisie'}
+              </h3>
+              <p className="text-xs text-slate-300">
+                <span className="font-bold text-white">{lockDialog.holder}</span>{lockDialog.sameUser ? ' (vous-même, depuis un autre appareil)' : ''}{' '}
+                {lockDialog.kind === 'save' && lockDialog.wasMine ? 'a repris la saisie de ce match' : 'saisit ce match'}
+                {lockDialog.lastActivityAt ? <> : dernière activité il y a <span className="font-bold text-white">{durationLabel(lockDialog.lastActivityAt)}</span></> : null}.
+              </p>
+              <p className="text-xs text-slate-300">
+                {lockDialog.kind === 'claim'
+                  ? <>Si vous prenez la main, sa saisie n’est plus protégée : à son prochain enregistrement, il sera prévenu que vous l’avez reprise.</>
+                  : <>Enregistrer maintenant reprend la main : l’autre saisie sera, elle, signalée comme reprise. Si elle a déjà été enregistrée, la comparaison de version vous le dira ensuite.</>}
+              </p>
+              {(lockDialog.kind === 'save' || !isAdmin) && (
+                <>
+                  <p className="text-xs text-slate-300">Pour confirmer, écrivez le mot <span className="font-bold text-white">confirmation</span> :</p>
+                  <input
+                    value={lockText}
+                    onChange={e => setLockText(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && lockText.trim().toLowerCase() === 'confirmation') closeLockDialog(true); }}
+                    className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white"
+                    placeholder="confirmation"
+                    autoCapitalize="none"
+                  />
+                </>
+              )}
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => closeLockDialog(true)}
+                  disabled={(lockDialog.kind === 'save' || !isAdmin) && lockText.trim().toLowerCase() !== 'confirmation'}
+                  className="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-xl text-sm transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >{lockDialog.kind === 'claim' ? 'Prendre la main' : 'Enregistrer quand même'}</button>
+                <button onClick={() => closeLockDialog(false)} className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-sm transition">Annuler</button>
               </div>
             </div>
           </div>
