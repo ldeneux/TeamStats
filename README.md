@@ -23,6 +23,7 @@ Ordre conseillé pour une base à jour :
 3. `sql/ffbb_lookup.sql` : recherche d'un match par ID FFBB (comptes connectés uniquement).
 4. `sql/ffbb_upcoming.sql` : matchs à venir de NOS équipes (filtrés selon les équipes autorisées).
 5. `sql/stats_extra_columns.sql` : colonnes des nouvelles statistiques (interceptions, balles perdues, contres, contres subis).
+6. `sql/stats_save_atomic.sql` : enregistrement d'un match en une seule transaction + détection des écrasements (version du match, nom de la dernière personne qui a enregistré). L'appli fonctionne sans, avec l'ancienne méthode ; après, elle l'utilise toute seule. À exécuter UNE fois dans Supabase.
 6. `sql/admin_01_club_calendar.sql` : profil **superadmin**, équipes du club par saison, phases, calendriers, classements (menus
    Calendrier et Administration). Dernière étape du script : désigner le superadmin.
 7. `sql/admin_02_admin_manage_admins.sql` : uniquement si `admin_01` a déjà été exécuté avant cette mise à jour (un admin peut gérer les autres admin).

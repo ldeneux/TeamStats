@@ -191,8 +191,22 @@ interface MatchSnapshot {
   playingTime: PlayingTimeMap;
   startingFiveByPeriod: { [period: number]: string[] };
   savedAt: number;
+  /** Version du match en base telle que cet appareil l'a vue (0 = « je crée ce match »). Sert à détecter qu'un autre a enregistré entre-temps. */
+  expectedVersion?: number | null;
+  /** Écraser malgré un enregistrement plus récent (après confirmation explicite). */
+  force?: boolean;
+  savedByName?: string;
 }
-interface PendingItem { userId: string; snap: MatchSnapshot; lastError?: string; }
+/** Quelqu'un d'autre a enregistré ce match depuis qu'on l'a ouvert. */
+interface ConflictInfo { version: number; savedBy: string; savedAt: string; mine: boolean }
+interface PendingItem { userId: string; snap: MatchSnapshot; lastError?: string; conflict?: ConflictInfo; }
+class SaveConflictError extends Error {
+  info: ConflictInfo;
+  constructor(info: ConflictInfo) { super(`Conflit : ${info.savedBy || 'quelqu’un'} a enregistré ce match entre-temps.`); Object.setPrototypeOf(this, SaveConflictError.prototype); this.name = 'SaveConflictError'; this.info = info; }
+}
+// Reconnaissance par le nom (et non par instanceof) : fiable quelle que soit la cible de compilation des classes.
+const isSaveConflict = (e: any): e is SaveConflictError => !!e && e.name === 'SaveConflictError' && !!e.info;
+const isMissingRpc = (err: any) => err?.code === 'PGRST202' || err?.code === '42883' || /could not find the function|schema cache/i.test(String(err?.message ?? ''));
 
 const readPending = (): PendingItem[] => lsRead<PendingItem[]>(LS_PENDING, []);
 const writePending = (items: PendingItem[]) => lsWrite(LS_PENDING, items);
@@ -295,8 +309,11 @@ function computePlayerStats(gameEvents: GameEvent[], playingTime: PlayingTimeMap
   }
 
 // Écrit (ou réécrit entièrement) un match, ses événements et ses statistiques. Idempotent : on peut le relancer
-// après une coupure, il repart de zéro pour ce match. Renvoie l'identifiant du match en base.
-async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
+// après une coupure, il repart de zéro pour ce match. Renvoie l'identifiant du match en base et sa nouvelle version.
+// Voie normale : la fonction SQL save_match_stats (sql/stats_save_atomic.sql) fait tout en UNE transaction et refuse
+// d'écraser un enregistrement plus récent (SaveConflictError). Tant que ce script SQL n'est pas exécuté, on utilise
+// l'ancienne méthode (non atomique, sans contrôle de version).
+async function persistMatchSnapshot(snap: MatchSnapshot): Promise<{ matchId: string; version: number }> {
   const check = (res: { error: any }, step: string) => {
     if (res.error) throw new Error(`${step} : ${res.error.message}`);
   };
@@ -318,106 +335,76 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
   const statsOf = (playerId: string, periodFilter: number | 'ALL') =>
     computePlayerStats(snap.game.events, cappedTime, playerId, periodFilter);
 
-  const { data: savedMatch, error: matchErr } = await supabase
-    .from('stats_matches')
-    .upsert({
-      ffbb_match_id: snap.ffbbId,
-      match_date: snap.matchConfig.matchDate,
-      // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT).
-      // On part toujours des valeurs en direct du formulaire (matchConfig), jamais de
-      // l'instantané game.config figé au dernier "Démarrer / Mettre à jour le match" :
-      // sinon un nom d'équipe ou une date corrigés après coup ne seraient pas sauvegardés.
-      team_home: snap.homeAway === 'DOMICILE' ? snap.matchConfig.teamHome : snap.matchConfig.teamAway,
-      team_away: snap.homeAway === 'DOMICILE' ? snap.matchConfig.teamAway : snap.matchConfig.teamHome,
-      score_home: snap.homeAway === 'DOMICILE' ? snap.game.scoreHome : snap.game.scoreAway,
-      score_away: snap.homeAway === 'DOMICILE' ? snap.game.scoreAway : snap.game.scoreHome,
-      period_count: snap.matchConfig.periodCount,
-      period_minutes: snap.matchConfig.periodMinutes,
-      current_period: periodLabelOf(snap.game.period, snap.game.config.periodCount),
-      current_timer: snap.game.clockSeconds
-    }, { onConflict: 'ffbb_match_id' })
-    .select()
-    .single();
+  // En base, "home" = vrai domicile (notre équipe si DOM, l'adversaire si EXT).
+  // On part toujours des valeurs en direct du formulaire (matchConfig), jamais de
+  // l'instantané game.config figé au dernier "Démarrer / Mettre à jour le match" :
+  // sinon un nom d'équipe ou une date corrigés après coup ne seraient pas sauvegardés.
+  const matchRow = {
+    ffbb_match_id: snap.ffbbId,
+    match_date: snap.matchConfig.matchDate,
+    team_home: snap.homeAway === 'DOMICILE' ? snap.matchConfig.teamHome : snap.matchConfig.teamAway,
+    team_away: snap.homeAway === 'DOMICILE' ? snap.matchConfig.teamAway : snap.matchConfig.teamHome,
+    score_home: snap.homeAway === 'DOMICILE' ? snap.game.scoreHome : snap.game.scoreAway,
+    score_away: snap.homeAway === 'DOMICILE' ? snap.game.scoreAway : snap.game.scoreHome,
+    period_count: snap.matchConfig.periodCount,
+    period_minutes: snap.matchConfig.periodMinutes,
+    current_period: periodLabelOf(snap.game.period, snap.game.config.periodCount),
+    current_timer: snap.game.clockSeconds
+  };
 
-  if (matchErr || !savedMatch) throw new Error(`stats_matches : ${matchErr?.message || 'aucune ligne renvoyée'}`);
-  const matchId = savedMatch.id;
+  // Événements du match (historique + marqueurs d'état), sans match_id : il est ajouté à l'écriture.
+  const eventRows: any[] = snap.game.events.map(ev => ({
+    period: ev.period,
+    clock_time: ev.clockTime,
+    timestamp_str: ev.timestamp,
+    player_id: ev.playerId,
+    action_type: ev.actionType
+  }));
+  snap.game.onCourtPlayerIds.forEach(playerId => eventRows.push({
+    period: snap.game.period,
+    clock_time: formatClock(snap.game.clockSeconds),
+    timestamp_str: new Date().toLocaleTimeString(),
+    player_id: playerId,
+    action_type: 'ETAT:SUR_TERRAIN'
+  }));
+  Object.entries(snap.game.scoreByPeriod).forEach(([period, sc]) => {
+    // Même convention "vrai domicile/extérieur" que team_home/score_home ci-dessus.
+    const dbHome = snap.homeAway === 'DOMICILE' ? sc.home : sc.away;
+    const dbAway = snap.homeAway === 'DOMICILE' ? sc.away : sc.home;
+    eventRows.push({
+      period: Number(period),
+      clock_time: formatClock(snap.game.clockSeconds),
+      timestamp_str: new Date().toLocaleTimeString(),
+      player_id: '',
+      action_type: `ETAT:SCORE_PERIODE:${dbHome}-${dbAway}`
+    });
+  });
 
-  check(await supabase.from('stats_match_events').delete().eq('match_id', matchId), 'stats_match_events (suppression)');
-  if (snap.game.events.length > 0) {
-    check(await supabase.from('stats_match_events').insert(
-      snap.game.events.map(ev => ({
-        match_id: matchId,
-        period: ev.period,
-        clock_time: ev.clockTime,
-        timestamp_str: ev.timestamp,
-        player_id: ev.playerId,
-        action_type: ev.actionType
-      }))
-    ), 'stats_match_events (événements)');
-  }
-  if (snap.game.onCourtPlayerIds.length > 0) {
-    check(await supabase.from('stats_match_events').insert(
-      snap.game.onCourtPlayerIds.map(playerId => ({
-        match_id: matchId,
-        period: snap.game.period,
-        clock_time: formatClock(snap.game.clockSeconds),
-        timestamp_str: new Date().toLocaleTimeString(),
-        player_id: playerId,
-        action_type: 'ETAT:SUR_TERRAIN'
-      }))
-    ), 'stats_match_events (joueuses sur le terrain)');
-  }
-  const scorePeriodEntries = Object.entries(snap.game.scoreByPeriod);
-  if (scorePeriodEntries.length > 0) {
-    check(await supabase.from('stats_match_events').insert(
-      scorePeriodEntries.map(([period, s]) => {
-        // Même convention "vrai domicile/extérieur" que team_home/score_home ci-dessus.
-        const dbHome = snap.homeAway === 'DOMICILE' ? s.home : s.away;
-        const dbAway = snap.homeAway === 'DOMICILE' ? s.away : s.home;
-        return {
-          match_id: matchId,
-          period: Number(period),
-          clock_time: formatClock(snap.game.clockSeconds),
-          timestamp_str: new Date().toLocaleTimeString(),
-          player_id: '',
-          action_type: `ETAT:SCORE_PERIODE:${dbHome}-${dbAway}`
-        };
-      })
-    ), 'stats_match_events (score par période)');
-  }
-
-  check(await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId), 'stats_player_game_stats (suppression)');
-  if (snap.game.matchRoster.length > 0) {
-    await insertStatsRows('stats_player_game_stats',
-      snap.game.matchRoster.map(p => {
-        const st = statsOf(p.id, 'ALL');
-        return {
-          match_id: matchId,
-          player_id: p.id,
-          player_number: p.number,
-          player_name: withFrom(p.name, p.from),
-          points: st.points,
-          pts2_made: st.pts2Made,
-          pts2_att: st.pts2Att,
-          pts3_made: st.pts3Made,
-          pts3_att: st.pts3Att,
-          ft_made: st.ftMade,
-          ft_att: st.ftAttempted,
-          reb_off: st.rebOff,
-          reb_def: st.rebDef,
-          assists: st.assists,
-          steals: st.steals,
-          turnovers: st.turnovers,
-          blocks: st.blocks,
-          blocks_against: st.blocksAgainst,
-          fouls: st.fouls,
-          fouls_drawn: st.foulsDrawn,
-          playing_time_seconds: st.totalSecs
-        };
-      }),
-      'stats_player_game_stats (totaux)'
-    );
-  }
+  const totalRows = snap.game.matchRoster.map(p => {
+    const st = statsOf(p.id, 'ALL');
+    return {
+      player_id: p.id,
+      player_number: p.number,
+      player_name: withFrom(p.name, p.from),
+      points: st.points,
+      pts2_made: st.pts2Made,
+      pts2_att: st.pts2Att,
+      pts3_made: st.pts3Made,
+      pts3_att: st.pts3Att,
+      ft_made: st.ftMade,
+      ft_att: st.ftAttempted,
+      reb_off: st.rebOff,
+      reb_def: st.rebDef,
+      assists: st.assists,
+      steals: st.steals,
+      turnovers: st.turnovers,
+      blocks: st.blocks,
+      blocks_against: st.blocksAgainst,
+      fouls: st.fouls,
+      fouls_drawn: st.foulsDrawn,
+      playing_time_seconds: st.totalSecs
+    };
+  });
 
   // Statistiques par joueuse ET par période (table dédiée stats_player_period_stats)
   const maxPeriod = Math.max(
@@ -430,7 +417,6 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
     for (let per = 1; per <= maxPeriod; per++) {
       const st = statsOf(p.id, per);
       periodRows.push({
-        match_id: matchId,
         player_id: p.id,
         player_number: p.number,
         player_name: withFrom(p.name, p.from),
@@ -456,12 +442,47 @@ async function persistMatchSnapshot(snap: MatchSnapshot): Promise<string> {
       });
     }
   });
-  check(await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId), 'stats_player_period_stats (suppression)');
-  if (periodRows.length > 0) {
-    await insertStatsRows('stats_player_period_stats', periodRows, 'stats_player_period_stats (insertion)');
-  }
 
-  return matchId;
+  // ── Voie normale : une seule transaction, avec contrôle de version.
+  const { data: rpcData, error: rpcErr } = await supabase.rpc('save_match_stats', {
+    p_match: matchRow,
+    p_events: eventRows,
+    p_totals: totalRows,
+    p_periods: periodRows,
+    p_expected_version: snap.expectedVersion ?? null,
+    p_force: !!snap.force,
+    p_saved_by_name: snap.savedByName || null
+  });
+  if (!rpcErr && rpcData) {
+    if (rpcData.conflict) {
+      throw new SaveConflictError({
+        version: Number(rpcData.version) || 0,
+        savedBy: String(rpcData.saved_by_name || ''),
+        savedAt: String(rpcData.saved_at || ''),
+        mine: !!rpcData.mine
+      });
+    }
+    return { matchId: String(rpcData.id), version: Number(rpcData.version) || 0 };
+  }
+  if (rpcErr && !isMissingRpc(rpcErr)) throw new Error(`save_match_stats : ${rpcErr.message}`);
+
+  // ── Repli : ancienne méthode (script SQL pas encore exécuté). Non atomique, sans contrôle de version.
+  const { data: savedMatch, error: matchErr } = await supabase
+    .from('stats_matches')
+    .upsert(matchRow, { onConflict: 'ffbb_match_id' })
+    .select()
+    .single();
+  if (matchErr || !savedMatch) throw new Error(`stats_matches : ${matchErr?.message || 'aucune ligne renvoyée'}`);
+  const matchId = savedMatch.id;
+  const withMatch = (rows: any[]) => rows.map(r => ({ match_id: matchId, ...r }));
+
+  check(await supabase.from('stats_match_events').delete().eq('match_id', matchId), 'stats_match_events (suppression)');
+  if (eventRows.length > 0) check(await supabase.from('stats_match_events').insert(withMatch(eventRows)), 'stats_match_events (événements)');
+  check(await supabase.from('stats_player_game_stats').delete().eq('match_id', matchId), 'stats_player_game_stats (suppression)');
+  if (totalRows.length > 0) await insertStatsRows('stats_player_game_stats', withMatch(totalRows), 'stats_player_game_stats (totaux)');
+  check(await supabase.from('stats_player_period_stats').delete().eq('match_id', matchId), 'stats_player_period_stats (suppression)');
+  if (periodRows.length > 0) await insertStatsRows('stats_player_period_stats', withMatch(periodRows), 'stats_player_period_stats (insertion)');
+  return { matchId, version: 0 };
 }
 
 type Role = 'superadmin' | 'admin' | 'coach' | 'consultant';
@@ -602,6 +623,12 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const draftReadyRef = useRef(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedFpRef = useRef('');
+  // Version du match en base telle que cet appareil l'a vue (pour détecter qu'un autre a enregistré entre-temps).
+  const dbVersionRef = useRef<{ ffbbId: string; version: number } | null>(null);
+  const [saveConflict, setSaveConflict] = useState<{ source: 'save' | 'queue'; snap: MatchSnapshot; info: ConflictInfo } | null>(null);
+  const [conflictText, setConflictText] = useState('');
+  const [pendingConflicts, setPendingConflicts] = useState(0);
+  const savedByLabel = (userEmail || '').split('@')[0];
   const latestRef = useRef<any>(null);
   const draftKey = lsKey('draft', userId);
 
@@ -671,12 +698,17 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   const fetchPickerData = async () => {
     let offline = false;
     try {
+      const BASE_COLS = 'id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at';
+      const playedQuery = async () => {
+        // Colonnes ajoutées par sql/stats_save_atomic.sql : si le script n'est pas encore exécuté, on relit sans elles.
+        let res = await supabase.from('stats_matches').select(`${BASE_COLS}, save_version, saved_by_name, saved_at`).order('match_date', { ascending: false }).limit(200);
+        if (res.error && /save_version|saved_by_name|saved_at/i.test(res.error.message)) {
+          res = await supabase.from('stats_matches').select(BASE_COLS).order('match_date', { ascending: false }).limit(200);
+        }
+        return res;
+      };
       const [playedRes, upcomingRes] = await Promise.all([
-        supabase
-          .from('stats_matches')
-          .select('id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at')
-          .order('match_date', { ascending: false })
-          .limit(200),
+        playedQuery(),
         // Calendrier des équipes du club chargé dans TeamStats (Administration > Équipes & calendriers).
         loadCalendarMatches()
       ]);
@@ -876,7 +908,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setSelectedInIds([]);
     setConfirmResetPeriod(false);
     setSelectedPeriodFilter('ALL');
-    if (!keepDbId) setCurrentMatchDbId(null);
+    if (!keepDbId) { setCurrentMatchDbId(null); dbVersionRef.current = null; }
     lastSavedFpRef.current = '';
   };
 
@@ -900,6 +932,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       return;
     }
     try {
+      // La version est lue AVANT les données : si quelqu'un enregistre entre les deux, on aura une alerte de trop, jamais un écrasement silencieux.
+      let loadedVersion = 0;
+      const { data: verRow, error: verErr } = await supabase.from('stats_matches').select('save_version').eq('id', matchRow.id).maybeSingle();
+      if (!verErr && verRow) loadedVersion = Number((verRow as any).save_version) || 0;
       const { data: eventsData, error: eventsError } = await supabase
         .from('stats_match_events')
         .select('*')
@@ -980,6 +1016,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       setMatchConfig(newConfig);
       setPlayingTime(newPlayingTime);
       setCurrentMatchDbId(matchRow.id);
+      dbVersionRef.current = { ffbbId: String(matchRow.ffbb_match_id || ''), version: loadedVersion };
       setMatchType(String(matchRow.ffbb_match_id || '').startsWith('AMICAL-') ? 'AMICAL' : 'OFFICIEL');
       setStartingFiveByPeriod(loadedStartingFiveByPeriod);
 
@@ -1019,13 +1056,17 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
   // automatique au retour du réseau. Chaque enregistrement réécrit tout le match : on peut donc
   // enregistrer plusieurs fois, et un envoi interrompu se rejoue sans risque.
   // ---------------------------------------------------------------------------
-  const refreshPending = () => setPendingCount(readPending().filter(i => i.userId === userId).length);
+  const refreshPending = () => {
+    const mine = readPending().filter(i => i.userId === userId);
+    setPendingCount(mine.length);
+    setPendingConflicts(mine.filter(i => i.conflict).length);
+  };
 
   const writeDraftNow = () => {
     if (demoRef.current) return;   // match de démonstration : jamais de brouillon local
     if (!draftReadyRef.current || !latestRef.current) return;
     const L = latestRef.current;
-    lsWrite(draftKey, { v: 1, userId, savedAt: Date.now(), savedFp: lastSavedFpRef.current, ...L, game: { ...L.game, isClockRunning: false } });
+    lsWrite(draftKey, { v: 1, userId, savedAt: Date.now(), savedFp: lastSavedFpRef.current, dbVersion: dbVersionRef.current, ...L, game: { ...L.game, isClockRunning: false } });
   };
 
   const buildSnapshot = (ffbbId: string): MatchSnapshot => ({
@@ -1035,7 +1076,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     game: JSON.parse(JSON.stringify(game)),
     playingTime: JSON.parse(JSON.stringify(playingTime)),
     startingFiveByPeriod: JSON.parse(JSON.stringify(startingFiveByPeriod)),
-    savedAt: Date.now()
+    savedAt: Date.now(),
+    // Version vue de ce match en base : si c'est un autre match (ou un nouveau), on part de 0 = « je crée ce match ».
+    expectedVersion: dbVersionRef.current && dbVersionRef.current.ffbbId === ffbbId ? dbVersionRef.current.version : 0,
+    savedByName: savedByLabel
   });
 
   // PROTECTION DES STATISTIQUES : un match daté d'avant aujourd'hui est un match joué. Avant de l'enregistrer
@@ -1058,24 +1102,18 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     void handleSaveMatch();
   };
 
-  const handleSaveMatch = async () => {
-    if (demoRef.current) return;   // match de démonstration : enregistrement impossible
-    if (saveStatus === 'saving') return;
+  // Écrit le match en base, ou le met de côté s'il n'y a pas de réseau. Si quelqu'un d'autre a enregistré ce match
+  // depuis qu'on l'a ouvert, rien n'est écrit : une fenêtre demande confirmation avant d'écraser.
+  const runSave = async (snap: MatchSnapshot) => {
+    const ffbbId = snap.ffbbId;
+    const fp = fingerprintOf(snap.game);
     setSaveStatus('saving');
     setSaveErrorMessage('');
-
-    let ffbbId = matchConfig.ffbbMatchId.trim();
-    if (!ffbbId) {
-      ffbbId = `AMICAL-${Date.now()}`;
-      setMatchConfig(prev => ({ ...prev, ffbbMatchId: ffbbId }));
-    }
-    const snap = buildSnapshot(ffbbId);
-    const fp = fingerprintOf(snap.game);
-
     try {
       if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('Failed to fetch (hors connexion)');
-      const matchId = await persistMatchSnapshot(snap);
+      const { matchId, version } = await persistMatchSnapshot(snap);
       setCurrentMatchDbId(matchId);
+      dbVersionRef.current = { ffbbId, version };
       removePending(userId, ffbbId); // l'enregistrement en ligne remplace un envoi en attente pour ce match
       refreshPending();
       lastSavedFpRef.current = fp;
@@ -1083,6 +1121,12 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2500);
     } catch (err: any) {
+      if (isSaveConflict(err)) {
+        setSaveStatus('idle');
+        setConflictText('');
+        setSaveConflict({ source: 'save', snap, info: err.info });
+        return;
+      }
       console.error(err);
       if (isNetworkError(err)) {
         if (enqueuePending(userId, snap)) {
@@ -1104,10 +1148,63 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     }
   };
 
+  const handleSaveMatch = async () => {
+    if (demoRef.current) return;   // match de démonstration : enregistrement impossible
+    if (saveStatus === 'saving') return;
+    let ffbbId = matchConfig.ffbbMatchId.trim();
+    if (!ffbbId) {
+      ffbbId = `AMICAL-${Date.now()}`;
+      setMatchConfig(prev => ({ ...prev, ffbbMatchId: ffbbId }));
+    }
+    await runSave(buildSnapshot(ffbbId));
+  };
+
+  // Conflit d'enregistrement : mémorise sur l'envoi en attente qu'un autre a enregistré entre-temps (il n'est plus réessayé tout seul).
+  const markPendingConflict = (ffbbId: string, info: ConflictInfo) => {
+    writePending(readPending().map(i => (i.userId === userId && i.snap.ffbbId === ffbbId ? { ...i, conflict: info } : i)));
+  };
+  const openQueueConflict = () => {
+    const item = readPending().find(i => i.userId === userId && i.conflict);
+    if (item && item.conflict) { setConflictText(''); setSaveConflict({ source: 'queue', snap: item.snap, info: item.conflict }); }
+  };
+  // « Remplacer par ma version » (après avoir tapé « confirmation »).
+  const resolveConflictOverwrite = async () => {
+    if (!saveConflict || conflictText.trim().toLowerCase() !== 'confirmation') return;
+    const { snap, source } = saveConflict;
+    setSaveConflict(null);
+    setConflictText('');
+    const forced: MatchSnapshot = { ...snap, force: true };
+    if (source === 'save') { await runSave(forced); return; }
+    try {
+      const { matchId, version } = await persistMatchSnapshot(forced);
+      removePending(userId, snap.ffbbId, snap.savedAt);
+      if (latestRef.current?.matchConfig?.ffbbMatchId === snap.ffbbId) { setCurrentMatchDbId(matchId); dbVersionRef.current = { ffbbId: snap.ffbbId, version }; }
+      setSyncMessage('Match envoyé : votre version remplace celle enregistrée entre-temps.');
+    } catch (err: any) {
+      setSyncMessage(`Envoi refusé : ${err?.message || err}`);
+    } finally {
+      refreshPending();
+      setTimeout(() => setSyncMessage(''), 8000);
+    }
+  };
+  // « Garder leur version » : on abandonne la saisie qui n'a pas pu être enregistrée et on ouvre la version enregistrée.
+  const resolveConflictOpenTheirs = async () => {
+    if (!saveConflict) return;
+    const { snap, info } = saveConflict;
+    if (!window.confirm(`Votre saisie non enregistrée de ce match sera abandonnée et remplacée à l'écran par la version enregistrée par ${info.mine ? 'vous-même' : (info.savedBy || 'quelqu’un d’autre')}. Continuer ?`)) return;
+    setSaveConflict(null);
+    setConflictText('');
+    const { data: row, error } = await supabase.from('stats_matches').select('*').eq('ffbb_match_id', snap.ffbbId).maybeSingle();
+    if (error || !row) { setSyncMessage(`Impossible d'ouvrir leur version : ${error?.message || 'match introuvable'}`); setTimeout(() => setSyncMessage(''), 8000); return; }
+    removePending(userId, snap.ffbbId);
+    refreshPending();
+    await handleSelectExistingMatch(row);
+  };
+
   // Envoie les matchs mis de côté hors ligne (un à un, du plus ancien au plus récent).
   const flushPending = async (manual = false) => {
     if (flushingRef.current) return;
-    const items = readPending().filter(i => i.userId === userId);
+    const items = readPending().filter(i => i.userId === userId && !i.conflict);   // un envoi en conflit attend la décision de l'utilisateur
     if (items.length === 0) {
       if (manual) setSyncMessage('Rien à envoyer.');
       return;
@@ -1120,14 +1217,21 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     setIsSyncing(true);
     let sent = 0;
     let failure = '';
+    let newConflict: PendingItem | null = null;
     try {
       for (const item of items) {
         try {
-          const matchId = await persistMatchSnapshot(item.snap);
+          const { matchId, version } = await persistMatchSnapshot(item.snap);
           removePending(userId, item.snap.ffbbId, item.snap.savedAt); // garde une version plus récente si elle existe
           sent++;
-          if (latestRef.current?.matchConfig?.ffbbMatchId === item.snap.ffbbId) setCurrentMatchDbId(matchId);
+          if (latestRef.current?.matchConfig?.ffbbMatchId === item.snap.ffbbId) { setCurrentMatchDbId(matchId); dbVersionRef.current = { ffbbId: item.snap.ffbbId, version }; }
         } catch (err: any) {
+          if (isSaveConflict(err)) {
+            markPendingConflict(item.snap.ffbbId, err.info);
+            if (!newConflict) newConflict = { ...item, conflict: err.info };
+            failure = `Un match mis de côté n'a pas été envoyé : ${err.info.mine ? 'il a été enregistré depuis un autre appareil' : `${err.info.savedBy || 'quelqu’un'} l'a enregistré entre-temps`}.`;
+            continue;
+          }
           if (isNetworkError(err)) { failure = 'Réseau instable : nouvel essai automatique.'; break; }
           failure = `Envoi refusé : ${err?.message || err}`;
         }
@@ -1136,6 +1240,8 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       flushingRef.current = false;
       setIsSyncing(false);
       refreshPending();
+      const nc = newConflict as PendingItem | null;
+      if (nc && nc.conflict) { setConflictText(''); setSaveConflict(cur => cur ?? { source: 'queue', snap: nc.snap, info: nc.conflict as ConflictInfo }); }
       setSyncMessage(sent > 0 ? `${sent} match${sent > 1 ? 's envoyés' : ' envoyé'} en base.${failure ? ' ' + failure : ''}` : failure);
       if (sent > 0 || failure) setTimeout(() => setSyncMessage(''), 8000);
     }
@@ -1217,6 +1323,7 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       setCurrentMatchDbId(d.currentMatchDbId || null);
       if (d.activeTab && (d.activeTab !== 'ADMIN' || isAdmin)) setActiveTab(d.activeTab);
       lastSavedFpRef.current = d.savedFp || '';
+      dbVersionRef.current = d.dbVersion && typeof d.dbVersion.version === 'number' ? d.dbVersion : null;
       if (d.game.events?.length > 0 || d.game.matchRoster?.length > 0) setRestoredAt(d.savedAt);
     }
     draftReadyRef.current = true;
@@ -2333,6 +2440,11 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
         {!isOnline && saveStatus !== 'queued' && (
           <p className="text-center text-[10px] text-amber-300 pb-1 px-2">Mode hors ligne : vos saisies restent sur l'appareil et partiront au retour du réseau.</p>
         )}
+        {pendingConflicts > 0 && (
+          <button onClick={openQueueConflict} className="block mx-auto text-center text-[11px] font-black text-amber-300 bg-amber-500/10 border border-amber-500/50 rounded-full px-3 py-1 mb-1">
+            ⚠ {pendingConflicts} match{pendingConflicts > 1 ? 's' : ''} en conflit d'enregistrement : toucher pour décider
+          </button>
+        )}
         {isOnline && pendingCount > 0 && !isSyncing && (
           <p className="text-center text-[10px] text-blue-300 pb-1 px-2">{pendingCount} match{pendingCount > 1 ? 's' : ''} en attente d'envoi : touchez la pastille pour réessayer.</p>
         )}
@@ -2694,7 +2806,9 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                             {entry.m.match_date ? new Date(entry.m.match_date).toLocaleDateString('fr-FR') : 'Date inconnue'}
                             {' · '}
                             {`ID : ${entry.m.ffbb_match_id}`}
-                            {entry.m.created_at && (
+                            {entry.m.saved_by_name && entry.m.saved_at ? (
+                              <span className="text-slate-600"> (dernier enregistrement par {entry.m.saved_by_name} le {new Date(entry.m.saved_at).toLocaleDateString('fr-FR')} à {new Date(entry.m.saved_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})</span>
+                            ) : entry.m.created_at && (
                               <span className="text-slate-600"> (enregistré le {new Date(entry.m.created_at).toLocaleDateString('fr-FR')} à {new Date(entry.m.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})</span>
                             )}
                           </span>
@@ -2761,6 +2875,35 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
                 dans l&apos;application. Vous pouvez les consulter et exporter le PDF des statistiques. Pour une correction exceptionnelle, contactez le superadmin (modification directe en base).
               </p>
               <button onClick={() => setShowLockedInfo(false)} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-2.5 rounded-xl text-sm transition">Compris</button>
+            </div>
+          </div>
+        )}
+
+        {saveConflict && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => { setSaveConflict(null); setConflictText(''); }}>
+            <div className="bg-slate-900 border border-amber-500/60 rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-bold text-amber-400">⚠️ Ce match a été enregistré entre-temps</h3>
+              <p className="text-xs text-slate-300">
+                {saveConflict.source === 'queue' ? "Ce match mis de côté hors ligne n'a pas pu être envoyé. " : ''}
+                <span className="font-bold text-white">{saveConflict.info.mine ? 'Vous-même (depuis un autre appareil ou une session précédente)' : (saveConflict.info.savedBy || 'Quelqu’un d’autre')}</span>
+                {' '}a enregistré ce match
+                {saveConflict.info.savedAt ? <> le <span className="font-bold text-white">{new Date(saveConflict.info.savedAt).toLocaleDateString('fr-FR')} à {new Date(saveConflict.info.savedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span></> : null}
+                , après que vous l&apos;avez ouvert. Rien n&apos;a été écrasé.
+              </p>
+              <p className="text-xs text-slate-300">Remplacer par votre version <span className="font-bold text-white">supprime la sienne</span>. Pour confirmer, écrivez le mot <span className="font-bold text-white">confirmation</span> :</p>
+              <input
+                value={conflictText}
+                onChange={e => setConflictText(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') void resolveConflictOverwrite(); }}
+                className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white"
+                placeholder="confirmation"
+                autoCapitalize="none"
+              />
+              <div className="flex flex-col gap-2">
+                <button onClick={() => void resolveConflictOverwrite()} disabled={conflictText.trim().toLowerCase() !== 'confirmation'} className="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-xl text-sm transition disabled:opacity-40 disabled:cursor-not-allowed">Remplacer par ma version</button>
+                <button onClick={() => void resolveConflictOpenTheirs()} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl text-sm transition">Garder la leur : ouvrir leur version</button>
+                <button onClick={() => { setSaveConflict(null); setConflictText(''); }} className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-sm transition">{saveConflict.source === 'queue' ? 'Décider plus tard' : 'Annuler'}</button>
+              </div>
             </div>
           </div>
         )}
