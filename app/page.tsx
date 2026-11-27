@@ -699,13 +699,14 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
     let offline = false;
     try {
       const BASE_COLS = 'id, ffbb_match_id, team_home, team_away, match_date, score_home, score_away, period_count, period_minutes, current_period, current_timer, created_at';
-      const playedQuery = async () => {
+      const playedQuery = async (): Promise<{ data: any[] | null; error: any }> => {
         // Colonnes ajoutées par sql/stats_save_atomic.sql : si le script n'est pas encore exécuté, on relit sans elles.
-        let res = await supabase.from('stats_matches').select(`${BASE_COLS}, save_version, saved_by_name, saved_at`).order('match_date', { ascending: false }).limit(200);
-        if (res.error && /save_version|saved_by_name|saved_at/i.test(res.error.message)) {
-          res = await supabase.from('stats_matches').select(BASE_COLS).order('match_date', { ascending: false }).limit(200);
+        // (Deux requêtes aux colonnes différentes : on renvoie un type commun, sinon TypeScript refuse la réaffectation.)
+        const full = await supabase.from('stats_matches').select(`${BASE_COLS}, save_version, saved_by_name, saved_at`).order('match_date', { ascending: false }).limit(200);
+        if (full.error && /save_version|saved_by_name|saved_at/i.test(full.error.message)) {
+          return await supabase.from('stats_matches').select(BASE_COLS).order('match_date', { ascending: false }).limit(200);
         }
-        return res;
+        return full;
       };
       const [playedRes, upcomingRes] = await Promise.all([
         playedQuery(),
