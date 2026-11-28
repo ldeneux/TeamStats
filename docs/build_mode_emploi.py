@@ -22,6 +22,14 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else 'out.pdf'
 import os
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'guide-assets')
 
+import re
+def _read_version():
+    """Numéro de version : la même valeur que celle affichée dans l'appli (lib/appVersion.ts)."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib', 'appVersion.ts')
+    try: return re.search(r"APP_VERSION\s*=\s*'([^']+)'", open(p, encoding='utf-8').read()).group(1)
+    except Exception: return ''
+VERSION = _read_version()
+
 # ------------------------------------------------------------------ polices et couleurs (celles du guide d'origine)
 G = '/usr/share/fonts/truetype/google-fonts/'
 C = '/usr/share/fonts/truetype/crosextra/'
@@ -108,16 +116,16 @@ class Callout(Flowable):
 class TocLine(Flowable):
     def __init__(self, text, page):
         super().__init__(); self.text, self.page = text, page
-    def wrap(self, aw, ah): return aw, 15.0
+    def wrap(self, aw, ah): return aw, 12.6     # resserré (17 lignes au programme depuis l'étape 16) pour tenir sur une page
     def draw(self):
-        c = self.canv; c.setFillColor(TEXT); c.setFont('Carlito', 10.2); c.drawString(0, 3.5, self.text)
-        c.drawRightString(CW, 3.5, str(self.page))
+        c = self.canv; c.setFillColor(TEXT); c.setFont('Carlito', 10.2); c.drawString(0, 3.1, self.text)
+        c.drawRightString(CW, 3.1, str(self.page))
         x0 = pdfmetrics.stringWidth(self.text, 'Carlito', 10.2) + 5
         x1 = CW - pdfmetrics.stringWidth(str(self.page), 'Carlito', 10.2) - 5
         c.setFillColor(MUTED)
         x = x0
         while x < x1:
-            c.drawString(x, 3.5, '.'); x += 5.1
+            c.drawString(x, 3.1, '.'); x += 5.1
 
 class IconRow(Flowable):
     """Une ligne « bouton : à quoi il sert »."""
@@ -125,7 +133,7 @@ class IconRow(Flowable):
         super().__init__(); self.icon, self.name, self.desc, self.draw_icon = icon, name, desc, draw_icon
         self.p = Paragraph(desc, ParagraphStyle('ir', fontName='Carlito', fontSize=9.6, leading=12, textColor=TEXT))
     def wrap(self, aw, ah):
-        self.ph = self.p.wrap(aw - 148, ah)[1]; self.h = max(25.2, self.ph + 9); return aw, self.h
+        self.ph = self.p.wrap(aw - 148, ah)[1]; self.h = max(22.8, self.ph + 9); return aw, self.h
     def draw(self):
         c = self.canv; y0 = (self.h - 22.7) / 2
         if self.icon: c.drawImage(f'{ASSETS}/icon_{self.icon}.png', 0, y0, 22.7, 22.7, mask='auto')
@@ -280,8 +288,8 @@ def P(text, style=body): return Paragraph(text, style)
 def H2(text): return Paragraph(text, h2)
 
 # ================================================================== PAGE 1 : accueil + programme
-def page_accueil(pg_vocal=14, pg_temps=16, pg_annexe_a=17, pg_annexe_b=18):
-    s = [P('Bienvenue', h1),
+def page_accueil(pg_vocal=14, pg_temps=16, pg_partage=17, pg_annexe_a=18, pg_annexe_b=19):
+    s = [P('Bienvenue', ParagraphStyle('h1a', parent=h1, spaceAfter=3)),
          P("TeamStats suit un match de basket en direct, joueuse par joueuse, partage les statistiques en PDF et donne le calendrier, "
            f"les résultats et le classement de vos équipes. Ce guide explique tout, pas à pas, {b('sans notion technique')}."), H2('Au programme')]
     toc = [("Étape 1 · Créer l'équipe et les joueuses", 2), ('Étape 2 · Préparer le match', 3), ('Étape 3 · Choisir les joueuses du match', 4),
@@ -290,6 +298,7 @@ def page_accueil(pg_vocal=14, pg_temps=16, pg_annexe_a=17, pg_annexe_b=18):
            ('Étape 9 · Statistiques et rapports PDF', 9), ("Étape 10 · Utiliser l'appli sans réseau", 10),
            ('Étape 11 · Historique, aide-mémoire et dépannage', 11), ('Étape 12 · Le menu Calendrier', 12),
            ('Étape 13 · Mon compte et nouveautés', 13), ('Étape 14 · La commande vocale', pg_vocal), ('Étape 15 · Le temps de jeu et le chrono', pg_temps),
+           ('Étape 16 · Deux personnes sur le même match', pg_partage),
            ('Annexe A · Module administrateur', pg_annexe_a), ('Annexe B · Récapitulatif des commandes vocales', pg_annexe_b)]
     s += [TocLine(t, p) for t, p in toc]
     s += [H2('Les boutons à connaître'), P('En haut à droite, une petite barre donne accès à tout, sur chaque écran :', ParagraphStyle('x', parent=body, spaceAfter=4))]
@@ -487,6 +496,43 @@ def page_temps():
          ]
 
 
+# ================================================================== ÉTAPE 16 : deux personnes sur le même match
+def page_partage():
+    cadenas = _table([[Paragraph(a, cellb), Paragraph(b_, cell)] for a, b_ in (
+        ('Petit cadenas ouvert, devant la date', 'Personne ne saisit ce match : vous pouvez le prendre.'),
+        (f"Cadenas fermé, {chip('Camille · actif il y a 12 min', 'yellow')}", "Camille saisit ce match en ce moment (dernière action il y a 12 minutes)."),
+        (f"Cadenas fermé, {chip('vous (cet appareil)', 'green')}", "C'est vous, sur cette tablette ou ce téléphone."),
+        (f"Cadenas fermé, {chip('vous (autre appareil)', 'blue')}", "C'est vous, mais depuis un autre appareil : il compte comme une autre personne."),
+        (f"Cadenas fermé, {chip('inactif depuis 5 h', 'gray')}", "Plus aucune activité depuis 4 heures : le cadenas est considéré comme abandonné. Vous le prenez d'un geste, sans confirmation."))],
+        [190, CW - 190], ('Ce que vous voyez dans la liste', 'Ce que cela veut dire'))
+    return [Banner(16, 'Deux personnes sur le même match', 'Enregistrement protégé, conflits et cadenas'),
+         P(f"Quand deux personnes saisissent ou enregistrent {b('le même match')} (par exemple un test, puis le vrai), l'appli empêche qu'une saisie en {b('écrase')} une autre sans prévenir. "
+           "Trois protections travaillent ensemble ; la première est invisible, les deux autres s'affichent à l'écran."),
+         H2("1 · Un enregistrement qui ne se mélange pas"),
+         P(f"Enregistrer se fait en {b('une seule opération')} : le match, son historique et ses statistiques sont écrits ensemble, ou pas du tout. "
+           "Deux enregistrements au même instant ne peuvent plus laisser de doublons. Chaque match garde un numéro de version, le nom de la dernière personne qui l'a enregistré et l'heure."),
+         Callout('note', 'Qui a enregistré en dernier ?', f"Dans la liste {chip('JOUÉ', 'green')} de la loupe, chaque match indique « dernier enregistrement par Prénom le … à … ». "
+                 "Le nom est celui du profil, sinon la partie de l'adresse e-mail avant le @."),
+         H2("2 · Si quelqu'un a enregistré entre-temps"),
+         NumItem(1, f"L'appli retient la version du match que vous avez ouverte. Si quelqu'un d'autre enregistre ensuite, {b('rien n’est écrasé')} : à votre enregistrement, une fenêtre vous dit « Prénom a enregistré à 14:32 »."),
+         NumItem(2, f"Trois choix : {chip('Remplacer par ma version', 'red')} (il faut écrire le mot {b('confirmation')}, comme pour un match déjà joué), "
+                    f"{chip('Garder la leur', 'blue')} (ouvre leur version et abandonne la vôtre, après confirmation), ou {chip('Annuler', 'gray')}."),
+         NumItem(3, f"{b('Sans réseau')} : un match mis de côté qui se retrouve en conflit n'est pas renvoyé tout seul. Un bandeau orange {b('« … en conflit d’enregistrement »')} reste affiché jusqu'à votre décision (étape 10)."),
+         H2("3 · Le cadenas : un seul saisisseur à la fois"),
+         P(f"Quand vous choisissez un match dans la loupe ({chip('À VENIR', 'blue')} ou {chip('JOUÉ', 'green')}), l'appli pose un cadenas à votre nom. "
+           f"Les autres le voient {b('écrit sur la ligne du match')}, avant même de l'ouvrir (la liste se rafraîchit toute seule)."),
+         cadenas, Spacer(1, 6),
+         NumItem(1, f"{b('Prendre la main')} : si quelqu'un saisit déjà le match, une fenêtre donne son nom et sa dernière activité. Pour continuer, écrivez {b('confirmation')} (un administrateur n'a pas à l'écrire)."),
+         NumItem(2, f"{b('Celui qui est repris est prévenu')} : un bandeau « Camille a repris la saisie de ce match à 15:02 » apparaît dans la minute et demie qui suit, avec {chip('Reprendre la main', 'yellow')} ou {chip('Ignorer', 'gray')}. "
+                    f"À son prochain enregistrement, une fenêtre « Votre saisie a été reprise » demande confirmation avant d'écraser. Sa saisie reste sur son appareil."),
+         NumItem(3, f"{b('Libérer')} : tant que vous saisissez, la ligne « Vous saisissez ce match » apparaît sous le titre, avec le bouton {chip('Libérer', 'green')}. {chip('Nouveau match', 'gray')} rend aussi le cadenas. "
+                    f"Si vous fermez l'appli sans libérer, le cadenas s'ouvre seul après 4 heures sans activité."),
+         Callout('good', 'Un test qui ne fait pas foi', "Si vous avez commencé en test et qu'un autre prend le vrai match, appuyez sur « Libérer » (ou « Nouveau match ») : plus personne n'est bloqué. "
+                 "Si c'est l'autre qui a commencé, vous le voyez sur la ligne du match avant de décider de prendre la main."),
+         Callout('note', '', f"Le cadenas est un {b('confort')} : la vraie sécurité reste la comparaison de version à l'enregistrement (§ 2), qui protège aussi sans réseau. "
+                 "Sans réseau ou sans le script SQL de l'installation (annexe A), il n'y a simplement pas de cadenas. Un match d'une saison clôturée est en lecture seule : il n'en prend pas. "
+                 "Un compte consultant ne pose jamais de cadenas.")]
+
 # ================================================================== ANNEXE B : récapitulatif des commandes vocales
 def page_annexe_voix():
     def sec(title, rows, head=('Action', 'Phrases reconnues')):
@@ -593,7 +639,9 @@ def page_annexe():
         ('admin_09_role_consultant', 'Profil consultant (lecture seule).'),
         ('admin_10_merge_roster', 'Fiche joueuse unique (maillot + licence) et fonction des renforts.'),
         ('voice_01_calibration', 'Calibrage de la commande vocale, enregistré par compte (suit l’utilisateur d’un appareil à l’autre).'),
-        ('voice_02_shared', 'Apprentissages de la commande vocale partagés entre tous les comptes du club (à lancer après voice_01).'))], [140, CW - 140], ('Script SQL (dans cet ordre)', 'À quoi il sert'))
+        ('voice_02_shared', 'Apprentissages de la commande vocale partagés entre tous les comptes du club (à lancer après voice_01).'),
+        ('stats_save_atomic', "Enregistrement d'un match en une seule opération, avec numéro de version et nom du dernier enregistreur (étape 16)."),
+        ('stats_match_lock', "Cadenas de saisie d'un match : nom, dernière activité, prise de main (étape 16 ; à lancer après stats_save_atomic)."))], [140, CW - 140], ('Script SQL (dans cet ordre)', 'À quoi il sert'))
     s = [Banner('A', 'Module administrateur', 'Équipes du club, calendriers, effectifs et accès'),
          P(f"Réservé aux profils {b('admin')} et {b('superadmin')} : le bouton {b('Administration')} (la roue violette, en haut à droite) n'existe pas pour un coach. "
            "Un bandeau d'icônes en haut de l'écran choisit la section : Équipes & calendriers, ou Accès."),
@@ -672,6 +720,10 @@ def flow_at(c, flowables, x, top, width=CW):
         if st is not None: y -= st.spaceAfter
     return PH - y
 
+def patch_cover(c):  # couverture : numéro de version, sous le titre et le slogan
+    c.setFillColor(LIGHTBLUE); c.setFont('Poppins-Medium', 10)
+    c.drawCentredString(PW / 2, PH - 541, f'Version {VERSION}')
+
 def patch_page3(c):  # étape 1 : équipes créées automatiquement
     flow_at(c, [Callout('tip', 'Équipes créées automatiquement.',
                         "Quand l'administrateur charge les équipes du calendrier FFBB (annexe A), l'équipe « SATHONAY U15F - 2026/2027 » existe déjà avec le bon nom : "
@@ -737,10 +789,11 @@ def patch_page10(c):  # étape 9 : temps de jeu plafonné (ligne Tps du tableau)
 def main():
     base = PdfReader(BASE)
     w = PdfWriter()
-    n_voc = len(build(page_vocal(), 0).pages); n_t = len(build(page_temps(), 0).pages); n_a = len(build(page_annexe(), 0).pages)
-    pg_voc = 14; pg_t = pg_voc + n_voc; pg_a = pg_t + n_t; pg_b = pg_a + n_a        # numéro de la première page de chaque partie
-    w.add_page(base.pages[0])                                       # couverture (inchangée)
-    for p in build(page_accueil(pg_voc, pg_t, pg_a, pg_b), 1).pages: w.add_page(p)   # accueil / programme (reconstruit)
+    n_voc = len(build(page_vocal(), 0).pages); n_t = len(build(page_temps(), 0).pages); n_p = len(build(page_partage(), 0).pages); n_a = len(build(page_annexe(), 0).pages)
+    pg_voc = 14; pg_t = pg_voc + n_voc; pg_p = pg_t + n_t; pg_a = pg_p + n_p; pg_b = pg_a + n_a   # numéro de la première page de chaque partie
+    cover = base.pages[0]; cover.merge_page(overlay(0, patch_cover))
+    w.add_page(cover)                                               # couverture (+ numéro de version)
+    for p in build(page_accueil(pg_voc, pg_t, pg_p, pg_a, pg_b), 1).pages: w.add_page(p)   # accueil / programme (reconstruit)
     patches = {2: patch_page3, 3: patch_page4, 4: patch_page5, 5: patch_page7, 7: patch_page8, 8: patch_page9, 9: patch_page10}   # index dans le PDF d'origine
     for i in range(2, 12):                                          # étapes 1 à 11 (pages d'origine)
         pg = base.pages[i]
@@ -750,9 +803,10 @@ def main():
     for p in build(page_nouveautes(), 13).pages: w.add_page(p)      # étape 13
     for p in build(page_vocal(), pg_voc).pages: w.add_page(p)       # étape 14 : commande vocale
     for p in build(page_temps(), pg_t).pages: w.add_page(p)         # étape 15 : temps de jeu et chrono
+    for p in build(page_partage(), pg_p).pages: w.add_page(p)       # étape 16 : deux personnes sur le même match
     for p in build(page_annexe(), pg_a).pages: w.add_page(p)        # annexe A
     for p in build(page_annexe_voix(), pg_b).pages: w.add_page(p)   # annexe B : récapitulatif des commandes vocales
-    w.add_metadata({'/Title': "TeamStats - Mode d'emploi", '/Author': 'Olympic Sathonay', '/Subject': 'Suivi de match et statistiques'})
+    w.add_metadata({'/Title': "TeamStats - Mode d'emploi", '/Author': 'Olympic Sathonay', '/Subject': 'Suivi de match et statistiques ' + ('(version ' + VERSION + ')' if VERSION else '')})
     with open(OUT, 'wb') as f: w.write(f)
     print('pages :', len(w.pages))
 

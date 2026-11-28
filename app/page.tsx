@@ -10,6 +10,7 @@ import { splitFrom, withFrom } from '../lib/renforts';
 import { adminApi } from '../lib/adminApi';
 import { StatsPdfContext } from '../lib/statsPdfContext';
 import { isLockedDate, useLockedBefore } from '../lib/seasonLock';
+import { APP_VERSION } from '../lib/appVersion';
 import VoiceControl from '../components/VoiceControl';
 import VoiceTutorial from '../components/VoiceTutorial';
 import { DemoMatch, TutLast, buildTutorial, makeDemo } from '../lib/voice/tutorial';
@@ -2577,7 +2578,10 @@ function TeamStatsApp({ userId, userEmail, role, onSignOut, needsReauth, onReaut
       <header className="bg-slate-900/90 backdrop-blur-md text-white rounded-2xl border border-slate-700/50 shadow-lg mb-4">
         <div className="flex flex-wrap gap-y-2 justify-between items-center px-4 py-2.5">
           <div className="flex items-center space-x-2.5">
-            <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Olympic Sathonay</span>
+            <div className="flex flex-col leading-tight">
+              <span className="font-extrabold tracking-wider text-amber-500 text-sm uppercase">Olympic Sathonay</span>
+              <span className="text-[9px] font-medium tracking-wide text-slate-500">Version {APP_VERSION}</span>
+            </div>
             <button
               onClick={() => { void flushPending(true); void syncOfflineData(); }}
               title={!isOnline ? "Hors connexion : les saisies sont gardées sur l'appareil" : pendingCount > 0 ? 'Toucher pour envoyer maintenant' : 'Toucher pour synchroniser les données'}
@@ -3777,6 +3781,7 @@ function LoginScreen() {
           <img src="/logo-stats.png" alt="Statistiques basket" className="w-24 h-24 rounded-2xl object-cover" />
           <h1 className="font-extrabold tracking-wider text-amber-500 text-lg uppercase">Olympic Sathonay</h1>
           <p className="text-xs text-slate-400">Suivi de match et statistiques - connexion</p>
+          <p className="text-[9px] text-slate-500">Version {APP_VERSION}</p>
         </div>
 
         <div>

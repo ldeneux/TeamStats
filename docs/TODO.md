@@ -1,4 +1,4 @@
-# Checklist TeamStats (à jour au 17/11/2026)
+# Checklist TeamStats (à jour au 27/11/2026)
 
 | # | Sujet | État |
 |---|-------|------|
@@ -27,7 +27,8 @@
 | 21 | Coupes : les phases finales (1/8, 1/4, demi, finale) rejoignent leur coupe (même nom de base) ; commande vocale : calibrage complet enregistré par compte (`sql/voice_01_calibration.sql`, table `voice_profiles`), mode hors ligne Chrome | **Fait** (SQL à exécuter une fois ; micro et hors ligne à tester sur appareil) |
 | 22 | Commande vocale : didacticiel (match démo jamais enregistré, ~50 étapes), bouton Nouveau / Didacticiel, apprentissages partagés entre comptes (`sql/voice_02_shared.sql`), correction « adversaire moins un » | **Fait** (SQL voice_02 à exécuter une fois) |
 | 23 | Deux personnes sur le même match : plus d'écrasement silencieux. Enregistrement atomique, version du match, fenêtre de confirmation en cas de conflit (en ligne et envoi différé), « dernier enregistrement par … » dans la liste JOUÉ | **Fait** (SQL `stats_save_atomic.sql` à exécuter une fois) |
-| 24 | Cadenas par match (propriétaire, péremption, prise forcée) | Pas fait : à décider selon l'usage réel |
+| 24 | Cadenas par match (propriétaire, péremption, prise forcée) | **Fait** (`sql/stats_match_lock.sql` à exécuter après `stats_save_atomic.sql` ; nom sur la ligne du match, péremption 4 h, prise de main avec « confirmation », bandeau pour celui qui est repris, bouton Libérer) ; testé à deux comptes le 27/11 ; mode d'emploi : étape 16 |
+| 25 | Numéro de version affiché sous « Olympic Sathonay » (appli + connexion) et sur la couverture du mode d'emploi | **Fait** (`lib/appVersion.ts`, version 2026.11.27 : à changer à chaque livraison, puis relancer `python3 docs/build_mode_emploi.py docs/mode-emploi-base-v1.pdf public/mode-emploi-teamstats.pdf`) |
 
 ## Notes pour 6 et 7
 - 6 : réalisé comme une **vraie connexion** au compte coach (jeton à usage unique généré par le serveur) : on voit exactement ce que voit ce coach, droits réels (RLS) compris ; un bandeau permet de revenir à son compte.
